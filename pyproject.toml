@@ -20,6 +20,16 @@ dependencies = [
 # MQTT 브리지: `uv run terra-bridge`
 terra-bridge = "backend.mqtt_bridge_main:run"
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend"]
+
+[tool.uv]
+package = true
+
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
