@@ -105,8 +105,10 @@ terra-server/
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 시스템 맵
 - [docs/DATABASE.md](docs/DATABASE.md) — 테이블/RLS
 - [docs/MQTT.md](docs/MQTT.md) — 토픽/페이로드 명세
+- [docs/API.md](docs/API.md) — REST API 명세 (Swagger UI: `/docs`)
 - [docs/ENV.md](docs/ENV.md) — 환경변수 가이드
-- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — Lightsail 배포
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — Lightsail 인프라 초기 셋업
+- [docs/OPERATIONS.md](docs/OPERATIONS.md) — 일상 운영 (배포/재배포/로그, pm2 ↔ systemd 매핑)
 
 ## 라이선스
 

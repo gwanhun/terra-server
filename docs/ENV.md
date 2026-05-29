@@ -6,8 +6,8 @@
 
 | 등급 | 변수 | 취급 |
 |------|------|------|
-| 🔴 Critical | `SUPABASE_SERVICE_ROLE_KEY`, `MQTT_BRIDGE_PASSWORD`, `R2_SECRET_ACCESS_KEY` | 절대 커밋 금지, 유출 시 즉시 로테이션 |
-| 🟠 Sensitive | `DEV_USER_ID`, `SUPABASE_URL`, `R2_ACCESS_KEY_ID`, `R2_ACCOUNT_ID` | .env / Lightsail 내부에만 |
+| 🔴 Critical | `SUPABASE_SERVICE_ROLE_KEY`, `MQTT_BRIDGE_PASSWORD`, `R2_SECRET_ACCESS_KEY`, `DOCS_BASIC_PASS` | 절대 커밋 금지, 유출 시 즉시 로테이션 |
+| 🟠 Sensitive | `DEV_USER_ID`, `SUPABASE_URL`, `R2_ACCESS_KEY_ID`, `R2_ACCOUNT_ID`, `DOCS_BASIC_USER` | .env / Lightsail 내부에만 |
 | 🟢 Non-secret | `MQTT_BROKER_HOST`, `AUTH_MODE`, `APP_ORIGINS`, `R2_BUCKET`, `R2_PUBLIC_BASE_URL` | .env.example 에 기본값 공개 |
 
 ## 섹션별 설명
@@ -44,6 +44,10 @@
 ### API 서버
 
 - `APP_ORIGINS` — CORS 허용 origin (콤마 구분, 빈 값이면 `*`)
+- `DOCS_BASIC_USER` / `DOCS_BASIC_PASS` — OpenAPI 문서 Basic Auth
+  - `/docs`, `/redoc`, `/openapi.json` 셋 다 동일 가드. JWT 와 무관하게 항상 적용.
+  - 둘 중 하나라도 비어있으면 모든 요청 401 → 사실상 문서 차단 효과 (실수 방지)
+  - 강력한 비번: `python3 -c "import secrets; print(secrets.token_urlsafe(24))"`
 
 ### Cloudflare R2 (Stage F)
 

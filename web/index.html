@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>terra-server · 테스트 콘솔</title>
+<style>
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #111; color: #eee; font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 16px; line-height: 1.5; }
+h1 { font-size: 18px; margin: 0 0 16px; color: #5af; }
+h2 { font-size: 14px; margin: 12px 0 8px; color: #5af; letter-spacing: .5px; }
+h3 { font-size: 12px; margin: 8px 0 4px; color: #888; font-weight: normal; text-transform: uppercase; letter-spacing: .5px; }
+.wrap { max-width: 960px; margin: 0 auto; }
+.panel { background: #1a1a1a; padding: 16px; border-radius: 8px; margin-bottom: 12px; }
+.row { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
+.row label { flex: 0 0 100px; font-size: 12px; color: #bbb; }
+input, select { padding: 6px 8px; background: #222; color: #eee; border: 1px solid #444; border-radius: 4px; font-size: 13px; min-width: 0; }
+input[type=text], input[type=email], input[type=password] { flex: 1; }
+button { padding: 6px 12px; background: #2a4a6a; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }
+button:hover { background: #355c80; }
+button.danger { background: #6a2a2a; }
+button.danger:hover { background: #803535; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+.tabs button { background: #222; color: #888; flex: 1; }
+.tabs button.active { background: #2a4a6a; color: #fff; }
+.muted { color: #888; font-size: 12px; }
+.bad { color: #f99; }
+.good { color: #9f9; }
+pre { background: #0a0a0a; padding: 10px; border-radius: 4px; overflow: auto; font-size: 11px; max-height: 200px; color: #9f9; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #333; }
+th { color: #888; font-weight: normal; font-size: 11px; text-transform: uppercase; }
+.token-once { background: #3a3000; color: #fc9; padding: 8px; border-radius: 4px; font-family: monospace; font-size: 11px; word-break: break-all; margin: 4px 0; border: 1px solid #885500; }
+.hidden { display: none !important; }
+.toast { position: fixed; top: 16px; right: 16px; background: #2a4a6a; color: #fff; padding: 10px 16px; border-radius: 6px; font-size: 13px; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 9999; }
+.toast.bad { background: #6a2a2a; }
+.toast.good { background: #2a6a3a; }
+small { color: #888; font-size: 11px; }
+hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>terra-server · 로컬 테스트 콘솔</h1>
+
+<!-- ===== 설정 ===== -->
+<div class="panel" id="config-panel">
+  <h2>⚙️ 설정</h2>
+  <small>API Base 만 선택. Supabase URL/anon 은 백엔드 <code>/web-config</code> 에서 자동.</small>
+  <div class="row">
+    <label>프리셋</label>
+    <button type="button" onclick="usePreset('https://api.terra-server.uk')">🌐 원격 (api.terra-server.uk)</button>
+    <button type="button" onclick="usePreset('http://localhost:8000')">💻 로컬 (localhost:8000)</button>
+  </div>
+  <div class="row"><label>API Base</label><input id="cfg-api-base" type="text" placeholder="https://api.terra-server.uk"></div>
+  <div class="row">
+    <button onclick="saveConfig()">저장 & 시작</button>
+    <button class="danger" onclick="clearConfig()">초기화</button>
+  </div>
+  <small class="muted" id="cfg-status"></small>
+</div>
+
+<!-- ===== 인증 ===== -->
+<div class="panel hidden" id="auth-panel">
+  <h2>🔑 인증</h2>
+  <div class="tabs">
+    <button id="tab-login" class="active" onclick="showAuthTab('login')">로그인</button>
+    <button id="tab-signup" onclick="showAuthTab('signup')">회원가입</button>
+  </div>
+  <div id="auth-login">
+    <div class="row"><label>Email</label><input id="login-email" type="email" placeholder="test@example.com"></div>
+    <div class="row"><label>Password</label><input id="login-pw" type="password"></div>
+    <div class="row"><button onclick="login()">로그인</button></div>
+  </div>
+  <div id="auth-signup" class="hidden">
+    <div class="row"><label>Email</label><input id="signup-email" type="email" placeholder="test@example.com"></div>
+    <div class="row"><label>Password</label><input id="signup-pw" type="password" placeholder="6자 이상"></div>
+    <div class="row">
+      <button onclick="signup()">회원가입</button>
+      <small>Supabase 가 confirmation 메일 보낼 수 있음 (대시보드 설정에 따름)</small>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 대시보드 ===== -->
+<div class="hidden" id="dashboard">
+
+  <div class="panel">
+    <div class="row">
+      <h2 style="margin:0">👤 로그인됨</h2>
+      <span id="user-info" class="muted"></span>
+      <span style="flex:1"></span>
+      <button class="danger" onclick="logout()">로그아웃</button>
+    </div>
+    <div class="row">
+      <small class="muted">API Base:</small>
+      <code id="current-api-base"></code>
+      <button type="button" onclick="switchApiBase()" style="font-size:11px;padding:2px 8px">🔄 전환</button>
+    </div>
+    <small id="auth-mode-hint" class="muted"></small>
+  </div>
+
+  <!-- 사육장 -->
+  <div class="panel">
+    <h2>🏠 사육장 (enclosures)</h2>
+    <div class="row">
+      <input id="enc-name" type="text" placeholder="이름 (예: 거실 비어디드)" style="flex:2">
+      <input id="enc-species" type="text" placeholder="종 (옵션)" style="flex:1">
+      <button onclick="createEnclosure()">추가</button>
+      <button onclick="loadEnclosures()">새로고침</button>
+    </div>
+    <table id="enc-table">
+      <thead><tr><th>id</th><th>이름</th><th>종</th><th>created</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- 디바이스 -->
+  <div class="panel">
+    <h2>📟 디바이스 (devices) — ESP32-S3 센서/제어</h2>
+    <div class="row">
+      <input id="dev-name" type="text" placeholder="이름" style="flex:2">
+      <input id="dev-species" type="text" placeholder="종 (옵션)" style="flex:1">
+      <button onclick="pairDevice()">페어링</button>
+      <button onclick="loadDevices()">새로고침</button>
+    </div>
+    <div id="dev-token" class="hidden"></div>
+    <table id="dev-table">
+      <thead><tr><th>device_id</th><th>이름</th><th>online</th><th>last_seen</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- 카메라 -->
+  <div class="panel">
+    <h2>📷 카메라 (cameras) — ESP32-P4 / RPi</h2>
+    <div class="row">
+      <input id="cam-name" type="text" placeholder="이름" style="flex:2">
+      <select id="cam-model">
+        <option value="esp32-p4">esp32-p4</option>
+        <option value="rpi-zero-2-w">rpi-zero-2-w</option>
+        <option value="rpi-4">rpi-4</option>
+        <option value="ip-camera">ip-camera</option>
+      </select>
+      <button onclick="pairCamera()">페어링</button>
+      <button onclick="loadCameras()">새로고침</button>
+    </div>
+    <div id="cam-token" class="hidden"></div>
+    <table id="cam-table">
+      <thead><tr><th>camera_id</th><th>이름</th><th>model</th><th>online</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- 응답 로그 -->
+  <div class="panel">
+    <h2>📜 최근 API 응답</h2>
+    <pre id="log"></pre>
+  </div>
+
+</div>
+
+</div>
+
+<!-- Supabase JS (CDN) -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────
+// 설정 (localStorage 의 apiBase + 백엔드 /web-config 의 supabase 정보)
+// ─────────────────────────────────────────────────────────────────────────
+let CONFIG = { supabaseUrl: '', supabasePublishable: '', apiBase: '' };
+let sb = null;
+let session = null;
+
+const DEFAULT_API_BASE = 'https://api.terra-server.uk';
+
+function loadConfig() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('terra-config') || '{}');
+    CONFIG = { ...CONFIG, ...saved };
+  } catch (e) {}
+  // 저장된 값 없으면 default (원격)
+  document.getElementById('cfg-api-base').value = CONFIG.apiBase || DEFAULT_API_BASE;
+}
+
+function usePreset(url) {
+  document.getElementById('cfg-api-base').value = url;
+  saveConfig();
+}
+
+// 대시보드에서 현재 어디 향하는지 한눈에 알 수 있게 표시
+function renderApiBaseLabel() {
+  const el = document.getElementById('current-api-base');
+  if (el) {
+    el.innerText = CONFIG.apiBase;
+    el.className = CONFIG.apiBase.includes('localhost') ? 'muted' : 'good';
+  }
+}
+
+async function fetchRemoteConfig(apiBase) {
+  // 백엔드의 /web-config — SUPABASE_URL + publishable key 자동 노출
+  const url = apiBase + '/web-config';
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`/web-config 응답 ${res.status}`);
+  const body = await res.json();
+  if (!body.supabaseUrl || !body.supabasePublishableKey) {
+    throw new Error('백엔드 .env 에 SUPABASE_URL / SUPABASE_PUBLISHABLE_KEY 누락');
+  }
+  return { supabaseUrl: body.supabaseUrl, supabasePublishable: body.supabasePublishableKey };
+}
+
+async function saveConfig() {
+  const apiBase = document.getElementById('cfg-api-base').value.trim().replace(/\/$/, '');
+  if (!apiBase) return toast('API Base 입력', 'bad');
+
+  const status = document.getElementById('cfg-status');
+  status.innerText = '🔄 /web-config 조회 중...';
+  try {
+    const remote = await fetchRemoteConfig(apiBase);
+    CONFIG = { ...remote, apiBase };
+    localStorage.setItem('terra-config', JSON.stringify({ apiBase }));
+    status.innerText = '✅ 완료. supabaseUrl=' + remote.supabaseUrl;
+    initSupabase();
+  } catch (e) {
+    status.innerText = '❌ ' + e.message;
+    toast(e.message, 'bad');
+  }
+}
+
+function clearConfig() {
+  localStorage.removeItem('terra-config');
+  location.reload();
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Supabase init + auth state
+// ─────────────────────────────────────────────────────────────────────────
+function initSupabase() {
+  if (!CONFIG.supabaseUrl) return;
+  sb = window.supabase.createClient(CONFIG.supabaseUrl, CONFIG.supabasePublishable);
+  document.getElementById('config-panel').classList.add('hidden');
+  document.getElementById('auth-panel').classList.remove('hidden');
+  sb.auth.getSession().then(({ data }) => applySession(data.session));
+  sb.auth.onAuthStateChange((_e, s) => applySession(s));
+}
+
+function applySession(s) {
+  session = s;
+  if (s) {
+    document.getElementById('auth-panel').classList.add('hidden');
+    document.getElementById('dashboard').classList.remove('hidden');
+    document.getElementById('user-info').innerText = s.user.email + ' · ' + s.user.id.slice(0, 8);
+    renderApiBaseLabel();
+    checkAuthMode();
+    loadEnclosures(); loadDevices(); loadCameras();
+  } else {
+    document.getElementById('dashboard').classList.add('hidden');
+    document.getElementById('auth-panel').classList.remove('hidden');
+  }
+}
+
+// 대시보드의 🔄 전환 버튼 — 현재 반대 환경으로 토글 후 새로고침
+function switchApiBase() {
+  const next = CONFIG.apiBase.includes('localhost')
+    ? 'https://api.terra-server.uk'
+    : 'http://localhost:8000';
+  if (!confirm(`API Base 를 ${next} 로 전환하고 새로고침할까?\n(세션은 유지됨, 데이터는 새 백엔드 기준으로 다시 조회)`)) return;
+  localStorage.setItem('terra-config', JSON.stringify({ apiBase: next }));
+  location.reload();
+}
+
+async function checkAuthMode() {
+  // 백엔드가 dev 모드면 JWT 가 무시되고 DEV_USER_ID 가 적용 → 본인 데이터 안 보일 수 있음
+  // 단순 hint 만 표시 (백엔드에 AUTH_MODE 노출 엔드포인트 없음)
+  const hint = document.getElementById('auth-mode-hint');
+  hint.innerText = '⚠️ 백엔드 .env 의 AUTH_MODE=prod 이어야 본인 데이터만 보임. dev 모드면 DEV_USER_ID 데이터가 보임.';
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 인증 UI
+// ─────────────────────────────────────────────────────────────────────────
+function showAuthTab(name) {
+  document.getElementById('tab-login').classList.toggle('active', name === 'login');
+  document.getElementById('tab-signup').classList.toggle('active', name === 'signup');
+  document.getElementById('auth-login').classList.toggle('hidden', name !== 'login');
+  document.getElementById('auth-signup').classList.toggle('hidden', name !== 'signup');
+}
+
+async function signup() {
+  const email = document.getElementById('signup-email').value.trim();
+  const password = document.getElementById('signup-pw').value;
+  const { data, error } = await sb.auth.signUp({ email, password });
+  if (error) return toast(error.message, 'bad');
+  toast('회원가입 OK. 메일 확인 필요할 수도', 'good');
+  log({ signup: data });
+}
+
+async function login() {
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-pw').value;
+  const { data, error } = await sb.auth.signInWithPassword({ email, password });
+  if (error) return toast(error.message, 'bad');
+  toast('로그인 OK', 'good');
+  log({ login: data.user.email });
+}
+
+async function logout() {
+  await sb.auth.signOut();
+  toast('로그아웃', 'good');
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// API 호출 (JWT 자동 첨부)
+// ─────────────────────────────────────────────────────────────────────────
+async function api(path, opts = {}) {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(opts.headers || {}),
+  };
+  if (session?.access_token) {
+    headers['Authorization'] = 'Bearer ' + session.access_token;
+  }
+  const url = CONFIG.apiBase + path;
+  try {
+    const res = await fetch(url, { ...opts, headers });
+    const text = await res.text();
+    let body = text;
+    try { body = JSON.parse(text); } catch (e) {}
+    log({ [opts.method || 'GET']: path, status: res.status, body });
+    if (!res.ok) {
+      toast(`${res.status}: ${typeof body === 'object' ? (body.detail || JSON.stringify(body)) : body}`, 'bad');
+      return null;
+    }
+    return body;
+  } catch (e) {
+    toast('네트워크 에러: ' + e.message + ' — CORS 설정 확인', 'bad');
+    log({ error: e.message });
+    return null;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 사육장
+// ─────────────────────────────────────────────────────────────────────────
+async function loadEnclosures() {
+  const rows = await api('/enclosures');
+  const tbody = document.querySelector('#enc-table tbody');
+  tbody.innerHTML = '';
+  (rows || []).forEach(r => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td><code>${r.id.slice(0,8)}</code></td><td>${esc(r.name)}</td><td>${esc(r.species || '-')}</td><td><small>${esc(r.created_at?.slice(0,16) || '')}</small></td><td><button class="danger" onclick="deleteEnclosure('${r.id}')">삭제</button></td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function createEnclosure() {
+  const name = document.getElementById('enc-name').value.trim();
+  const species = document.getElementById('enc-species').value.trim() || null;
+  if (!name) return toast('이름 입력', 'bad');
+  const r = await api('/enclosures', { method: 'POST', body: JSON.stringify({ name, species }) });
+  if (r) {
+    document.getElementById('enc-name').value = '';
+    document.getElementById('enc-species').value = '';
+    loadEnclosures();
+  }
+}
+
+async function deleteEnclosure(id) {
+  if (!confirm('삭제?')) return;
+  const r = await fetch(CONFIG.apiBase + '/enclosures/' + id, { method: 'DELETE', headers: { Authorization: 'Bearer ' + session.access_token } });
+  log({ DELETE: '/enclosures/' + id, status: r.status });
+  loadEnclosures();
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 디바이스
+// ─────────────────────────────────────────────────────────────────────────
+async function loadDevices() {
+  const rows = await api('/devices');
+  const tbody = document.querySelector('#dev-table tbody');
+  tbody.innerHTML = '';
+  (rows || []).forEach(r => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td><code>${esc(r.device_id)}</code></td><td>${esc(r.name)}</td><td>${r.is_online ? '<span class="good">●</span>' : '<span class="muted">○</span>'}</td><td><small>${esc(r.last_seen_at?.slice(0,16) || '-')}</small></td><td><button class="danger" onclick="deleteDevice('${r.id}')">삭제</button></td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function pairDevice() {
+  const name = document.getElementById('dev-name').value.trim();
+  const species = document.getElementById('dev-species').value.trim() || null;
+  if (!name) return toast('이름 입력', 'bad');
+  const r = await api('/devices/pair', { method: 'POST', body: JSON.stringify({ name, species }) });
+  if (r) {
+    document.getElementById('dev-name').value = '';
+    document.getElementById('dev-species').value = '';
+    const box = document.getElementById('dev-token');
+    box.classList.remove('hidden');
+    box.innerHTML = `<h3>⚠️ MQTT 토큰 (1회만 노출)</h3><div class="token-once">device_id: ${r.device_id}<br>mqtt_token: ${r.mqtt_token}</div>`;
+    loadDevices();
+  }
+}
+
+async function deleteDevice(id) {
+  if (!confirm('삭제?')) return;
+  const r = await fetch(CONFIG.apiBase + '/devices/' + id, { method: 'DELETE', headers: { Authorization: 'Bearer ' + session.access_token } });
+  log({ DELETE: '/devices/' + id, status: r.status });
+  loadDevices();
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 카메라
+// ─────────────────────────────────────────────────────────────────────────
+async function loadCameras() {
+  const rows = await api('/cameras');
+  const tbody = document.querySelector('#cam-table tbody');
+  tbody.innerHTML = '';
+  (rows || []).forEach(r => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td>${r.is_online ? '<span class="good">●</span>' : '<span class="muted">○</span>'}</td><td><button class="danger" onclick="deleteCamera('${r.id}')">삭제</button></td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function pairCamera() {
+  const name = document.getElementById('cam-name').value.trim();
+  const model = document.getElementById('cam-model').value;
+  if (!name) return toast('이름 입력', 'bad');
+  const r = await api('/cameras/pair', { method: 'POST', body: JSON.stringify({ name, model }) });
+  if (r) {
+    document.getElementById('cam-name').value = '';
+    const box = document.getElementById('cam-token');
+    box.classList.remove('hidden');
+    box.innerHTML = `<h3>⚠️ Camera 토큰 (1회만 노출)</h3><div class="token-once">camera_id: ${r.camera_id}<br>camera_token: ${r.camera_token}</div>`;
+    loadCameras();
+  }
+}
+
+async function deleteCamera(id) {
+  if (!confirm('삭제?')) return;
+  const r = await fetch(CONFIG.apiBase + '/cameras/' + id, { method: 'DELETE', headers: { Authorization: 'Bearer ' + session.access_token } });
+  log({ DELETE: '/cameras/' + id, status: r.status });
+  loadCameras();
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 유틸
+// ─────────────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function log(obj) {
+  const el = document.getElementById('log');
+  el.innerText = JSON.stringify(obj, null, 2) + '\n\n' + el.innerText;
+  el.scrollTop = 0;
+}
+
+function toast(msg, cls) {
+  const t = document.createElement('div');
+  t.className = 'toast ' + (cls || '');
+  t.innerText = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3500);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 부팅 — localStorage 의 apiBase 가 있으면 자동으로 /web-config fetch
+// ─────────────────────────────────────────────────────────────────────────
+(async function boot() {
+  loadConfig();
+  if (!CONFIG.apiBase) return;  // 첫 사용 — 설정 패널 노출
+  try {
+    const remote = await fetchRemoteConfig(CONFIG.apiBase);
+    CONFIG = { ...CONFIG, ...remote };
+    initSupabase();
+  } catch (e) {
+    document.getElementById('cfg-status').innerText = '❌ ' + e.message + ' — API Base 다시 확인';
+  }
+})();
+</script>
+</body>
+</html>

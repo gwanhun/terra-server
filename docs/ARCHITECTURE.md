@@ -194,17 +194,38 @@ terra-api → MQTT command: { action: "webrtc_close", session_id }
 
 ## 보안 계층
 
-| 계층 | 메커니즘 |
-|------|---------|
-| ESP32-S3 / ESP32-P4 ↔ Mosquitto | TLS 1.2+, per-device username/password |
-| terra-bridge ↔ Mosquitto | TLS + 전용 username (모든 토픽) |
-| ESP32-P4 ↔ R2 | TLS + presigned PUT URL (TTL 5분, terra-api 발급) |
-| ESP32-P4 ↔ terra-api | TLS + Bearer token (camera_token, NVS 평문) |
-| 앱 ↔ Supabase | HTTPS + anon key + JWT + RLS |
-| 앱 ↔ R2 (영상 재생) | TLS + presigned GET URL (TTL 1시간) |
-| 앱 ↔ ESP32-P4 (WebRTC) | DTLS + SRTP (WebRTC 표준) |
-| 영상 파일 자체 | R2 버킷 비공개 (모든 접근은 presigned URL 통과) |
-| 디바이스/카메라 토큰 | bcrypt 해시 DB 저장, 평문은 페어링 응답에만 1회 |
+### 채널별 보안
+
+| 계층 | 메커니즘 | TLS 인증서 출처 |
+|------|---------|----------------|
+| ESP32-S3 / ESP32-P4 ↔ Mosquitto | TLS 1.2+, per-device username/password | Let's Encrypt (`mqtt.example.com`, certbot) |
+| terra-bridge ↔ Mosquitto | TLS + 전용 username (모든 토픽) | 위 동일 |
+| ESP32-P4 ↔ R2 | TLS + presigned PUT URL (TTL 5분, terra-api 발급) | R2 (Cloudflare 자체) |
+| ESP32-P4 ↔ terra-api | TLS + Bearer token (camera_token, NVS 평문) | Let's Encrypt (`api.example.com`, Caddy) |
+| 앱 ↔ terra-api | HTTPS + Bearer JWT | Let's Encrypt (`api.example.com`, Caddy) |
+| 앱 ↔ Supabase | HTTPS + anon key + JWT + RLS | Supabase 자체 |
+| 앱 ↔ R2 (영상 재생) | TLS + presigned GET URL (TTL 1시간) | R2 (Cloudflare 자체) |
+| 앱 ↔ ESP32-P4 (WebRTC) | DTLS + SRTP (WebRTC 표준) | WebRTC 자체 fingerprint |
+| 영상 파일 자체 | R2 버킷 비공개 (모든 접근은 presigned URL 통과) | - |
+| 디바이스/카메라 토큰 | bcrypt 해시 DB 저장, 평문은 페어링 응답에만 1회 | - |
+
+### Lightsail 인스턴스의 인증서 구성 (요약)
+
+```
+[mqtt.example.com]  ──certbot --standalone──>  /etc/letsencrypt/live/...
+                                                    ↓ (직접 파일 참조)
+                                                Mosquitto :8883
+
+[api.example.com]   ──Caddy 자동 ACME──>      /var/lib/caddy/...
+                                                    ↓
+                                                Caddy :443 → reverse_proxy 127.0.0.1:8000
+                                                                              ↓
+                                                                          uvicorn (terra-api)
+```
+
+- **자동 갱신**: certbot.timer (Mosquitto 측), Caddy 내부 스케줄러 (API 측). 둘 다 사람 개입 없음.
+- **갱신 후 후속**: certbot post-hook 이 mosquitto 재시작 / Caddy 는 hot reload (재시작 불필요).
+- **운영 상세**: [docs/DEPLOYMENT.md](DEPLOYMENT.md#tls-인증서-운영-현재-구성-정리) "TLS 인증서 운영" 섹션.
 
 ## 비용 추정 (디바이스 1대 + 카메라 1대 기준, 월)
 

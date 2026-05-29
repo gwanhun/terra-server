@@ -278,6 +278,112 @@ sudo chmod +x /etc/letsencrypt/renewal-hooks/post/restart-services.sh
 sudo certbot renew --dry-run
 ```
 
+## TLS 인증서 운영 (현재 구성 정리)
+
+> 현재 Lightsail 인스턴스에서 운영 중인 인증서 구성을 한눈에 정리. 위의 셋업 절차를 모두 적용한 결과.
+
+### 도메인 / 인증서 분리
+
+본 인스턴스는 **두 개의 도메인 + 두 종류의 발급 도구** 조합으로 운영한다.
+
+| 도메인 | 용도 | 발급 도구 | 인증서 위치 | 사용 프로세스 |
+|--------|------|----------|------------|--------------|
+| `mqtt.example.com` | MQTT TLS (8883) | **certbot** (`--standalone`) | `/etc/letsencrypt/live/mqtt.example.com/` | Mosquitto (mosquitto 사용자 권한) |
+| `api.example.com` | REST API HTTPS (443) | **Caddy** (자체 ACME 클라이언트) | `/var/lib/caddy/.local/share/caddy/certificates/` | Caddy (127.0.0.1:8000 reverse proxy) |
+
+**선택 근거**: Caddy는 API 도메인 인증서 발급/갱신/리로드를 모두 자동 처리 → systemd timer 불필요. Mosquitto 는 표준 PEM 파일 경로를 직접 참조해야 해서 certbot 의 `/etc/letsencrypt/` 표준 경로가 유리.
+
+### 발급 흐름
+
+```
+[mqtt.example.com]
+   DNS A → Lightsail 정적 IP
+       ↓
+   certbot --standalone -d mqtt.example.com   (포트 80 잠시 점유)
+       ↓
+   /etc/letsencrypt/live/mqtt.example.com/{cert,chain,privkey}.pem
+       ↓
+   Mosquitto conf 가 위 경로 직접 참조 (listener 8883)
+
+[api.example.com]
+   DNS A → Lightsail 정적 IP
+       ↓
+   Caddy 가 부팅 시 자동으로 ACME 챌린지 (HTTP-01, 포트 80)
+       ↓
+   /var/lib/caddy/.local/share/caddy/certificates/...
+       ↓
+   Caddy 가 443 listen → 127.0.0.1:8000 (uvicorn) reverse proxy
+```
+
+### 자동 갱신 메커니즘
+
+| 인증서 | 갱신 도구 | 트리거 | 갱신 후 후속 |
+|--------|----------|--------|--------------|
+| `mqtt.example.com` | `certbot.timer` (systemd) | 매일 2회 (90일 만료 30일 전 갱신) | `/etc/letsencrypt/renewal-hooks/post/restart-services.sh` → `systemctl restart mosquitto` |
+| `api.example.com` | Caddy 내부 스케줄러 | 매 시간 체크, 만료 30일 전 갱신 | Caddy 가 즉시 hot reload (재시작 불필요) |
+
+→ **둘 다 사람 개입 없이 자동 갱신**. 갱신 실패 시 journalctl/Caddy 로그에 기록.
+
+### 후속 훅 스크립트 (현재 구성)
+
+```bash
+# /etc/letsencrypt/renewal-hooks/post/restart-services.sh
+#!/bin/bash
+systemctl restart mosquitto
+# Caddy 는 자체 갱신 → 여기서 처리 안 함
+# Nginx 옵션 사용 시에만 ↓ 한 줄 추가
+# systemctl reload nginx
+```
+
+### 권한 / 소유 (mosquitto 가 privkey 읽도록)
+
+```bash
+# certbot 발급 후 1회 (재발급 시에도 자동으로 같은 권한 유지)
+sudo chmod 644 /etc/letsencrypt/live/mqtt.example.com/cert.pem
+sudo chmod 644 /etc/letsencrypt/live/mqtt.example.com/chain.pem
+sudo chmod 600 /etc/letsencrypt/live/mqtt.example.com/privkey.pem
+sudo chown mosquitto:mosquitto /etc/letsencrypt/live/mqtt.example.com/privkey.pem
+```
+
+Caddy 는 자체 디렉토리(`/var/lib/caddy/.local/...`)에 저장 → caddy 데몬이 소유 → 별도 권한 조정 불필요.
+
+### 인증서 검증 (운영 점검)
+
+```bash
+# mqtt 인증서 유효기간 확인
+sudo certbot certificates
+
+# 또는 직접
+echo | openssl s_client -connect mqtt.example.com:8883 -servername mqtt.example.com 2>/dev/null \
+  | openssl x509 -noout -dates -subject -issuer
+
+# api 인증서 유효기간 (Caddy 발급)
+echo | openssl s_client -connect api.example.com:443 -servername api.example.com 2>/dev/null \
+  | openssl x509 -noout -dates -subject -issuer
+
+# 갱신 시뮬레이션 (mqtt 만; api 는 Caddy 자체 검증)
+sudo certbot renew --dry-run
+```
+
+### 디바이스/앱이 인증서를 신뢰하는 경로
+
+| 클라이언트 | 인증서 검증 방식 |
+|-----------|-----------------|
+| ESP32-S3 / ESP32-P4 (`mqtts://mqtt.example.com:8883`) | ESP-IDF `esp_tls` 가 시스템 CA bundle 사용. Let's Encrypt 루트 CA (ISRG Root X1) 가 펌웨어 빌드 시 임베드 또는 시스템 번들에 포함되어야 함. |
+| 앱 / 브라우저 (`https://api.example.com`) | OS / 브라우저 기본 trust store (Let's Encrypt 자동 신뢰) |
+| Python 워커 / paho-mqtt | `ca_certs=None` (시스템 CA bundle), Let's Encrypt 신뢰 |
+
+> **ESP32 펌웨어 측 주의**: ESP-IDF `sdkconfig` 의 `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y` 활성화 권장. 또는 `cloud_client.c` 에 ISRG Root X1 PEM 을 임베드.
+
+### 트러블슈팅
+
+| 증상 | 원인 / 해결 |
+|------|------------|
+| `certbot renew` 실패 | 포트 80 점유 충돌 (Caddy 가 80 사용 중). `certbot certonly --webroot` 또는 `--http-01-port` 사용으로 우회 |
+| Mosquitto 가 새 인증서 못 읽음 | `restart-services.sh` 권한(`chmod +x`) 또는 mosquitto 사용자가 privkey 읽기 권한 미확인. `chown mosquitto:mosquitto privkey.pem` |
+| Caddy 가 인증서 발급 못 함 | DNS A 레코드가 아직 전파 안 됨 (`dig api.example.com`), 또는 방화벽 80 닫혀있음 (`sudo ufw status`) |
+| ESP32 가 `mqtts://` 연결 실패 (`MBEDTLS_ERR_X509_CERT_VERIFY_FAILED`) | ESP32 펌웨어에 시스템 CA bundle 미활성 또는 시간(SNTP) 미동기화 → 인증서 유효기간 검증 실패 |
+
 ## 로그 / 모니터링
 
 ```bash

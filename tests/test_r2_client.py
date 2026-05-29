@@ -28,7 +28,8 @@ def test_get_r2_bucket_ok(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_get_r2_bucket_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("R2_BUCKET", raising=False)
+    # 빈 값 강제 — load_dotenv(override=False) 가 .env 파일로 덮어쓰지 못하게.
+    monkeypatch.setenv("R2_BUCKET", "")
     with pytest.raises(R2NotConfigured):
         get_r2_bucket()
 
@@ -40,7 +41,7 @@ def test_get_r2_bucket_placeholder(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_get_r2_client_missing_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("R2_ACCESS_KEY_ID", raising=False)
+    monkeypatch.setenv("R2_ACCESS_KEY_ID", "")
     reset_client_cache()
     with pytest.raises(R2NotConfigured, match="R2_ACCESS_KEY_ID"):
         get_r2_client()

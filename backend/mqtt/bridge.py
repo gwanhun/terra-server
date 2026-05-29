@@ -30,6 +30,7 @@ from typing import Any
 import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
 
+from backend.mqtt import handlers
 from backend.mqtt.topics import (
     TOPIC_ACK_SUB,
     TOPIC_ALERT_SUB,
@@ -142,21 +143,19 @@ class MqttBridge:
         elif msg.topic.endswith("/alert"):
             self._handle_alert(device_id, payload)
 
-    # ---------- 핸들러 (스켈레톤) ----------
-    # 실제 INSERT/UPDATE 로직은 별도 모듈로 분리 예정 (Stage A 구현 시점)
+    # ---------- 핸들러 (handlers.py 로 위임) ----------
 
     def _handle_telemetry(self, device_id: str, payload: dict[str, Any]) -> None:
         logger.debug("telemetry from %s: %s", device_id, payload)
-        # TODO Stage A: devices 조회 → telemetry INSERT, last_seen_at 갱신
-        # 안전 가드 평가 후 필요 시 alerts INSERT
+        handlers.handle_telemetry(device_id, payload)
 
     def _handle_ack(self, device_id: str, payload: dict[str, Any]) -> None:
         logger.info("ack from %s: %s", device_id, payload)
-        # TODO Stage D: commands.id 로 UPDATE status='acked', result, acked_at
+        handlers.handle_ack(device_id, payload)
 
     def _handle_alert(self, device_id: str, payload: dict[str, Any]) -> None:
         logger.warning("alert from %s: %s", device_id, payload)
-        # TODO Stage E: alerts INSERT (kind, severity, message, context)
+        handlers.handle_alert(device_id, payload)
 
     # ---------- 명령 발행 ----------
 
