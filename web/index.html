@@ -8,7 +8,10 @@
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
 body { margin: 0; background: #111; color: #eee; font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 16px; line-height: 1.5; }
-h1 { font-size: 18px; margin: 0 0 16px; color: #5af; }
+h1 { font-size: 18px; margin: 0 0 16px; color: #5af; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+h1 .docs-links { margin-left: auto; font-size: 12px; font-weight: normal; }
+h1 .docs-links a { color: #888; text-decoration: none; margin-left: 8px; padding: 2px 8px; border: 1px solid #333; border-radius: 4px; }
+h1 .docs-links a:hover { color: #9cf; border-color: #5af; }
 h2 { font-size: 14px; margin: 12px 0 8px; color: #5af; letter-spacing: .5px; }
 h3 { font-size: 12px; margin: 8px 0 4px; color: #888; font-weight: normal; text-transform: uppercase; letter-spacing: .5px; }
 .wrap { max-width: 960px; margin: 0 auto; }
@@ -44,7 +47,10 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
 <body>
 <div class="wrap">
 
-<h1>terra-server · 로컬 테스트 콘솔</h1>
+<h1>
+  <span>terra-server · 테스트 콘솔</span>
+  <span class="docs-links" id="docs-links" title="처음 클릭 시 Basic Auth — .env 의 DOCS_BASIC_USER/PASS"></span>
+</h1>
 
 <!-- ===== 설정 ===== -->
 <div class="panel" id="config-panel">
@@ -176,15 +182,20 @@ let CONFIG = { supabaseUrl: '', supabasePublishable: '', apiBase: '' };
 let sb = null;
 let session = null;
 
-const DEFAULT_API_BASE = 'https://api.terra-server.uk';
+// 페이지가 api 서버 자체에서 서빙되면 같은 origin 사용 → CORS 무관.
+// 로컬 정적 서버(localhost:5500 등)에서 띄운 거면 원격 API 로 fallback.
+const DEFAULT_API_BASE = (
+  location.protocol === 'https:' || location.hostname !== 'localhost'
+) ? location.origin : 'https://api.terra-server.uk';
 
 function loadConfig() {
   try {
     const saved = JSON.parse(localStorage.getItem('terra-config') || '{}');
     CONFIG = { ...CONFIG, ...saved };
   } catch (e) {}
-  // 저장된 값 없으면 default (원격)
-  document.getElementById('cfg-api-base').value = CONFIG.apiBase || DEFAULT_API_BASE;
+  // 저장된 값 없으면 default (원격 또는 location.origin)
+  if (!CONFIG.apiBase) CONFIG.apiBase = DEFAULT_API_BASE;
+  document.getElementById('cfg-api-base').value = CONFIG.apiBase;
 }
 
 function usePreset(url) {
@@ -199,6 +210,19 @@ function renderApiBaseLabel() {
     el.innerText = CONFIG.apiBase;
     el.className = CONFIG.apiBase.includes('localhost') ? 'muted' : 'good';
   }
+}
+
+// 헤더의 docs 링크 — 현재 API Base 기준으로 동적 생성.
+// /docs, /redoc 은 Basic Auth 가드 (.env DOCS_BASIC_USER/PASS) — 첫 클릭 시 prompt.
+function renderDocsLinks() {
+  const base = CONFIG.apiBase || DEFAULT_API_BASE;
+  const el = document.getElementById('docs-links');
+  if (!el) return;
+  el.innerHTML = `
+    <a href="${base}/docs" target="_blank" rel="noopener">📘 Swagger</a>
+    <a href="${base}/redoc" target="_blank" rel="noopener">📕 ReDoc</a>
+    <a href="${base}/openapi.json" target="_blank" rel="noopener">📋 OpenAPI</a>
+  `;
 }
 
 async function fetchRemoteConfig(apiBase) {
@@ -224,6 +248,7 @@ async function saveConfig() {
     CONFIG = { ...remote, apiBase };
     localStorage.setItem('terra-config', JSON.stringify({ apiBase }));
     status.innerText = '✅ 완료. supabaseUrl=' + remote.supabaseUrl;
+    renderDocsLinks();
     initSupabase();
   } catch (e) {
     status.innerText = '❌ ' + e.message;
@@ -473,10 +498,12 @@ function toast(msg, cls) {
 // ─────────────────────────────────────────────────────────────────────────
 (async function boot() {
   loadConfig();
+  renderDocsLinks();  // apiBase 기본값으로 일단 표시
   if (!CONFIG.apiBase) return;  // 첫 사용 — 설정 패널 노출
   try {
     const remote = await fetchRemoteConfig(CONFIG.apiBase);
     CONFIG = { ...CONFIG, ...remote };
+    renderDocsLinks();  // apiBase 확정 후 재렌더
     initSupabase();
   } catch (e) {
     document.getElementById('cfg-status').innerText = '❌ ' + e.message + ' — API Base 다시 확인';

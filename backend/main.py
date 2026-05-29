@@ -22,6 +22,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
+from fastapi.staticfiles import StaticFiles
+
 from backend.health import register_health
 from backend.routers import cameras, clips, devices, enclosures
 
@@ -149,3 +151,10 @@ app.include_router(cameras.router)
 app.include_router(clips.camera_clips_router)
 app.include_router(clips.enclosure_clips_router)
 app.include_router(clips.clips_router)
+
+# 정적 웹 콘솔 — 루트(/) 에 마운트.
+# 라우터들 다음에 등록해야 /devices, /cameras, /web-config 등이 우선 매칭됨.
+# html=True 면 / 요청 시 index.html 자동 서빙.
+_WEB_DIR = REPO_ROOT / "web"
+if _WEB_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=_WEB_DIR, html=True), name="web")
