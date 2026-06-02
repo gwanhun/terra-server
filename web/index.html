@@ -140,6 +140,20 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
     </table>
   </div>
 
+  <!-- 명령 이력 -->
+  <div class="panel">
+    <div class="row">
+      <h2 style="margin:0">🔧 최근 명령 (Stage C)</h2>
+      <span style="flex:1"></span>
+      <button onclick="loadRecentCommands()">새로고침</button>
+    </div>
+    <small class="muted">디바이스 행의 명령 선택 → 발행 버튼. status: pending → sent (브리지 publish) → acked (디바이스 ack)</small>
+    <table id="cmd-table">
+      <thead><tr><th>id</th><th>action</th><th>status</th><th>result</th><th>issued</th><th>acked</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
   <!-- 카메라 -->
   <div class="panel">
     <h2>📷 카메라 (cameras) — ESP32-P4 / RPi</h2>
@@ -281,7 +295,7 @@ function applySession(s) {
     document.getElementById('user-info').innerText = s.user.email + ' · ' + s.user.id.slice(0, 8);
     renderApiBaseLabel();
     checkAuthMode();
-    loadEnclosures(); loadDevices(); loadCameras();
+    loadEnclosures(); loadDevices(); loadCameras(); loadRecentCommands();
   } else {
     document.getElementById('dashboard').classList.add('hidden');
     document.getElementById('auth-panel').classList.remove('hidden');
@@ -404,13 +418,85 @@ async function deleteEnclosure(id) {
 // ─────────────────────────────────────────────────────────────────────────
 // 디바이스
 // ─────────────────────────────────────────────────────────────────────────
+const COMMAND_ACTIONS = [
+  'relay_toggle',
+  'fan_toggle',
+  'heater_toggle',
+  'heater_clear',
+  'led_on',
+  'led_up',
+  'led_down',
+];
+
 async function loadDevices() {
   const rows = await api('/devices');
   const tbody = document.querySelector('#dev-table tbody');
   tbody.innerHTML = '';
   (rows || []).forEach(r => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td><code>${esc(r.device_id)}</code></td><td>${esc(r.name)}</td><td>${r.is_online ? '<span class="good">●</span>' : '<span class="muted">○</span>'}</td><td><small>${esc(r.last_seen_at?.slice(0,16) || '-')}</small></td><td><button class="danger" onclick="deleteDevice('${r.id}')">삭제</button></td>`;
+    const cmdOpts = COMMAND_ACTIONS.map(a => `<option value="${a}">${a}</option>`).join('');
+    tr.innerHTML = `
+      <td><code>${esc(r.device_id)}</code></td>
+      <td>${esc(r.name)}</td>
+      <td>${r.is_online ? '<span class="good">●</span>' : '<span class="muted">○</span>'}</td>
+      <td><small>${esc(r.last_seen_at?.slice(0,16) || '-')}</small></td>
+      <td>
+        <select id="cmd-sel-${r.id}" style="font-size:11px;padding:2px 4px">${cmdOpts}</select>
+        <button onclick="sendCommand('${r.id}')" style="font-size:11px;padding:2px 8px">🔧 발행</button>
+        <button class="danger" onclick="deleteDevice('${r.id}')" style="font-size:11px;padding:2px 8px">삭제</button>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+// commands 테이블에 직접 INSERT (Supabase JS) — RLS 가 본인 디바이스만 허용.
+// terra-bridge 가 polling 으로 감지해서 MQTT publish.
+async function sendCommand(deviceUuid) {
+  const sel = document.getElementById('cmd-sel-' + deviceUuid);
+  const action = sel.value;
+  if (!action) return;
+
+  const { data, error } = await sb
+    .from('commands')
+    .insert({ device_id: deviceUuid, issued_by: session.user.id, action })
+    .select()
+    .single();
+
+  if (error) {
+    log({ command: { action, error: error.message } });
+    return toast('명령 실패: ' + error.message, 'bad');
+  }
+  log({ command: { action, id: data.id, status: data.status } });
+  toast(`발행: ${action} (id=${data.id.slice(0,8)})`, 'good');
+  // 1.5초 후 상태 변화 보려고 commands 패널 갱신
+  setTimeout(loadRecentCommands, 1500);
+}
+
+// 최근 명령 5개 — 상태 변화 추적 (pending → sent → acked)
+async function loadRecentCommands() {
+  if (!sb) return;
+  const { data, error } = await sb
+    .from('commands')
+    .select('id, device_id, action, status, result, issued_at, acked_at')
+    .order('issued_at', { ascending: false })
+    .limit(10);
+  if (error) return;
+  const tbody = document.querySelector('#cmd-table tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  (data || []).forEach(c => {
+    const statusColor = {
+      pending: 'muted', sent: 'good', acked: 'good',
+      rejected: 'bad', expired: 'bad',
+    }[c.status] || '';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><code>${c.id.slice(0,8)}</code></td>
+      <td>${esc(c.action)}</td>
+      <td><span class="${statusColor}">${esc(c.status)}</span></td>
+      <td>${esc(c.result || '-')}</td>
+      <td><small>${esc(c.issued_at?.slice(11,19) || '-')}</small></td>
+      <td><small>${esc(c.acked_at?.slice(11,19) || '-')}</small></td>`;
     tbody.appendChild(tr);
   });
 }

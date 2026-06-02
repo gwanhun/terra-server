@@ -59,9 +59,30 @@ def _cached_device_uuid(device_id_text: str) -> str | None:
     return rows[0]["id"]
 
 
+@lru_cache(maxsize=1000)
+def _cached_device_text(device_uuid: str) -> str | None:
+    """devices.id (UUID) → devices.device_id (TEXT). 미존재면 None.
+
+    dispatcher 가 commands.device_id (UUID) → MQTT 토픽의 device_id (TEXT) 매핑할 때 사용.
+    """
+    sb = get_supabase_client()
+    res = (
+        sb.table("devices")
+        .select("device_id")
+        .eq("id", device_uuid)
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    if not rows:
+        return None
+    return rows[0]["device_id"]
+
+
 def reset_device_cache() -> None:
     """테스트/디바이스 삭제 시 호출."""
     _cached_device_uuid.cache_clear()
+    _cached_device_text.cache_clear()
 
 
 # ---------- ts 정규화 ----------
@@ -239,6 +260,7 @@ def handle_alert(device_id_text: str, payload: dict[str, Any]) -> None:
 
 
 __all__ = [
+    "_cached_device_text",
     "handle_ack",
     "handle_alert",
     "handle_telemetry",

@@ -31,6 +31,7 @@ import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
 
 from backend.mqtt import handlers
+from backend.mqtt.dispatcher import CommandDispatcher
 from backend.mqtt.topics import (
     TOPIC_ACK_SUB,
     TOPIC_ALERT_SUB,
@@ -80,6 +81,7 @@ class MqttBridge:
 
         self._sb = get_supabase_client()
         self._stop_event = threading.Event()
+        self._dispatcher = CommandDispatcher(self)
 
     # ---------- 라이프사이클 ----------
 
@@ -90,10 +92,12 @@ class MqttBridge:
         )
         self._client.connect_async(self._broker_host, self._broker_port, keepalive=60)
         self._client.loop_start()
+        self._dispatcher.start()
 
     def stop(self) -> None:
         logger.info("MQTT 브리지 정지")
         self._stop_event.set()
+        self._dispatcher.stop()
         self._client.loop_stop()
         self._client.disconnect()
 
