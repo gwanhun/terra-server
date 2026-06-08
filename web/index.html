@@ -154,6 +154,35 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
     </table>
   </div>
 
+  <!-- 실시간 텔레메트리 -->
+  <div class="panel">
+    <div class="row">
+      <h2 style="margin:0">📊 실시간 텔레메트리 (Stage A)</h2>
+      <span style="flex:1"></span>
+      <span id="rt-status" class="muted" style="font-size:11px"></span>
+      <button onclick="loadTelemetryLatest()">새로고침</button>
+    </div>
+    <small class="muted">Supabase Realtime 으로 telemetry INSERT 자동 수신. 디바이스별 최신값.</small>
+    <table id="tel-table">
+      <thead><tr><th>device_id</th><th>T1 °C</th><th>H1 %</th><th>T2 °C</th><th>H2 %</th><th>relay</th><th>fan</th><th>heater</th><th>업데이트</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <!-- 활성 알림 -->
+  <div class="panel">
+    <div class="row">
+      <h2 style="margin:0">🚨 활성 알림 (Stage D)</h2>
+      <span style="flex:1"></span>
+      <button onclick="loadAlerts()">새로고침</button>
+    </div>
+    <small class="muted">resolved 안 된 활성 알림만. temp_high / temp_low / humid_low / sensor_fault / heater_latched / offline 등.</small>
+    <table id="alert-table">
+      <thead><tr><th>kind</th><th>severity</th><th>message</th><th>device</th><th>발생</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
   <!-- 카메라 -->
   <div class="panel">
     <h2>📷 카메라 (cameras) — ESP32-P4 / RPi</h2>
@@ -296,7 +325,10 @@ function applySession(s) {
     renderApiBaseLabel();
     checkAuthMode();
     loadEnclosures(); loadDevices(); loadCameras(); loadRecentCommands();
+    loadTelemetryLatest(); loadAlerts();
+    subscribeRealtime();
   } else {
+    unsubscribeRealtime();
     document.getElementById('dashboard').classList.add('hidden');
     document.getElementById('auth-panel').classList.remove('hidden');
   }
@@ -418,32 +450,41 @@ async function deleteEnclosure(id) {
 // ─────────────────────────────────────────────────────────────────────────
 // 디바이스
 // ─────────────────────────────────────────────────────────────────────────
-const COMMAND_ACTIONS = [
-  'relay_toggle',
-  'fan_toggle',
-  'heater_toggle',
-  'heater_clear',
-  'led_on',
-  'led_up',
-  'led_down',
+// 빠른 컨트롤 — 1 클릭 명령 발행. confirm=true 는 안전한 액션만 (heater_clear 같은 거).
+const QUICK_COMMANDS = [
+  { action: 'relay_toggle',  icon: '💧', title: '워터펌프 토글' },
+  { action: 'fan_toggle',    icon: '🌀', title: '팬 토글' },
+  { action: 'heater_toggle', icon: '🔥', title: '히터 토글', confirm: true },
+  { action: 'heater_clear',  icon: '⚠',  title: '히터 safety latch 해제', confirm: true },
+  { action: 'led_on',        icon: '💡', title: 'LED 점등' },
+  { action: 'led_up',        icon: '🔆', title: 'LED 밝기 +' },
+  { action: 'led_down',      icon: '🔅', title: 'LED 밝기 -' },
 ];
+
+function quickCmdButtons(deviceUuid, online) {
+  const disabled = online ? '' : 'opacity:.5';
+  return QUICK_COMMANDS.map(c =>
+    `<button onclick="quickCommand('${deviceUuid}','${c.action}',${c.confirm ? 'true' : 'false'})" `
+    + `title="${c.title}${c.confirm ? ' (확인 필요)' : ''}" `
+    + `style="font-size:14px;padding:2px 6px;background:#222;border:1px solid #333;${disabled}">${c.icon}</button>`
+  ).join(' ');
+}
 
 async function loadDevices() {
   const rows = await api('/devices');
   const tbody = document.querySelector('#dev-table tbody');
   tbody.innerHTML = '';
   (rows || []).forEach(r => {
+    DEV_LABEL[r.id] = r.device_id;   // 텔레메트리/알림 라벨 캐시 갱신
     const tr = document.createElement('tr');
-    const cmdOpts = COMMAND_ACTIONS.map(a => `<option value="${a}">${a}</option>`).join('');
     tr.innerHTML = `
       <td><code>${esc(r.device_id)}</code></td>
       <td>${esc(r.name)}</td>
       <td>${r.is_online ? '<span class="good">●</span>' : '<span class="muted">○</span>'}</td>
       <td><small>${esc(r.last_seen_at?.slice(0,16) || '-')}</small></td>
-      <td>
-        <select id="cmd-sel-${r.id}" style="font-size:11px;padding:2px 4px">${cmdOpts}</select>
-        <button onclick="sendCommand('${r.id}')" style="font-size:11px;padding:2px 8px">🔧 발행</button>
-        <button class="danger" onclick="deleteDevice('${r.id}')" style="font-size:11px;padding:2px 8px">삭제</button>
+      <td style="white-space:nowrap">
+        ${quickCmdButtons(r.id, r.is_online)}
+        <button class="danger" onclick="deleteDevice('${r.id}')" style="font-size:11px;padding:2px 8px;margin-left:8px">삭제</button>
       </td>`;
     tbody.appendChild(tr);
   });
@@ -451,10 +492,8 @@ async function loadDevices() {
 
 // commands 테이블에 직접 INSERT (Supabase JS) — RLS 가 본인 디바이스만 허용.
 // terra-bridge 가 polling 으로 감지해서 MQTT publish.
-async function sendCommand(deviceUuid) {
-  const sel = document.getElementById('cmd-sel-' + deviceUuid);
-  const action = sel.value;
-  if (!action) return;
+async function quickCommand(deviceUuid, action, needConfirm) {
+  if (needConfirm && !confirm(`'${action}' 명령 발행할까?`)) return;
 
   const { data, error } = await sb
     .from('commands')
@@ -467,8 +506,7 @@ async function sendCommand(deviceUuid) {
     return toast('명령 실패: ' + error.message, 'bad');
   }
   log({ command: { action, id: data.id, status: data.status } });
-  toast(`발행: ${action} (id=${data.id.slice(0,8)})`, 'good');
-  // 1.5초 후 상태 변화 보려고 commands 패널 갱신
+  toast(`✓ ${action}`, 'good');
   setTimeout(loadRecentCommands, 1500);
 }
 
@@ -521,6 +559,146 @@ async function deleteDevice(id) {
   const r = await fetch(CONFIG.apiBase + '/devices/' + id, { method: 'DELETE', headers: { Authorization: 'Bearer ' + session.access_token } });
   log({ DELETE: '/devices/' + id, status: r.status });
   loadDevices();
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 실시간 텔레메트리 (Stage A) — Supabase Realtime 으로 INSERT 자동 수신
+// ─────────────────────────────────────────────────────────────────────────
+// device_uuid → 최신 row 캐시 (앱이 매번 SELECT 안 해도 되게)
+const TEL_LATEST = {};
+// device_uuid → device_id (TEXT) 캐시 (loadDevices 때 갱신)
+const DEV_LABEL = {};
+
+let _telChannel = null;
+let _alertChannel = null;
+
+function subscribeRealtime() {
+  if (!sb) return;
+  unsubscribeRealtime();
+
+  _telChannel = sb
+    .channel('rt-telemetry')
+    .on('postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'telemetry' },
+        (payload) => {
+          const row = payload.new;
+          TEL_LATEST[row.device_id] = row;
+          renderTelemetry();
+        })
+    .subscribe((status) => {
+      document.getElementById('rt-status').innerText = status === 'SUBSCRIBED' ? '● 실시간' : status;
+    });
+
+  _alertChannel = sb
+    .channel('rt-alerts')
+    .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'alerts' },
+        () => loadAlerts())
+    .subscribe();
+}
+
+function unsubscribeRealtime() {
+  if (_telChannel) { sb.removeChannel(_telChannel); _telChannel = null; }
+  if (_alertChannel) { sb.removeChannel(_alertChannel); _alertChannel = null; }
+}
+
+// 페이지 진입 시 1회 — 디바이스별 최신 telemetry 1건씩 가져와 캐시 채움
+async function loadTelemetryLatest() {
+  if (!sb) return;
+  // 디바이스 목록부터 (DEV_LABEL 채우기)
+  const { data: devs } = await sb.from('devices').select('id, device_id');
+  (devs || []).forEach(d => { DEV_LABEL[d.id] = d.device_id; });
+
+  // 각 디바이스의 최신 telemetry — Postgres 에 distinct on 없으니 단순히 최근 N개 가져와서 dedup
+  const { data: rows, error } = await sb
+    .from('telemetry')
+    .select('*')
+    .order('ts', { ascending: false })
+    .limit(200);
+  if (error) return;
+  // device 별 최신만 유지
+  const seen = {};
+  (rows || []).forEach(r => {
+    if (!seen[r.device_id]) {
+      seen[r.device_id] = true;
+      TEL_LATEST[r.device_id] = r;
+    }
+  });
+  renderTelemetry();
+}
+
+function renderTelemetry() {
+  const tbody = document.querySelector('#tel-table tbody');
+  if (!tbody) return;
+  const entries = Object.entries(TEL_LATEST);
+  if (!entries.length) {
+    tbody.innerHTML = `<tr><td colspan="9" class="muted">데이터 없음 — 디바이스 페어링 후 telemetry 도착 대기</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = '';
+  entries.forEach(([uuid, r]) => {
+    const dev = DEV_LABEL[uuid] || uuid.slice(0, 8);
+    const heater = r.heater_state || '-';
+    const lock = r.heater_locked ? ' 🔒' : '';
+    const aOk = r.a_ok ? '' : ' bad';
+    const bOk = r.b_ok ? '' : ' bad';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><code>${esc(dev)}</code></td>
+      <td class="${aOk}">${r.t_a ?? '-'}</td>
+      <td class="${aOk}">${r.h_a ?? '-'}</td>
+      <td class="${bOk}">${r.t_b ?? '-'}</td>
+      <td class="${bOk}">${r.h_b ?? '-'}</td>
+      <td>${esc(r.relay || '-')}</td>
+      <td>${esc(r.fan || '-')}</td>
+      <td>${esc(heater)}${lock}</td>
+      <td><small>${esc(r.ts?.slice(11,19) || '-')}</small></td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 알림 (Stage D) — 활성 알림만 표시
+// ─────────────────────────────────────────────────────────────────────────
+async function loadAlerts() {
+  if (!sb) return;
+  const { data, error } = await sb
+    .from('alerts')
+    .select('id, kind, severity, message, device_id, triggered_at, resolved_at')
+    .is('resolved_at', null)
+    .order('triggered_at', { ascending: false })
+    .limit(50);
+  if (error) return;
+  const tbody = document.querySelector('#alert-table tbody');
+  if (!tbody) return;
+  if (!data || !data.length) {
+    tbody.innerHTML = `<tr><td colspan="6" class="muted">활성 알림 없음 ✓</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = '';
+  data.forEach(a => {
+    const cls = a.severity === 'critical' ? 'bad' : (a.severity === 'warning' ? '' : 'muted');
+    const dev = DEV_LABEL[a.device_id] || a.device_id.slice(0, 8);
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><strong class="${cls}">${esc(a.kind)}</strong></td>
+      <td>${esc(a.severity)}</td>
+      <td><small>${esc(a.message || '-')}</small></td>
+      <td><code>${esc(dev)}</code></td>
+      <td><small>${esc(a.triggered_at?.slice(11,19) || '-')}</small></td>
+      <td><button onclick="resolveAlert('${a.id}')" style="font-size:11px;padding:2px 8px">해제</button></td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function resolveAlert(alertId) {
+  const { error } = await sb
+    .from('alerts')
+    .update({ resolved_at: new Date().toISOString() })
+    .eq('id', alertId);
+  if (error) return toast('해제 실패: ' + error.message, 'bad');
+  toast('해제됨', 'good');
+  loadAlerts();
 }
 
 // ─────────────────────────────────────────────────────────────────────────
