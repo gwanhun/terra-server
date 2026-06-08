@@ -107,6 +107,7 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
       <h2 style="margin:0">👤 로그인됨</h2>
       <span id="user-info" class="muted"></span>
       <span style="flex:1"></span>
+      <button onclick="copyJwt()" title="ESP32 BLE 페어링 시 JWT 전달용" style="font-size:11px;padding:4px 10px">🔑 JWT 복사</button>
       <button class="danger" onclick="logout()">로그아웃</button>
     </div>
     <div class="row">
@@ -390,6 +391,24 @@ async function login() {
 async function logout() {
   await sb.auth.signOut();
   toast('로그아웃', 'good');
+}
+
+// JWT 클립보드 복사 — ESP32 BLE 페어링 시 nRF Connect 에 붙여넣기용.
+// 길이는 JWT_BEGIN <length> 명령에 그대로 사용.
+async function copyJwt() {
+  const { data, error } = await sb.auth.getSession();
+  if (error || !data.session) return toast('로그인 안 됨', 'bad');
+  const t = data.session.access_token;
+  try {
+    await navigator.clipboard.writeText(t);
+    toast(`JWT 복사됨 (${t.length}자)`, 'good');
+    log({ jwt: { length: t.length, copied_to_clipboard: true } });
+  } catch (e) {
+    // 클립보드 권한 거부 시 콘솔 출력으로 fallback
+    console.log('LENGTH:', t.length);
+    console.log('JWT:', t);
+    toast(`클립보드 실패 — F12 콘솔에 출력 (${t.length}자)`, 'bad');
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
