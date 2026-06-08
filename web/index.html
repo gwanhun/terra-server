@@ -169,7 +169,7 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
     </div>
     <div id="dev-token" class="hidden"></div>
     <table id="dev-table">
-      <thead><tr><th>device_id</th><th>이름</th><th>online</th><th>온도</th><th>last_seen</th><th></th></tr></thead>
+      <thead><tr><th>device_id</th><th>이름</th><th>online</th><th>온도</th><th>습도</th><th>last_seen</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -534,6 +534,7 @@ async function loadDevices() {
       <td>${esc(r.name)}</td>
       <td>${r.is_online ? '<span class="good">●</span>' : '<span class="muted">○</span>'}</td>
       <td data-dev-temp="${r.id}">${formatDeviceTemp(r.id)}</td>
+      <td data-dev-humid="${r.id}">${formatDeviceHumid(r.id)}</td>
       <td><small>${esc(r.last_seen_at?.slice(0,16) || '-')}</small></td>
       <td style="white-space:nowrap">
         ${quickCmdButtons(r.id, r.is_online)}
@@ -543,7 +544,7 @@ async function loadDevices() {
   });
 }
 
-// 디바이스 행의 온도 셀 — TEL_LATEST 캐시에서. 없으면 '-'.
+// 디바이스 행의 온도/습도 셀 — TEL_LATEST 캐시에서. 없으면 '-'.
 function formatDeviceTemp(deviceUuid) {
   const t = TEL_LATEST[deviceUuid];
   if (!t || t.t_a == null) return '<span class="muted">-</span>';
@@ -551,10 +552,19 @@ function formatDeviceTemp(deviceUuid) {
   return `<span class="${cls}">${t.t_a.toFixed(1)}°C</span>`;
 }
 
-// Realtime telemetry INSERT 시 디바이스 행 온도 셀만 in-place 갱신.
+function formatDeviceHumid(deviceUuid) {
+  const t = TEL_LATEST[deviceUuid];
+  if (!t || t.h_a == null) return '<span class="muted">-</span>';
+  const cls = t.a_ok === false ? 'bad' : 'good';
+  return `<span class="${cls}">${t.h_a.toFixed(1)}%</span>`;
+}
+
+// Realtime telemetry INSERT 시 디바이스 행 셀만 in-place 갱신.
 function updateDeviceTempCell(deviceUuid) {
-  const cell = document.querySelector(`[data-dev-temp="${deviceUuid}"]`);
-  if (cell) cell.innerHTML = formatDeviceTemp(deviceUuid);
+  const tCell = document.querySelector(`[data-dev-temp="${deviceUuid}"]`);
+  if (tCell) tCell.innerHTML = formatDeviceTemp(deviceUuid);
+  const hCell = document.querySelector(`[data-dev-humid="${deviceUuid}"]`);
+  if (hCell) hCell.innerHTML = formatDeviceHumid(deviceUuid);
 }
 
 // commands 테이블에 직접 INSERT (Supabase JS) — RLS 가 본인 디바이스만 허용.
