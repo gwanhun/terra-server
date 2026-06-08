@@ -7,13 +7,13 @@ MQTT 브리지 — Mosquitto ↔ Supabase 양방향 다리.
    - `esp32/+/telemetry` → telemetry_handler
    - `esp32/+/ack`       → ack_handler
    - `esp32/+/alert`     → alert_handler
-3. Supabase commands 테이블 Realtime 구독:
-   - status='pending' INSERT 감지 → MQTT publish → status='sent'
-4. 재연결: paho-mqtt 자동 재연결 (지수 백오프)
+3. paho 자동 재연결 (지수 백오프)
+4. `publish_command()` — 외부 (CommandDispatcher) 가 호출하는 publish 인터페이스
 
-## 왜 단일 프로세스?
-브로커 인증, 토픽 라우팅, DB 연결을 한 프로세스에 모아 두면 디버깅 쉬움.
-부하 늘면 telemetry/command 를 분리할 수 있지만 초기엔 통합.
+## 컴포넌트 분리
+- 본 모듈: MQTT 연결 + 수신 핸들러 위임 + publish API
+- CommandDispatcher (dispatcher.py): commands polling → publish_command 호출 (mqtt_bridge_main 에서 시작)
+- OfflineMonitor (offline_monitor.py): last_seen 감시 → offline alert (mqtt_bridge_main 에서 시작)
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ import paho.mqtt.client as mqtt
 from dotenv import load_dotenv
 
 from backend.mqtt import handlers
-from backend.mqtt.dispatcher import CommandDispatcher
 from backend.mqtt.topics import (
     TOPIC_ACK_SUB,
     TOPIC_ALERT_SUB,
@@ -81,7 +80,6 @@ class MqttBridge:
 
         self._sb = get_supabase_client()
         self._stop_event = threading.Event()
-        self._dispatcher = CommandDispatcher(self)
 
     # ---------- 라이프사이클 ----------
 
@@ -92,12 +90,10 @@ class MqttBridge:
         )
         self._client.connect_async(self._broker_host, self._broker_port, keepalive=60)
         self._client.loop_start()
-        self._dispatcher.start()
 
     def stop(self) -> None:
         logger.info("MQTT 브리지 정지")
         self._stop_event.set()
-        self._dispatcher.stop()
         self._client.loop_stop()
         self._client.disconnect()
 

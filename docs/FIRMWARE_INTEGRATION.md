@@ -63,11 +63,29 @@
   "ssid": "MyWiFi",
   "password": "wifipass",
   "jwt": "eyJhbGc...",
-  "name": "거실 비어디드"
+  "name": "거실 비어디다"
 }
 ```
 
 > `jwt` 는 사용자의 Supabase access_token (앱 로그인 후 받음). 4장 HTTPS POST 의 `Authorization: Bearer <jwt>` 헤더에 사용.
+
+### 2.1 NimBLE 펌웨어 텍스트 명령 프로토콜 (참조 구현)
+
+`~/project/esp32/NimBLE_Connection` 의 GATT RX char 가 받는 명령 (텍스트, ASCII):
+
+| 명령 | 동작 |
+|------|------|
+| `SCAN` | WiFi 스캔 → TX notify 로 결과 |
+| `SSID:<ssid>` | SSID 저장 |
+| `PASS:<password>` | WiFi password 저장 |
+| `NAME:<name>` | 디바이스 이름 저장 (cloud_client_pair 시 서버 전달) |
+| `JWT_BEGIN <total_length>` | **JWT chunking 시작.** total_length = JWT 전체 글자 수(십진수). 펌웨어가 그 길이만큼 버퍼 할당. |
+| `JWT:<chunk>` | JWT 청크 누적. 청크는 raw substring (base64 아님). **누적 길이 == total_length 도달 시 완성.** |
+| `CONNECT` | WiFi 연결 → got_ip 시 NVS 자격증명 없으면 자동으로 `POST /devices/pair` 진행 |
+
+권장 전송 순서: `SSID` → `PASS` → `NAME` → `JWT_BEGIN` → `JWT × N` → `CONNECT`.
+청크 크기는 BLE MTU(256) 이내. JWT 약 1000자 가정 시 4~5 청크.
+펌웨어 측 JWT 버퍼 상한: 2048 바이트.
 
 ## 3. WiFi 연결
 

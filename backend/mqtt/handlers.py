@@ -172,6 +172,14 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
     except Exception:  # noqa: BLE001
         logger.exception("devices UPDATE 실패 (device=%s)", device_id_text)
 
+    # 임계값 평가 → alerts INSERT/RESOLVE (Stage D). 실패해도 telemetry 저장은 성공.
+    # 임포트는 함수 안에서 — 순환참조 회피 (alerts.py 는 handlers 의존 안 함).
+    try:
+        from backend import alerts as alerts_mod
+        alerts_mod.evaluate_telemetry(device_uuid, row)
+    except Exception:  # noqa: BLE001
+        logger.exception("alerts 평가 실패 (device=%s)", device_id_text)
+
 
 def handle_ack(device_id_text: str, payload: dict[str, Any]) -> None:
     """
