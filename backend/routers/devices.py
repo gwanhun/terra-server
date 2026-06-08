@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from backend.auth import get_current_user_id
 from backend.crypto import generate_token, hash_token
+from backend.mqtt import registry
 from backend.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,9 @@ def pair_device(
     if not res.data:
         raise HTTPException(status_code=500, detail="device INSERT 실패")
     row = res.data[0]
+
+    # Mosquitto 자동 등록 (실패해도 페어링 성공 처리 — 운영자가 수동 동기화 가능)
+    registry.register_device(row["device_id"], mqtt_token)
 
     return DevicePairResponse(
         id=row["id"],
@@ -221,3 +225,6 @@ def delete_device(
     )
     if not res.data:
         raise HTTPException(status_code=404, detail="device not found")
+
+    # Mosquitto password/ACL 제거 — 실패해도 DB 삭제는 성공 처리
+    registry.unregister_device(res.data[0]["device_id"])

@@ -151,7 +151,8 @@ def test_update_camera_invalid_resolution(
 
 def test_delete_camera_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
     chain = fake_sb.table.return_value.delete.return_value.eq.return_value.eq.return_value
-    chain.execute.return_value.data = [{"id": "cam-uuid"}]
+    # camera_id 도 포함 — registry.unregister_device 가 참조
+    chain.execute.return_value.data = [{"id": "cam-uuid", "camera_id": "p4cam-aabbccdd"}]
 
     res = app_client.delete("/cameras/cam-uuid")
     assert res.status_code == 204

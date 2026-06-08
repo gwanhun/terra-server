@@ -181,7 +181,47 @@ sudo systemctl restart terra-api
 
 ---
 
-## 5. 첫 배포 (참고)
+## 5. Mosquitto 자동 등록 셋업 (1회만)
+
+terra-api 가 `POST /devices/pair` / `POST /cameras/pair` 시점에 Mosquitto password 파일 + ACL 을 자동 갱신하도록.
+
+```bash
+ssh ubuntu@<정적IP>
+cd ~/terra-server
+
+# 1) 헬퍼 스크립트 복사 + 실행권한
+sudo cp scripts/terra-mosquitto-register.sh /usr/local/bin/
+sudo chmod 755 /usr/local/bin/terra-mosquitto-register.sh
+
+# 2) sudoers 등록 (visudo 로 문법 검증 후 적용)
+sudo cp scripts/terra-mosquitto-sudoers /etc/sudoers.d/terra-mosquitto
+sudo chmod 440 /etc/sudoers.d/terra-mosquitto
+sudo visudo -c -f /etc/sudoers.d/terra-mosquitto   # "/etc/sudoers.d/terra-mosquitto: parsed OK" 떠야 함
+
+# 3) .env 활성화
+vim ~/terra-server/.env
+# MOSQUITTO_REGISTRY_ENABLED=true 로 변경
+
+# 4) terra-api 재시작
+sudo systemctl restart terra-api
+
+# 5) 검증 — 페어링 호출 후 password 파일에 줄 추가됐나
+sudo cat /etc/mosquitto/passwd | tail -5
+sudo cat /etc/mosquitto/acl | tail -10
+sudo journalctl -u terra-api -n 20 | grep -i mosquitto
+```
+
+수동 동기화 (실패 복구용):
+```bash
+# 누락된 디바이스 직접 등록
+sudo /usr/local/bin/terra-mosquitto-register.sh register terra-xxxxxxxx <plaintext_token>
+
+# ACL 전체 재생성은 페어링 호출 시 자동. 수동으로 강제하려면 임의 디바이스 페어링 후 삭제.
+```
+
+---
+
+## 6. 첫 배포 (참고)
 
 이 단계는 한 번만. 자세한 건 [DEPLOYMENT.md](DEPLOYMENT.md). 요약:
 

@@ -1,0 +1,13 @@
+# terra-server: terra-api 가 Mosquitto 관리하도록 NOPASSWD 허용.
+#
+# 설치:
+#   sudo cp scripts/terra-mosquitto-sudoers /etc/sudoers.d/terra-mosquitto
+#   sudo chmod 440 /etc/sudoers.d/terra-mosquitto
+#   sudo visudo -c -f /etc/sudoers.d/terra-mosquitto   # 문법 검증
+#
+# 보안 메모:
+# - 헬퍼 경로만 허용. 다른 명령은 sudo 불가.
+# - terra-api 가 임의 mosquitto_passwd 호출 못 함 (스크립트 안의 로직만 동작).
+# - visudo 검증 필수 — 문법 오류 시 모든 sudo 가 잠길 위험.
+
+ubuntu ALL=(root) NOPASSWD: /usr/local/bin/terra-mosquitto-register.sh
