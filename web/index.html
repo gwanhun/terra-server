@@ -144,7 +144,7 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
     </div>
     <div id="dev-token" class="hidden"></div>
     <table id="dev-table">
-      <thead><tr><th>device_id</th><th>이름</th><th>online</th><th>last_seen</th><th></th></tr></thead>
+      <thead><tr><th>device_id</th><th>이름</th><th>online</th><th>온도</th><th>last_seen</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -508,6 +508,7 @@ async function loadDevices() {
       <td><code>${esc(r.device_id)}</code></td>
       <td>${esc(r.name)}</td>
       <td>${r.is_online ? '<span class="good">●</span>' : '<span class="muted">○</span>'}</td>
+      <td data-dev-temp="${r.id}">${formatDeviceTemp(r.id)}</td>
       <td><small>${esc(r.last_seen_at?.slice(0,16) || '-')}</small></td>
       <td style="white-space:nowrap">
         ${quickCmdButtons(r.id, r.is_online)}
@@ -515,6 +516,20 @@ async function loadDevices() {
       </td>`;
     tbody.appendChild(tr);
   });
+}
+
+// 디바이스 행의 온도 셀 — TEL_LATEST 캐시에서. 없으면 '-'.
+function formatDeviceTemp(deviceUuid) {
+  const t = TEL_LATEST[deviceUuid];
+  if (!t || t.t_a == null) return '<span class="muted">-</span>';
+  const cls = t.a_ok === false ? 'bad' : 'good';
+  return `<span class="${cls}">${t.t_a.toFixed(1)}°C</span>`;
+}
+
+// Realtime telemetry INSERT 시 디바이스 행 온도 셀만 in-place 갱신.
+function updateDeviceTempCell(deviceUuid) {
+  const cell = document.querySelector(`[data-dev-temp="${deviceUuid}"]`);
+  if (cell) cell.innerHTML = formatDeviceTemp(deviceUuid);
 }
 
 // commands 테이블에 직접 INSERT (Supabase JS) — RLS 가 본인 디바이스만 허용.
@@ -611,6 +626,7 @@ function subscribeRealtime() {
           const row = payload.new;
           TEL_LATEST[row.device_id] = row;
           renderTelemetry();
+          updateDeviceTempCell(row.device_id);   // 디바이스 패널의 온도 셀도 갱신
         })
     .subscribe((status) => {
       document.getElementById('rt-status').innerText = status === 'SUBSCRIBED' ? '● 실시간' : status;
