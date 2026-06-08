@@ -42,6 +42,11 @@ th { color: #888; font-weight: normal; font-size: 11px; text-transform: uppercas
 .toast.good { background: #2a6a3a; }
 small { color: #888; font-size: 11px; }
 hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
+.banner { padding: 12px 16px; border-radius: 8px; margin-bottom: 12px; cursor: pointer; font-size: 13px; }
+.banner.bad { background: #3a0010; border: 1px solid #d00; color: #f99; animation: pulse 2s infinite; }
+.banner.warn { background: #3a2000; border: 1px solid #d80; color: #fc9; }
+.banner strong { font-size: 15px; }
+@keyframes pulse { 50% { opacity: .7; } }
 </style>
 </head>
 <body>
@@ -93,6 +98,9 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
 
 <!-- ===== 대시보드 ===== -->
 <div class="hidden" id="dashboard">
+
+  <!-- 상단 활성 알림 배너 (critical/warning 있을 때만) -->
+  <div id="alerts-banner" class="hidden"></div>
 
   <div class="panel">
     <div class="row">
@@ -593,8 +601,24 @@ function subscribeRealtime() {
     .channel('rt-alerts')
     .on('postgres_changes',
         { event: '*', schema: 'public', table: 'alerts' },
-        () => loadAlerts())
+        (payload) => {
+          // 신규 INSERT 면 토스트 + (critical) 브라우저 알림 시도
+          if (payload.eventType === 'INSERT') {
+            const a = payload.new;
+            const cls = a.severity === 'critical' ? 'bad' : 'good';
+            toast(`🚨 [${a.severity}] ${a.kind}: ${a.message || ''}`, cls);
+            if (a.severity === 'critical' && 'Notification' in window && Notification.permission === 'granted') {
+              new Notification(`Terra: ${a.kind}`, { body: a.message || '' });
+            }
+          }
+          loadAlerts();
+        })
     .subscribe();
+
+  // critical 알림용 브라우저 권한 요청 (1회)
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
 }
 
 function unsubscribeRealtime() {
@@ -689,6 +713,32 @@ async function loadAlerts() {
       <td><button onclick="resolveAlert('${a.id}')" style="font-size:11px;padding:2px 8px">해제</button></td>`;
     tbody.appendChild(tr);
   });
+  renderAlertsBanner(data);
+}
+
+// 상단 배너 — 활성 critical/warning 있으면 큰 박스로 가시성 강화. 클릭 시 패널로 스크롤.
+function renderAlertsBanner(alerts) {
+  const el = document.getElementById('alerts-banner');
+  if (!el) return;
+  const critical = alerts.filter(a => a.severity === 'critical');
+  const warning = alerts.filter(a => a.severity === 'warning');
+
+  if (!critical.length && !warning.length) {
+    el.className = 'hidden';
+    el.innerHTML = '';
+    return;
+  }
+
+  const cls = critical.length ? 'banner bad' : 'banner warn';
+  const parts = [];
+  if (critical.length) parts.push(`<strong>🚨 ${critical.length}건 CRITICAL</strong>`);
+  if (warning.length) parts.push(`⚠ ${warning.length}건 warning`);
+  const sample = (critical[0] || warning[0]);
+  const sampleText = sample ? ` — ${esc(sample.kind)}: ${esc(sample.message || '')}` : '';
+
+  el.className = cls;
+  el.innerHTML = parts.join(' · ') + sampleText + ` <small>(클릭 → 알림 패널)</small>`;
+  el.onclick = () => document.getElementById('alert-table')?.scrollIntoView({ behavior: 'smooth' });
 }
 
 async function resolveAlert(alertId) {
