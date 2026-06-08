@@ -47,6 +47,31 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
 .banner.warn { background: #3a2000; border: 1px solid #d80; color: #fc9; }
 .banner strong { font-size: 15px; }
 @keyframes pulse { 50% { opacity: .7; } }
+
+/* 모바일 (≤600px) — 좁은 화면 보정 */
+@media (max-width: 600px) {
+  body { padding: 8px; }
+  .wrap { max-width: 100%; }
+  .panel { padding: 12px; }
+  h1 { font-size: 15px; gap: 6px; }
+  h1 .docs-links { margin-left: 0; width: 100%; text-align: right; }
+  h1 .docs-links a { font-size: 10px; padding: 1px 5px; margin-left: 4px; }
+  h2 { font-size: 13px; }
+  .row { gap: 4px; }
+  .row label { flex: 0 0 100%; font-size: 11px; margin-bottom: 2px; }
+  input, select { font-size: 13px; padding: 8px 10px; }   /* 모바일 터치 친화 + 16px 미만이면 iOS 자동 줌 회피 위해 13px */
+  input[type=text], input[type=email], input[type=password] { flex: 1 1 100%; min-width: 0; }
+  button { padding: 8px 12px; font-size: 13px; }   /* 터치 영역 확대 */
+
+  /* 테이블 가로 스크롤 — 컬럼 많아도 화면 안 깨짐 */
+  table { display: block; overflow-x: auto; white-space: nowrap; }
+  thead { display: table; width: 100%; }
+  tbody { display: table; width: 100%; }
+  th, td { padding: 8px 6px; }
+
+  /* 빠른 명령 아이콘 — 두 줄로 wrap */
+  td[style*="nowrap"] { white-space: normal !important; }
+}
 </style>
 </head>
 <body>
