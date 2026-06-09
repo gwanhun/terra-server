@@ -79,20 +79,20 @@ Content-Type: application/json
 | `POST` | `/cameras/{id}/webrtc/ice` | JWT | ICE candidate 추가 |
 | `POST` | `/cameras/{id}/webrtc/close` | JWT | 세션 종료 |
 
-### Stage C (명령) — 미구현
+### IoT 제어 (commands) — ✅ 구현됨, REST 우회
 
-**앱은 Supabase 에 직접 INSERT.** REST API 불필요.
+**앱은 terra-api 가 아닌 Supabase 에 직접 INSERT.** REST API endpoint 없음.
+RLS + Realtime 패턴으로 백엔드 단순성 ↑. 자세한 흐름과 액션 종류는 **본 문서 §3.7** 참조.
 
 ```javascript
-// 앱 코드 예시
 await supabase.from('commands').insert({
-  device_id: '...',
-  action: 'heater_toggle'
+  device_id: '<devices.id UUID>',
+  issued_by: session.user.id,
+  action: 'heater_toggle',
 });
-// → terra-bridge 가 Realtime 으로 감지 후 MQTT publish
+// → terra-bridge dispatcher 가 1초 안에 MQTT publish → status='sent'
+// → 디바이스 ack → status='acked', result, acked_at
 ```
-
-이렇게 RLS + Realtime 으로 REST 우회 → 백엔드 코드 ↓ 단순성 ↑.
 
 ## 3. 엔드포인트 상세
 
@@ -204,6 +204,178 @@ Authorization: Bearer <jwt>
 디바이스 삭제. cascade 로 `device_settings`, `telemetry`, `commands`, `alerts` 도 삭제.
 
 **응답** (204 No Content)
+
+---
+
+### 3.7 IoT 제어 — 명령 발행 (사육장 디바이스 컨트롤)
+
+> ⚠ **이 흐름은 REST 가 아닌 `commands` 테이블 INSERT.**
+> 앱 시각: terra-api 호출 안 함. Supabase JS / Postgres REST 로 직접 `commands` INSERT.
+> 이유: RLS 가 본인 디바이스만 허용 + Realtime 으로 status 변화 자동 push → REST endpoint 필요 X.
+
+#### 3.7.1 명령 발행 — `commands` INSERT
+
+**클라이언트 코드** (Supabase JS):
+```javascript
+const { data, error } = await supabase
+  .from('commands')
+  .insert({
+    device_id: '<devices.id (UUID)>',     // 본인 소유여야 함 (RLS)
+    issued_by: session.user.id,            // 본인 (RLS)
+    action: 'heater_toggle',               // 아래 표 참조
+    // 옵션:
+    // payload: { ... },                   // action 별 추가 필드 (token_rotate 의 new_token 등)
+    // ttl_sec: 30,                        // 기본 10초
+  })
+  .select()
+  .single();
+
+// data.id, data.status='pending', data.issued_at 등 반환
+```
+
+**RLS** ([migrations/2026-05-26_initial_schema.sql](../migrations/2026-05-26_initial_schema.sql)):
+```sql
+device_id IN (SELECT id FROM devices WHERE owner_id = auth.uid())
+AND issued_by = auth.uid()
+```
+→ 다른 사용자 디바이스에 명령 발행 불가. issued_by 위조 불가.
+
+#### 3.7.2 `action` 종류 (IoT 디바이스, ESP32-S3)
+
+| action | payload 추가 필드 | 디바이스 동작 |
+|--------|------------------|--------------|
+| `relay_toggle` | — | 워터펌프 GPIO 토글 |
+| `fan_toggle` | — | 팬 GPIO 토글 |
+| `heater_toggle` | — | 히터 GPIO 토글 (safety latch 활성 시 거부) |
+| `heater_clear` | — | safety latch 해제 |
+| `led_on` | — | LED 점등 |
+| `led_up` | — | LED PWM duty + |
+| `led_down` | — | LED PWM duty - |
+| `token_rotate` | `new_token` (string) | NVS 의 mqtt_token 갱신 + MQTT 재연결 |
+
+> ⚠ 카메라 워커 명령 (snapshot/webrtc 류) 은 별도 — [docs/MQTT.md §2](MQTT.md) 참조 (Stage G).
+
+#### 3.7.3 명령 상태 흐름
+
+```
+INSERT (pending)
+   │ ▼  terra-bridge dispatcher 가 1초 안에 SELECT
+   │
+   ├─→ TTL 만료 (issued_at + ttl_sec < NOW) → status='expired'
+   ├─→ device_id 미존재 → status='rejected', result='unknown_device'
+   └─→ MQTT publish 성공 → status='sent'
+                            ▼
+                          ESP32 처리 + ack publish
+                            ▼
+                          handle_ack → status='acked', result, acked_at
+```
+
+#### 3.7.4 `result` 값 (acked 시)
+
+| result | 의미 |
+|--------|------|
+| `ok` | 명령 성공 실행 |
+| `rejected_locked` | heater safety latch 활성 — `heater_toggle` 거부됨 |
+| `rejected_ttl_expired` | 디바이스 도착 시점에 TTL 초과 |
+| `rejected_unknown_action` | 펌웨어가 모르는 action |
+| `rejected_duplicate_msg_id` | msg_id 링버퍼 중복 |
+
+#### 3.7.5 상태 변화 추적 — Realtime 구독
+
+```javascript
+supabase.channel('commands-rt')
+  .on('postgres_changes', {
+    event: 'UPDATE',          // INSERT 는 본인이 발행했으니 이미 알고 있음
+    schema: 'public',
+    table: 'commands',
+  }, (payload) => {
+    const cmd = payload.new;
+    // cmd.status: pending → sent → acked | rejected | expired
+    // cmd.result, cmd.acked_at
+    // UI 갱신: 발행 → 전송됨 → 완료 (또는 거부)
+  })
+  .subscribe();
+```
+
+→ **사용자 입장에서 흐름**:
+1. UI 에서 "히터 토글" 버튼 클릭
+2. `commands` INSERT → 즉시 응답 (`pending`)
+3. 1~2초 후 Realtime 으로 `sent` 받음 (브리지 publish 완료)
+4. 디바이스 응답 시간 후 (보통 1초 이내) `acked` 받음 + `result='ok'` 표시
+
+#### 3.7.6 SQL 직접 조회 (디버깅용)
+
+```sql
+-- 최근 명령 20개
+SELECT id, action, status, result, issued_at, acked_at
+FROM commands
+WHERE device_id = '<uuid>'
+ORDER BY issued_at DESC
+LIMIT 20;
+
+-- 활성 (pending/sent) 명령
+SELECT * FROM commands
+WHERE device_id = '<uuid>' AND status IN ('pending', 'sent');
+```
+
+---
+
+### 3.8 텔레메트리 실시간 수신 (IoT 센서값)
+
+명령 외에 **디바이스가 보내는 센서값** 도 실시간 수신해야 사육장 모니터링 의미 있음. 동일하게 **REST 아닌 Supabase Realtime**.
+
+#### 구독
+```javascript
+supabase.channel('telemetry-rt')
+  .on('postgres_changes', {
+    event: 'INSERT',
+    schema: 'public',
+    table: 'telemetry',
+  }, (payload) => {
+    const row = payload.new;
+    // row.device_id, row.ts, row.t_a, row.h_a, row.a_ok,
+    // row.t_b, row.h_b, row.b_ok,
+    // row.relay, row.fan, row.heater_state, row.heater_locked
+  })
+  .subscribe();
+```
+
+#### 컬럼 의미 ([docs/DATABASE.md](DATABASE.md))
+
+| 컬럼 | 의미 |
+|------|------|
+| `t_a` / `h_a` | DHT22-A (메인 센서) 온도/습도 |
+| `a_ok` | DHT22-A 정상 여부 — false 면 t_a/h_a 무시 |
+| `t_b` / `h_b` / `b_ok` | DHT22-B (보조 센서) |
+| `relay` / `fan` | 워터펌프 / 팬 현재 상태 (`ON`/`OFF`) |
+| `heater_state` | 히터 상태 (`ON`/`OFF`) |
+| `heater_locked` | safety latch 활성 여부 |
+| `ts` | 디바이스 측 timestamp (epoch s/ms 자동 정규화) |
+
+#### 단순 조회 (Realtime 없이 현재 최신값)
+
+```javascript
+const { data } = await supabase
+  .from('telemetry')
+  .select('*')
+  .eq('device_id', deviceUuid)
+  .order('ts', { ascending: false })
+  .limit(1)
+  .single();
+```
+
+#### 시계열 차트용 — 분 단위 다운샘플 (`telemetry_1m`)
+
+`telemetry` 는 7일만 보관. 장기 차트는 `telemetry_1m` (1년 보관, 1분 평균):
+
+```javascript
+const { data } = await supabase
+  .from('telemetry_1m')
+  .select('bucket, t_a_avg, t_a_min, t_a_max, h_a_avg')
+  .eq('device_id', deviceUuid)
+  .gte('bucket', '2026-06-01T00:00:00Z')
+  .order('bucket', { ascending: true });
+```
 
 ---
 

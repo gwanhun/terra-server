@@ -104,60 +104,201 @@ const devices = await res.json();
 
 ---
 
-## 3. 디바이스 제어 — `commands` INSERT (Supabase 직접)
+## 3. IoT 디바이스 제어 (사육장 액추에이터)
 
-### 핵심 — REST 안 씀, **Supabase JS 로 직접 INSERT**
+> 사용자가 앱에서 "히터 ON" / "팬 토글" / "LED 밝기 +" 등을 누르면 ESP32 가 GPIO 동작.
+> **REST 호출 없음** — `commands` 테이블 INSERT 만으로 끝. 백엔드(terra-bridge)가 알아서 MQTT 로 publish.
+
+### 3.1 명령 발행
 
 ```dart
 // Flutter
-await sb.from('commands').insert({
-  'device_id': deviceUuid,             // devices.id (UUID)
+final cmd = await sb.from('commands').insert({
+  'device_id': deviceUuid,             // devices.id (UUID), 본인 소유여야 RLS 통과
   'issued_by': sb.auth.currentUser!.id,
-  'action': 'heater_toggle',           // 또는 다른 action
+  'action': 'heater_toggle',
+}).select().single();
+
+// 옵션: action 별 추가 payload + 커스텀 TTL
+final cmd = await sb.from('commands').insert({
+  'device_id': deviceUuid,
+  'issued_by': sb.auth.currentUser!.id,
+  'action': 'token_rotate',
+  'payload': {'new_token': 'newtoken123'},
+  'ttl_sec': 60,                         // 기본 10초
 }).select().single();
 ```
 
 ```js
 // JS
-await sb.from('commands').insert({
+const { data } = await sb.from('commands').insert({
   device_id: deviceUuid,
   issued_by: sb.auth.currentUser.id,
   action: 'heater_toggle',
 }).select().single();
 ```
 
-### action 종류 ([docs/MQTT.md §2](MQTT.md))
+응답 즉시 `data.id`, `data.status='pending'`, `data.issued_at` 받음.
 
-| action | 페이로드 추가 | 디바이스 동작 |
-|--------|--------------|--------------|
-| `relay_toggle` | — | 워터펌프 토글 |
-| `fan_toggle` | — | 팬 토글 |
-| `heater_toggle` | — | 히터 토글 (safety latch 활성 시 거부) |
-| `heater_clear` | — | safety latch 해제 |
-| `led_on` | — | LED 점등 |
-| `led_up` | — | LED 밝기 + |
-| `led_down` | — | LED 밝기 - |
+### 3.2 action 종류 (사육장 IoT)
 
-### 흐름 (전체 사이클)
+| action | payload 추가 | 디바이스 동작 |
+|--------|-------------|--------------|
+| `relay_toggle` | — | 💧 워터펌프 토글 |
+| `fan_toggle` | — | 🌀 팬 토글 |
+| `heater_toggle` | — | 🔥 히터 토글 (safety latch 활성 시 거부) |
+| `heater_clear` | — | ⚠ safety latch 해제 |
+| `led_on` | — | 💡 LED 점등 |
+| `led_up` | — | 🔆 LED 밝기 + |
+| `led_down` | — | 🔅 LED 밝기 - |
+| `token_rotate` | `new_token` (string) | 디바이스 NVS 의 mqtt_token 갱신 + MQTT 재연결 |
+
+> ⚠ heater 류는 **사용자에게 확인 dialog** 권장 (잘못 누르면 위험).
+
+### 3.3 명령 상태 흐름 (state machine)
+
 ```
-앱 → commands INSERT (status='pending')
-    ↓ (1초 안)
-terra-bridge dispatcher → MQTT publish → status='sent'
-    ↓ (디바이스 응답 시간)
-ESP32 → ack publish → terra-bridge handle_ack → status='acked', result, acked_at
+INSERT (pending)                               ← 앱이 발행 직후
+    │
+    │ terra-bridge dispatcher 가 1초 안에 SELECT
+    │
+    ├─→ TTL 만료 (now > issued_at + ttl_sec) → status='expired'
+    ├─→ device_id 미존재 → status='rejected', result='unknown_device'
+    └─→ MQTT publish 성공 → status='sent'        ← 1~2초 안에
+                              │
+                              │ ESP32 가 받고 처리 후 ack publish
+                              ▼
+                            handle_ack → status='acked', result, acked_at
 ```
 
-→ 앱은 `commands` 테이블 Realtime 구독해서 status 변화 추적.
+### 3.4 상태 변화 Realtime 구독 (필수)
 
-### 옵션 — TTL/payload
+발행 후 UI 가 `pending → sent → acked` 변화를 자동 표시하려면:
+
 ```dart
-await sb.from('commands').insert({
-  'device_id': deviceUuid,
-  'issued_by': sb.auth.currentUser!.id,
-  'action': 'token_rotate',
-  'payload': {'new_token': 'newtoken123'},  // action 별 추가 필드
-  'ttl_sec': 60,                             // 기본 10초
-});
+sb.channel('commands-rt')
+  .onPostgresChanges(
+    event: PostgresChangeEvent.update,    // INSERT 는 본인 발행이라 알고 있음
+    schema: 'public',
+    table: 'commands',
+    callback: (payload) {
+      final cmd = payload.newRecord;
+      // cmd['status']: 'pending' | 'sent' | 'acked' | 'rejected' | 'expired'
+      // cmd['result']: 'ok' | 'rejected_locked' | 'rejected_ttl_expired' | ...
+      // cmd['acked_at']: 디바이스 응답 시각
+      // → UI 갱신
+    },
+  ).subscribe();
+```
+
+### 3.5 `result` 값 (acked 시)
+
+| result | 의미 | UI 처리 |
+|--------|------|--------|
+| `ok` | 성공 | ✓ 체크마크 + "완료" |
+| `rejected_locked` | heater safety latch 활성 | ⚠ "히터 잠김 — 먼저 해제 필요" + heater_clear 버튼 |
+| `rejected_ttl_expired` | 디바이스가 늦게 받음 | ⌛ "시간 초과 — 재시도" |
+| `rejected_unknown_action` | 펌웨어 버전이 모르는 action | ✗ "디바이스 펌웨어 업데이트 필요" |
+| `rejected_duplicate_msg_id` | 중복 — 거의 안 일어남 | (무시) |
+
+### 3.6 사용자 시점 흐름 (Flutter 예시)
+
+```dart
+class HeaterButton extends StatefulWidget {
+  final String deviceUuid;
+  ...
+}
+
+class _HeaterButtonState extends State<HeaterButton> {
+  bool _pending = false;
+  String? _lastResult;
+
+  Future<void> _toggle() async {
+    // 1. heater 류는 확인 dialog
+    final ok = await showDialog(context: context, builder: ...);
+    if (!ok) return;
+
+    setState(() { _pending = true; _lastResult = null; });
+
+    try {
+      await sb.from('commands').insert({
+        'device_id': widget.deviceUuid,
+        'issued_by': sb.auth.currentUser!.id,
+        'action': 'heater_toggle',
+      });
+      // status 변화는 commands-rt 구독에서 받음 → setState 로 _lastResult 갱신
+    } catch (e) {
+      setState(() { _pending = false; _lastResult = 'error: $e'; });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ElevatedButton(
+      onPressed: _pending ? null : _toggle,
+      child: _pending ? CircularProgressIndicator() : Text('🔥 히터 토글'),
+    );
+  }
+}
+```
+
+### 3.7 텔레메트리 (디바이스 → 앱, 3초 주기)
+
+명령과 별개로, **디바이스가 보내는 센서값**을 받아야 사육장 모니터링 가능. 동일하게 Realtime:
+
+```dart
+sb.channel('telemetry-rt')
+  .onPostgresChanges(
+    event: PostgresChangeEvent.insert,
+    schema: 'public',
+    table: 'telemetry',
+    callback: (payload) {
+      final t = payload.newRecord;
+      // t['t_a'], t['h_a'], t['a_ok'],    ← DHT22-A 메인 센서 (온/습)
+      // t['t_b'], t['h_b'], t['b_ok'],    ← DHT22-B 보조
+      // t['relay'], t['fan'],             ← 워터펌프 / 팬 상태 (ON/OFF)
+      // t['heater_state'], t['heater_locked'],
+      // t['ts'] (timestamptz)
+      // → 디바이스별 최신값 캐시 갱신 + UI 차트 갱신
+    },
+  ).subscribe();
+```
+
+#### 부팅 시 1회 — 디바이스별 최신값 (Realtime 시작 전 데이터)
+
+```dart
+final rows = await sb.from('telemetry')
+  .select('*')
+  .order('ts', ascending: false)
+  .limit(200);   // 디바이스 1~수십대면 충분, dedup 으로 디바이스별 최신만 추출
+```
+
+#### 시계열 차트 — 장기 데이터
+
+`telemetry` 는 7일 보관. 그 이상은 `telemetry_1m` (1분 평균, 1년 보관):
+
+```dart
+final hourly = await sb.from('telemetry_1m')
+  .select('bucket, t_a_avg, t_a_min, t_a_max, h_a_avg')
+  .eq('device_id', deviceUuid)
+  .gte('bucket', oneWeekAgo.toIso8601String())
+  .order('bucket');
+```
+
+### 3.8 SQL 직접 디버깅 (Supabase 대시보드)
+
+```sql
+-- 디바이스의 최근 명령 + 상태
+SELECT id, action, status, result, issued_at, acked_at
+FROM commands WHERE device_id = '<uuid>'
+ORDER BY issued_at DESC LIMIT 20;
+
+-- 활성 명령 (아직 응답 안 옴)
+SELECT * FROM commands WHERE status IN ('pending', 'sent');
+
+-- 가장 최근 텔레메트리
+SELECT * FROM telemetry WHERE device_id = '<uuid>'
+ORDER BY ts DESC LIMIT 10;
 ```
 
 ---
