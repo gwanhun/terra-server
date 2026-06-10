@@ -49,15 +49,15 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
 @keyframes pulse { 50% { opacity: .7; } }
 
 /* 라이브 모달 (WebRTC)
- * .modal 너비는 영상 비율에 맞춰 좁게 (펌웨어 800x800 정사각형).
- * 영상 metadata 받기 전엔 aspect-ratio 1/1 로 모양 유지 (검은 박스가 가로로 늘어나는 거 방지).
+ * .modal 너비는 영상 비율에 맞춰 (펌웨어 1280x960 = 4:3).
+ * 영상 metadata 받기 전엔 aspect-ratio 4/3 로 모양 유지 (검은 박스가 가로로 늘어나는 거 방지).
  * loadedmetadata 후 JS 가 실제 video.videoWidth/Height 로 비율 갱신. */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 9000; display: flex; align-items: center; justify-content: center; padding: 16px; }
-.modal { background: #1a1a1a; border-radius: 8px; padding: 16px; max-width: 640px; width: 100%; max-height: 95vh; display: flex; flex-direction: column; gap: 10px; }
+.modal { background: #1a1a1a; border-radius: 8px; padding: 16px; max-width: 800px; width: 100%; max-height: 95vh; display: flex; flex-direction: column; gap: 10px; }
 .modal h2 { margin: 0; font-size: 13px; }
 .modal-header { display: flex; align-items: center; gap: 8px; }
 .modal-header button { margin-left: auto; }
-.live-video { width: 100%; aspect-ratio: 1 / 1; max-height: 70vh; background: #000; border-radius: 4px; display: block; object-fit: contain; }
+.live-video { width: 100%; aspect-ratio: 4 / 3; max-height: 75vh; background: #000; border-radius: 4px; display: block; object-fit: contain; }
 .live-status { font-family: monospace; font-size: 12px; padding: 6px 10px; border-radius: 4px; background: #080808; color: #9f9; word-break: break-all; min-height: 1.4em; }
 .live-status.warn { color: #fc9; }
 .live-status.bad { color: #f99; }
@@ -946,7 +946,7 @@ async function openLive(cameraUuid, cameraIdLabel) {
       v.srcObject = ev.streams[0];
       liveStatus('영상 수신 중', '');
     }
-    // 영상 metadata 도착하면 실제 비율로 갱신 (펌웨어가 800x800 외 해상도로 바뀌어도 자동)
+    // 영상 metadata 도착하면 실제 비율로 갱신 (펌웨어가 1280x960 외 해상도로 바뀌어도 자동)
     v.onloadedmetadata = () => {
       if (v.videoWidth && v.videoHeight) {
         v.style.aspectRatio = `${v.videoWidth} / ${v.videoHeight}`;
