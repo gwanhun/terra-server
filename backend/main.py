@@ -11,9 +11,11 @@ systemd:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import secrets
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -21,11 +23,11 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-
 from fastapi.staticfiles import StaticFiles
 
 from backend.health import register_health
 from backend.routers import cameras, clips, devices, enclosures, webrtc
+from backend.webrtc_relay import get_relay
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(REPO_ROOT / ".env")
@@ -79,6 +81,22 @@ tags_metadata = [
     },
 ]
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """FastAPI lifespan — startup 에서 IceRelay (WebRTC ICE 릴레이) 시작.
+
+    펌웨어 → 웹 방향 candidate 를 long-poll 로 전달하기 위해 1개의 long-lived
+    MQTT subscriber 가 `esp32/+/ack` 를 구독한다. 자세한 동기는 backend/webrtc_relay.py.
+    """
+    relay = get_relay()
+    loop = asyncio.get_running_loop()
+    relay.start(loop)
+    try:
+        yield
+    finally:
+        relay.stop()
+
+
 app = FastAPI(
     title="terra-server",
     description=_APP_DESCRIPTION,
@@ -87,6 +105,7 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
     openapi_url=None,
+    lifespan=_lifespan,
 )
 
 # OpenAPI 문서 Basic Auth 가드 — NestJS expressBasicAuth 와 동일 의도.

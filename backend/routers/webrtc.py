@@ -14,11 +14,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from backend.auth import get_current_user_id
 from backend.supabase_client import get_supabase_client
+from backend.webrtc_relay import get_relay
 from backend.webrtc_signaling import (
     MqttWebRTCSignaling,
     WebRTCSignalingError,
@@ -64,6 +65,17 @@ class WebRTCCloseIn(BaseModel):
 class WebRTCCommandOut(BaseModel):
     ok: bool
     session_id: str
+
+
+class WebRTCCandidatesOut(BaseModel):
+    candidates: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="펌웨어 측 ICE candidate 목록 (since_index 이후). 빈 배열이면 timeout 까지 아무도 안 옴.",
+    )
+    next_index: int = Field(
+        ...,
+        description="다음 poll 호출 시 since_index 로 전달할 값 (서버 buffer 의 현재 크기).",
+    )
 
 
 def _ice_servers_from_env() -> list[dict[str, Any]]:
@@ -201,6 +213,39 @@ def add_webrtc_ice(
     return WebRTCCommandOut(ok=True, session_id=body.session_id)
 
 
+@router.get(
+    '/{camera_uuid}/webrtc/candidates',
+    response_model=WebRTCCandidatesOut,
+    summary='펌웨어 측 ICE candidate 가져오기 (long-poll)',
+)
+async def get_webrtc_candidates(
+    camera_uuid: str,
+    session_id: str = Query(..., min_length=1, max_length=128),
+    since_index: int = Query(0, ge=0),
+    timeout_sec: float = Query(20.0, ge=1.0, le=30.0),
+    user_id: str = Depends(get_current_user_id),
+) -> WebRTCCandidatesOut:
+    """
+    펌웨어 esp_webrtc 가 ack 토픽으로 publish 하는 candidate 들을 long-poll 로 전달.
+
+    동작:
+    - IceRelay 가 백그라운드에서 `esp32/+/ack` 구독 중. webrtc_ice action 들어오면 buffer 누적.
+    - 이 엔드포인트는 since_index 이후의 candidate 들을 반환. 없으면 timeout_sec 까지 대기.
+    - 응답의 next_index 를 다음 호출 시 since_index 로 보내면 됨 (간단한 cursor).
+
+    펌웨어가 보낼 메시지 모양:
+        topic:   esp32/{camera_id}/ack
+        payload: { "action": "webrtc_ice", "session_id": "...", "candidate": { ... } }
+    """
+    _owned_camera(camera_uuid, user_id)  # 소유권 검증 (404 던짐)
+    relay = get_relay()
+    candidates = await relay.wait_for_candidates(session_id, since_index, timeout_sec)
+    return WebRTCCandidatesOut(
+        candidates=candidates,
+        next_index=since_index + len(candidates),
+    )
+
+
 @router.post(
     '/{camera_uuid}/webrtc/close',
     response_model=WebRTCCommandOut,
@@ -233,4 +278,8 @@ def close_webrtc(
         'stream_mode': None,
         'stream_until': None,
     }).eq('id', camera_uuid).eq('owner_id', user_id).execute()
+
+    # ICE candidate buffer 정리 (메모리 누수 방지 + 대기 중 long-poll 깨움)
+    get_relay().drop_session(body.session_id)
+
     return WebRTCCommandOut(ok=publish_ok, session_id=body.session_id)

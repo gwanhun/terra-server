@@ -897,6 +897,7 @@ async function deleteCamera(id) {
 let livePc = null;
 let liveSessionId = null;
 let liveCameraUuid = null;
+let liveCandidatePoller = null;   // 펌웨어 → 웹 ICE candidate long-poll Promise chain
 
 function liveStatus(msg, cls) {
   const el = document.getElementById('live-status');
@@ -989,6 +990,36 @@ async function openLive(cameraUuid, cameraIdLabel) {
     liveStatus('answer 적용 완료 — ICE 연결 시도 중', 'warn');
   } catch (e) {
     liveStatus('answer SDP 적용 실패: ' + e.message, 'bad');
+    return;
+  }
+
+  // 펌웨어 → 웹 방향 ICE candidate long-poll 시작.
+  // esp_webrtc 는 보통 trickle 모드라 candidate 가 SDP 와 별도로 옴.
+  startCandidatePolling(cameraUuid, liveSessionId);
+}
+
+async function startCandidatePolling(cameraUuid, sessionId) {
+  liveCandidatePoller = { active: true };
+  const poller = liveCandidatePoller;
+  let sinceIndex = 0;
+
+  while (poller.active) {
+    // PeerConnection 이 이미 끝났으면 중단
+    if (!livePc || livePc.connectionState === 'closed' || livePc.connectionState === 'failed') break;
+
+    const url = `/cameras/${cameraUuid}/webrtc/candidates?session_id=${encodeURIComponent(sessionId)}&since_index=${sinceIndex}&timeout_sec=20`;
+    const res = await api(url);
+    if (!poller.active) break;
+    if (!res) { await new Promise(r => setTimeout(r, 1000)); continue; }
+
+    for (const cand of (res.candidates || [])) {
+      try {
+        await livePc.addIceCandidate(cand);
+      } catch (e) {
+        console.warn('addIceCandidate 실패', e, cand);
+      }
+    }
+    sinceIndex = res.next_index;
   }
 }
 
@@ -997,6 +1028,7 @@ async function closeLive() {
   const sid = liveSessionId;
   const uuid = liveCameraUuid;
   liveSessionId = null;
+  if (liveCandidatePoller) { liveCandidatePoller.active = false; liveCandidatePoller = null; }
   if (livePc) { try { livePc.close(); } catch (e) {} livePc = null; }
   if (sid && uuid) {
     // best-effort 카메라에 종료 통지 (실패해도 무시)
