@@ -49,6 +49,24 @@
   - 둘 중 하나라도 비어있으면 모든 요청 401 → 사실상 문서 차단 효과 (실수 방지)
   - 강력한 비번: `python3 -c "import secrets; print(secrets.token_urlsafe(24))"`
 
+### WebRTC 라이브 (Stage G2)
+
+`/cameras/webrtc/config` 응답에 그대로 들어가 브라우저 `RTCPeerConnection({iceServers})` 에 전달됨.
+
+- `WEBRTC_STUN_URLS` — STUN 서버 URL (콤마 구분). 기본 Google STUN.
+- `WEBRTC_TURN_URLS` — TURN 서버 URL (옵션, 콤마 구분). 빈 값이면 응답에서 TURN 항목 누락 → STUN-only 동작.
+- `WEBRTC_TURN_USERNAME` / `WEBRTC_TURN_CREDENTIAL` — TURN 자격증명. TURN URL 있을 때만 의미 있음.
+
+#### 언제 TURN 이 필요?
+대칭 NAT (양쪽 모두) 환경에서 P2P 가 직접 연결 못 함. 보통 모바일 셀룰러 → 카메라 (가정 IP) 시나리오. STUN 만으로 80% 정도는 통과, 안 되면 TURN relay 가 받쳐줌.
+
+#### 자체 운영 (coturn)
+```
+WEBRTC_TURN_URLS=turn:turn.example.com:3478?transport=udp
+WEBRTC_TURN_USERNAME=terra
+WEBRTC_TURN_CREDENTIAL=...
+```
+
 ### Cloudflare R2 (Stage F)
 
 ESP32-CAM 모션 영상 저장용. S3 호환 API.

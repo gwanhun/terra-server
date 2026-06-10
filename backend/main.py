@@ -25,7 +25,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 
 from backend.health import register_health
-from backend.routers import cameras, clips, devices, enclosures
+from backend.routers import cameras, clips, devices, enclosures, webrtc
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(REPO_ROOT / ".env")
@@ -69,6 +69,7 @@ tags_metadata = [
     {"name": "devices", "description": "ESP32-S3 디바이스 (센서/제어) 페어링 + CRUD."},
     {"name": "enclosures", "description": "사육장(상위 묶음) CRUD. device/camera 가 N:1 로 소속."},
     {"name": "cameras", "description": "카메라 워커 (ESP32-P4 / RPi) 페어링 + CRUD."},
+    {"name": "webrtc", "description": "카메라 라이브 스트리밍 WebRTC 시그널링."},
     {
         "name": "clips",
         "description": (
@@ -148,6 +149,7 @@ register_health(app, label="terra-api")
 app.include_router(devices.router)
 app.include_router(enclosures.router)
 app.include_router(cameras.router)
+app.include_router(webrtc.router)
 app.include_router(clips.camera_clips_router)
 app.include_router(clips.enclosure_clips_router)
 app.include_router(clips.clips_router)
