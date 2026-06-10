@@ -34,6 +34,12 @@ def _set_dev_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("R2_ACCESS_KEY_ID", "test-access-key")
     monkeypatch.setenv("R2_SECRET_ACCESS_KEY", "test-secret-key")
     monkeypatch.setenv("R2_BUCKET", "test-bucket")
+    # MQTT 페어링 응답용 더미
+    monkeypatch.setenv("MQTT_BROKER_HOST", "test-broker.local")
+    monkeypatch.setenv("MQTT_BROKER_PORT", "8883")
+    monkeypatch.setenv("MQTT_USE_TLS", "true")
+    # Mosquitto 자동 등록 비활성 (sudo 호출 차단)
+    monkeypatch.setenv("MOSQUITTO_REGISTRY_ENABLED", "false")
 
 
 @pytest.fixture
@@ -63,6 +69,7 @@ def app_client(monkeypatch: pytest.MonkeyPatch, fake_sb: MagicMock) -> TestClien
     from backend.routers import clips as clips_router
     from backend.routers import devices as devices_router
     from backend.routers import enclosures as enclosures_router
+    from backend.routers import webrtc as webrtc_router
 
     for mod in (
         auth_camera,
@@ -70,6 +77,7 @@ def app_client(monkeypatch: pytest.MonkeyPatch, fake_sb: MagicMock) -> TestClien
         clips_router,
         devices_router,
         enclosures_router,
+        webrtc_router,
     ):
         monkeypatch.setattr(mod, "get_supabase_client", lambda: fake_sb)
 

@@ -22,6 +22,7 @@ devices/pair 와 동일 패턴. 차이: enclosure_id 옵션, model/resolution/fp
 from __future__ import annotations
 
 import logging
+import os
 import secrets
 from typing import Any
 
@@ -60,14 +61,18 @@ class CameraPairRequest(BaseModel):
 class CameraPairResponse(BaseModel):
     id: str = Field(..., description="cameras.id (UUID)")
     camera_id: str = Field(
-        ..., description="MQTT client_id. 모델별 접두사 (p4cam-/picam-)"
+        ..., description="MQTT client_id 겸 username. 모델별 접두사 (p4cam-/picam-)"
     )
     camera_token: str = Field(
         ...,
         description=(
-            "**평문 토큰. 응답에만 1회 노출.** NVS 에 저장 필수. 분실 시 재페어링."
+            "**평문 토큰. 응답에만 1회 노출.** NVS 에 저장 필수. 분실 시 재페어링. "
+            "MQTT password 와 REST `Authorization: Bearer` 양쪽에 동일하게 사용."
         ),
     )
+    mqtt_broker_host: str = Field(..., description="Mosquitto 브로커 호스트")
+    mqtt_broker_port: int = Field(..., description="Mosquitto 브로커 포트 (TLS 8883 / 평문 1883)")
+    mqtt_use_tls: bool = Field(..., description="true 면 TLS 8883 필수")
 
 
 class CameraUpdate(BaseModel):
@@ -114,6 +119,26 @@ def _validate_enums(model: str | None, resolution: str | None) -> None:
             status_code=400,
             detail=f"resolution 은 {sorted(_ALLOWED_RESOLUTIONS)} 중 하나여야 함.",
         )
+
+
+def _mqtt_connect_info() -> dict[str, Any]:
+    """페어링 응답에 포함할 브로커 접속 정보. .env 의 MQTT_* 그대로 노출."""
+    host = os.getenv("MQTT_BROKER_HOST", "").strip()
+    if not host:
+        raise HTTPException(
+            status_code=500,
+            detail="서버 설정 오류: MQTT_BROKER_HOST 가 비어있음.",
+        )
+    port_raw = os.getenv("MQTT_BROKER_PORT", "8883").strip()
+    try:
+        port = int(port_raw)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"서버 설정 오류: MQTT_BROKER_PORT 값 이상함 ({port_raw!r}).",
+        ) from exc
+    use_tls = os.getenv("MQTT_USE_TLS", "true").strip().lower() == "true"
+    return {"mqtt_broker_host": host, "mqtt_broker_port": port, "mqtt_use_tls": use_tls}
 
 
 def _verify_enclosure_owner(sb, enclosure_id: str, user_id: str) -> None:
@@ -188,6 +213,7 @@ def pair_camera(
         id=row["id"],
         camera_id=row["camera_id"],
         camera_token=camera_token,
+        **_mqtt_connect_info(),
     )
 
 

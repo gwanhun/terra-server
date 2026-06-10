@@ -47,6 +47,11 @@ def test_pair_camera_success(app_client: TestClient, fake_sb: MagicMock) -> None
     # 평문 토큰이 1회 응답에 노출됨
     assert len(body["camera_token"]) > 20
 
+    # MQTT 접속 정보: env 그대로 전달 (펌웨어가 NVS 저장 후 바로 connect)
+    assert body["mqtt_broker_host"] == "test-broker.local"
+    assert body["mqtt_broker_port"] == 8883
+    assert body["mqtt_use_tls"] is True
+
     # INSERT payload: token 은 평문 아닌 bcrypt hash
     insert_call = fake_sb.table.return_value.insert.call_args
     payload = insert_call.args[0]
