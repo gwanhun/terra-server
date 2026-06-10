@@ -58,9 +58,12 @@ clips_router = APIRouter(prefix="/clips", tags=["clips"])
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
 
-# R2 object key 패턴: "clips/{YYYY}/{MM}/{DD}/{camera_id}/{clip_id}.mp4"
+# R2 object key 패턴:
+#   비디오: "clips/{YYYY}/{MM}/{DD}/{camera_id}/{clip_id}.mp4"
+#   썸네일: "clips/{YYYY}/{MM}/{DD}/{camera_id}/{clip_id}.jpg"
+# 둘 다 같은 prefix → R2 lifecycle (30일 일괄 삭제) 와 align.
 _KEY_RE = re.compile(
-    r"^clips/(\d{4})/(\d{2})/(\d{2})/([^/]+)/([0-9a-f-]{36})\.mp4$"
+    r"^clips/(\d{4})/(\d{2})/(\d{2})/([^/]+)/([0-9a-f-]{36})\.(mp4|jpg)$"
 )
 
 
@@ -70,13 +73,25 @@ _KEY_RE = re.compile(
 class UploadUrlRequest(BaseModel):
     started_at: datetime = Field(..., description="ISO8601. 모션 감지 시작 시각.")
     duration_sec: float = Field(..., gt=0, le=600, examples=[10.0])
+    with_thumbnail: bool = Field(
+        default=True,
+        description="true 면 비디오와 함께 썸네일 presigned PUT URL 도 발급. 펌웨어가 썸네일 안 쓰면 false.",
+    )
 
 
 class UploadUrlResponse(BaseModel):
-    url: str = Field(..., description="R2 presigned PUT URL. Content-Type=video/mp4 로 PUT.")
-    key: str = Field(..., description="R2 object key. 이후 POST /clips 호출 시 그대로 전달.")
-    clip_id: str = Field(..., description="DB row 의 id 로 사용됨 (key 와 동일 UUID).")
+    url: str = Field(..., description="비디오 R2 presigned PUT URL. Content-Type=video/mp4 로 PUT.")
+    key: str = Field(..., description="비디오 R2 object key. 이후 POST /clips 호출 시 그대로 전달.")
+    clip_id: str = Field(..., description="DB row 의 id 로 사용됨 (비디오 key 와 동일 UUID).")
     expires_in: int = Field(..., description="URL 유효 시간(초). 기본 300.")
+    thumbnail_url: str | None = Field(
+        None,
+        description="썸네일 presigned PUT URL (with_thumbnail=true 일 때). Content-Type=image/jpeg.",
+    )
+    thumbnail_key: str | None = Field(
+        None,
+        description="썸네일 R2 key (비디오와 동일 prefix + .jpg). POST /clips 의 thumbnail_key 로 그대로 전달.",
+    )
 
 
 class ClipMetaCreate(BaseModel):
@@ -142,22 +157,28 @@ _R2_ERROR = {502: {"description": "R2 응답 실패"}}
 # ---------- 헬퍼 ----------
 
 
-def _build_clip_key(camera_id_text: str, clip_id: str, started_at: datetime) -> str:
-    """clips/{YYYY}/{MM}/{DD}/{camera_id}/{clip_id}.mp4"""
+def _build_key(camera_id_text: str, clip_id: str, started_at: datetime, ext: str) -> str:
+    """clips/{YYYY}/{MM}/{DD}/{camera_id}/{clip_id}.{ext} — ext 는 'mp4' 또는 'jpg'."""
     ts = started_at.astimezone(timezone.utc) if started_at.tzinfo else started_at.replace(tzinfo=timezone.utc)
-    return f"clips/{ts.year:04d}/{ts.month:02d}/{ts.day:02d}/{camera_id_text}/{clip_id}.mp4"
+    return f"clips/{ts.year:04d}/{ts.month:02d}/{ts.day:02d}/{camera_id_text}/{clip_id}.{ext}"
 
 
-def _parse_clip_id_from_key(key: str, expected_camera_id_text: str) -> str:
-    """key 검증 + clip_id 추출. 본인 카메라 prefix 가 아니면 400."""
+def _parse_key(key: str, expected_camera_id_text: str, expected_ext: str) -> str:
+    """key 검증 + clip_id 추출. 본인 카메라 prefix / 기대 ext 불일치는 400."""
     m = _KEY_RE.match(key)
     if not m:
         raise HTTPException(status_code=400, detail=f"잘못된 key 형식: {key}")
     cam_in_key = m.group(4)
+    ext_in_key = m.group(6)
     if cam_in_key != expected_camera_id_text:
         raise HTTPException(
             status_code=400,
             detail=f"key 의 camera_id 가 본인 카메라와 다름 (expected={expected_camera_id_text}, got={cam_in_key})",
+        )
+    if ext_in_key != expected_ext:
+        raise HTTPException(
+            status_code=400,
+            detail=f"key 의 확장자가 기대값과 다름 (expected=.{expected_ext}, got=.{ext_in_key})",
         )
     return m.group(5)
 
@@ -195,16 +216,23 @@ def issue_upload_url(
     워커가 모션 감지 후 호출. **Bearer 는 사용자 JWT 가 아니라 `camera_token`**.
 
     응답 후 워커는:
-    1. `url` 로 HTTPS PUT (body=mp4, Content-Type=video/mp4)
-    2. 성공 시 `POST /cameras/{id}/clips` 로 `key` 와 메타 등록
+    1. `url` 로 비디오 HTTPS PUT (body=mp4, Content-Type=video/mp4)
+    2. (옵션) `thumbnail_url` 로 썸네일 HTTPS PUT (body=jpeg, Content-Type=image/jpeg)
+    3. 성공 시 `POST /cameras/{id}/clips` 로 `key` + `thumbnail_key` 와 메타 등록
 
-    `clip_id` 는 R2 object key 와 DB row id 가 같도록 미리 발급된 UUID. URL TTL 5분.
+    `clip_id` 는 R2 object key 와 DB row id 가 같도록 미리 발급된 UUID.
+    썸네일 key 는 비디오 key 의 확장자만 .jpg 로 바꾼 형태 (같은 prefix → R2 lifecycle align). URL TTL 5분.
     """
     clip_id = str(uuid.uuid4())
-    key = _build_clip_key(camera["camera_id"], clip_id, body.started_at)
+    key = _build_key(camera["camera_id"], clip_id, body.started_at, "mp4")
 
     try:
         url = generate_presigned_put_url(key, expires_in=DEFAULT_PUT_URL_TTL)
+        thumbnail_key: str | None = None
+        thumbnail_url: str | None = None
+        if body.with_thumbnail:
+            thumbnail_key = _build_key(camera["camera_id"], clip_id, body.started_at, "jpg")
+            thumbnail_url = generate_presigned_put_url(thumbnail_key, expires_in=DEFAULT_PUT_URL_TTL)
     except (BotoCoreError, ClientError) as exc:
         logger.exception("presigned PUT URL 발급 실패")
         raise HTTPException(status_code=502, detail=f"R2 error: {exc}") from exc
@@ -214,6 +242,8 @@ def issue_upload_url(
         key=key,
         clip_id=clip_id,
         expires_in=DEFAULT_PUT_URL_TTL,
+        thumbnail_url=thumbnail_url,
+        thumbnail_key=thumbnail_key,
     )
 
 
@@ -232,9 +262,18 @@ def create_clip_meta(
     R2 PUT 완료 후 호출. `key` 는 `upload-url` 응답 그대로 전달.
 
     서버는 key 의 camera prefix 가 본인 카메라와 일치하는지 검증 → 불일치는 400.
+    `thumbnail_key` 가 있으면 같은 검증 + clip_id 일치까지 확인.
     INSERT 성공 시 앱이 Realtime publication 으로 즉시 신규 클립 알림 수신.
     """
-    clip_id = _parse_clip_id_from_key(body.key, camera["camera_id"])
+    clip_id = _parse_key(body.key, camera["camera_id"], "mp4")
+
+    if body.thumbnail_key:
+        thumb_clip_id = _parse_key(body.thumbnail_key, camera["camera_id"], "jpg")
+        if thumb_clip_id != clip_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"thumbnail_key 의 clip_id 가 key 와 불일치 (video={clip_id}, thumb={thumb_clip_id})",
+            )
 
     payload: dict[str, Any] = {
         "id": clip_id,

@@ -61,6 +61,30 @@ def test_upload_url_returns_presigned(
     assert body["key"].endswith(".mp4")
     assert body["clip_id"] in body["key"]
     assert body["expires_in"] == 300
+    # with_thumbnail 기본 True → 썸네일 PUT URL 도 같이 발급
+    assert body["thumbnail_url"].startswith("https://r2.test/put/")
+    assert body["thumbnail_key"].endswith(".jpg")
+    assert body["thumbnail_key"].replace(".jpg", ".mp4") == body["key"]
+
+
+def test_upload_url_without_thumbnail(
+    app_client: TestClient, fake_sb: MagicMock, authed_camera_row: dict
+) -> None:
+    _setup_camera_lookup(fake_sb, authed_camera_row)
+
+    res = app_client.post(
+        f"/cameras/{CAMERA_UUID}/clips/upload-url",
+        headers={"Authorization": f"Bearer {CAMERA_TOKEN}"},
+        json={
+            "started_at": "2026-05-27T12:00:00Z",
+            "duration_sec": 10.0,
+            "with_thumbnail": False,
+        },
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["thumbnail_url"] is None
+    assert body["thumbnail_key"] is None
 
 
 def test_upload_url_requires_camera_token(
