@@ -48,6 +48,17 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
 .banner strong { font-size: 15px; }
 @keyframes pulse { 50% { opacity: .7; } }
 
+/* 라이브 모달 (WebRTC) */
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 9000; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.modal { background: #1a1a1a; border-radius: 8px; padding: 16px; max-width: 800px; width: 100%; max-height: 90vh; display: flex; flex-direction: column; gap: 10px; }
+.modal h2 { margin: 0; }
+.modal-header { display: flex; align-items: center; gap: 8px; }
+.modal-header button { margin-left: auto; }
+.live-video { width: 100%; max-height: 65vh; background: #000; border-radius: 4px; display: block; }
+.live-status { font-family: monospace; font-size: 12px; padding: 6px 10px; border-radius: 4px; background: #080808; color: #9f9; word-break: break-all; min-height: 1.4em; }
+.live-status.warn { color: #fc9; }
+.live-status.bad { color: #f99; }
+
 /* 모바일 (≤600px) — 좁은 화면 보정 */
 @media (max-width: 600px) {
   body { padding: 8px; }
@@ -246,6 +257,18 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
 
 </div>
 
+</div>
+
+<!-- 라이브 모달 (WebRTC) -->
+<div id="live-modal" class="modal-backdrop hidden" onclick="if(event.target===this)closeLive()">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>🎥 라이브 — <span id="live-camera-label"></span></h2>
+      <button class="danger" onclick="closeLive()">닫기</button>
+    </div>
+    <video id="live-video" class="live-video" autoplay playsinline muted></video>
+    <div id="live-status" class="live-status">대기</div>
+  </div>
 </div>
 
 <!-- Supabase JS (CDN) -->
@@ -830,7 +853,7 @@ async function loadCameras() {
   tbody.innerHTML = '';
   (rows || []).forEach(r => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td>${r.is_online ? '<span class="good">●</span>' : '<span class="muted">○</span>'}</td><td><button class="danger" onclick="deleteCamera('${r.id}')">삭제</button></td>`;
+    tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td>${r.is_online ? '<span class="good">●</span>' : '<span class="muted">○</span>'}</td><td style="white-space:nowrap"><button onclick="openLive('${r.id}', ${JSON.stringify(r.camera_id)})">라이브</button> <button class="danger" onclick="deleteCamera('${r.id}')">삭제</button></td>`;
     tbody.appendChild(tr);
   });
 }
@@ -844,7 +867,8 @@ async function pairCamera() {
     document.getElementById('cam-name').value = '';
     const box = document.getElementById('cam-token');
     box.classList.remove('hidden');
-    box.innerHTML = `<h3>⚠️ Camera 토큰 (1회만 노출)</h3><div class="token-once">camera_id: ${r.camera_id}<br>camera_token: ${r.camera_token}</div>`;
+    const tlsTag = r.mqtt_use_tls ? ' (TLS)' : '';
+    box.innerHTML = `<h3>⚠️ Camera 토큰 (1회만 노출)</h3><div class="token-once">camera_id: ${esc(r.camera_id)}<br>camera_token: ${esc(r.camera_token)}<br>mqtt_broker: ${esc(r.mqtt_broker_host)}:${r.mqtt_broker_port}${tlsTag}</div>`;
     loadCameras();
   }
 }
@@ -854,6 +878,125 @@ async function deleteCamera(id) {
   const r = await fetch(CONFIG.apiBase + '/cameras/' + id, { method: 'DELETE', headers: { Authorization: 'Bearer ' + session.access_token } });
   log({ DELETE: '/cameras/' + id, status: r.status });
   loadCameras();
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// WebRTC 라이브 (Stage G2)
+// 흐름: GET /webrtc/config → RTCPeerConnection → createOffer → (ICE gather 완료 대기)
+//      → POST /webrtc/offer → answer SDP setRemoteDescription → ontrack 으로 <video>
+//
+// 시그널링은 offer/answer 1회 동기 교환 → 양방향 모두 non-trickle 로 통일:
+//  - 웹: ICE gathering 완료까지 기다렸다가 후보가 모두 박힌 offer SDP 를 전송
+//  - 펌웨어: esp_peer answer SDP 에 후보 임베드(gather-then-report)
+// 따라서 별도 trickle 채널(/webrtc/ice, 카메라→웹 반환)이 필요 없다.
+// (/webrtc/ice 엔드포인트는 향후 trickle 도입 대비로 서버에 남겨둠 — 지금은 미사용)
+// ─────────────────────────────────────────────────────────────────────────
+let livePc = null;
+let liveSessionId = null;
+let liveCameraUuid = null;
+
+function liveStatus(msg, cls) {
+  const el = document.getElementById('live-status');
+  if (!el) return;
+  el.textContent = msg;
+  el.className = 'live-status' + (cls ? ' ' + cls : '');
+}
+
+// non-trickle: gathering 이 끝나면(또는 타임아웃) localDescription.sdp 에 후보가 모두 포함됨
+function waitIceGatheringComplete(pc, timeoutMs = 2000) {
+  if (pc.iceGatheringState === 'complete') return Promise.resolve();
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      pc.removeEventListener('icegatheringstatechange', check);
+      resolve();
+    };
+    const check = () => { if (pc.iceGatheringState === 'complete') finish(); };
+    pc.addEventListener('icegatheringstatechange', check);
+    setTimeout(finish, timeoutMs); // STUN 느릴 때 무한 대기 방지
+  });
+}
+
+async function openLive(cameraUuid, cameraIdLabel) {
+  document.getElementById('live-camera-label').textContent = cameraIdLabel || cameraUuid;
+  document.getElementById('live-modal').classList.remove('hidden');
+  document.getElementById('live-video').srcObject = null;
+  liveCameraUuid = cameraUuid;
+  liveSessionId = null;
+  liveStatus('STUN/TURN 설정 가져오는 중...', 'warn');
+
+  const cfg = await api('/cameras/webrtc/config');
+  if (!cfg) { liveStatus('config 실패 — /cameras/webrtc/config', 'bad'); return; }
+
+  if (livePc) { try { livePc.close(); } catch (e) {} }
+  livePc = new RTCPeerConnection({ iceServers: cfg.iceServers || [] });
+
+  livePc.addTransceiver('video', { direction: 'recvonly' });
+  // 음성은 Stage G3 이후. 일단 video 만.
+
+  livePc.ontrack = (ev) => {
+    const v = document.getElementById('live-video');
+    if (v.srcObject !== ev.streams[0]) {
+      v.srcObject = ev.streams[0];
+      liveStatus('영상 수신 중', '');
+    }
+  };
+  livePc.onconnectionstatechange = () => {
+    if (!livePc) return;
+    const s = livePc.connectionState;
+    if (s === 'connected') liveStatus('PeerConnection 연결됨', '');
+    else if (s === 'failed') liveStatus('PeerConnection 실패 — STUN/TURN 또는 카메라 측 ICE 확인', 'bad');
+    else if (s === 'disconnected') liveStatus('PeerConnection 끊김', 'warn');
+    else liveStatus('상태: ' + s, 'warn');
+  };
+  // non-trickle: 후보는 offer SDP 에 모두 포함시켜 보내므로 trickle 핸들러 불필요.
+
+  try {
+    const offer = await livePc.createOffer({ offerToReceiveVideo: true });
+    await livePc.setLocalDescription(offer);
+  } catch (e) {
+    liveStatus('SDP offer 생성 실패: ' + e.message, 'bad');
+    return;
+  }
+
+  // ICE 후보가 SDP 에 다 박힐 때까지 대기 (non-trickle)
+  liveStatus('ICE 후보 수집 중...', 'warn');
+  await waitIceGatheringComplete(livePc, 2000);
+
+  liveStatus('카메라에 offer 전송 (최대 15초 대기)...', 'warn');
+  const ans = await api(`/cameras/${cameraUuid}/webrtc/offer`, {
+    method: 'POST',
+    body: JSON.stringify({ sdp: livePc.localDescription.sdp, type: 'offer' }),
+  });
+  if (!ans) {
+    liveStatus('카메라 응답 없음 (504/502) — 펌웨어가 webrtc_offer 처리 가능한지 확인', 'bad');
+    return;
+  }
+  liveSessionId = ans.session_id;
+  try {
+    await livePc.setRemoteDescription({ type: 'answer', sdp: ans.sdp });
+    liveStatus('answer 적용 완료 — ICE 연결 시도 중', 'warn');
+  } catch (e) {
+    liveStatus('answer SDP 적용 실패: ' + e.message, 'bad');
+  }
+}
+
+async function closeLive() {
+  document.getElementById('live-modal').classList.add('hidden');
+  const sid = liveSessionId;
+  const uuid = liveCameraUuid;
+  liveSessionId = null;
+  if (livePc) { try { livePc.close(); } catch (e) {} livePc = null; }
+  if (sid && uuid) {
+    // best-effort 카메라에 종료 통지 (실패해도 무시)
+    await api(`/cameras/${uuid}/webrtc/close`, {
+      method: 'POST',
+      body: JSON.stringify({ session_id: sid }),
+    });
+  }
+  liveCameraUuid = null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
