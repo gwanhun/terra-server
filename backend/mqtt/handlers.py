@@ -14,9 +14,14 @@ Supabase mock 만으로 단위 테스트 가능.
 
 ## device_id 해상
 
-`esp32/{device_id}/...` 의 device_id 는 TEXT (e.g. "terra-a1b2c3d4").
-DB FK 는 `devices.id` (UUID). 매 메시지마다 SELECT 하면 DB 왕복 비용 큼.
-→ lru_cache 로 device_id_text → UUID 캐싱 (1000 entries).
+`esp32/{device_id}/...` 의 device_id 는 TEXT — 두 종류 entity:
+- 디바이스 (센서/제어): `terra-XXXXXXXX` → `devices` 테이블
+- 카메라 워커: `p4cam-XXXXXXXX` / `picam-XXXXXXXX` → `cameras` 테이블
+
+DB FK 는 각각 `devices.id` / `cameras.id` (UUID). 매 메시지마다 SELECT 하면 DB 왕복 비용 큼.
+→ lru_cache 로 device_id_text → UUID 캐싱 (각 1000 entries).
+
+`_resolve_entity()` 가 두 테이블을 순차 조회하고 (type, uuid) 튜플로 반환.
 
 캐시 invalidation 은 token_rotate / 디바이스 삭제 시 별도 처리 필요 (Stage C/B).
 지금은 캐시 만료 없음 — 운영 중 디바이스 식별자 변경 안 됨 (페어링 시점에만 결정).
@@ -79,10 +84,43 @@ def _cached_device_text(device_uuid: str) -> str | None:
     return rows[0]["device_id"]
 
 
+@lru_cache(maxsize=1000)
+def _cached_camera_uuid(camera_id_text: str) -> str | None:
+    """cameras.camera_id (TEXT, "p4cam-..." 등) → cameras.id (UUID). 미존재면 None."""
+    sb = get_supabase_client()
+    res = (
+        sb.table("cameras")
+        .select("id")
+        .eq("camera_id", camera_id_text)
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    if not rows:
+        return None
+    return rows[0]["id"]
+
+
+def _resolve_entity(device_id_text: str) -> tuple[str | None, str | None]:
+    """device_id (TEXT) → (entity_type, uuid).
+
+    entity_type ∈ {"device", "camera", None}. 미페어링이면 (None, None).
+    devices 를 먼저 조회 (대부분 디바이스 트래픽), 미스 시 cameras.
+    """
+    uid = _cached_device_uuid(device_id_text)
+    if uid is not None:
+        return ("device", uid)
+    uid = _cached_camera_uuid(device_id_text)
+    if uid is not None:
+        return ("camera", uid)
+    return (None, None)
+
+
 def reset_device_cache() -> None:
-    """테스트/디바이스 삭제 시 호출."""
+    """테스트/디바이스 삭제 시 호출. devices/cameras 양쪽 캐시 모두 비움."""
     _cached_device_uuid.cache_clear()
     _cached_device_text.cache_clear()
+    _cached_camera_uuid.cache_clear()
 
 
 # ---------- ts 정규화 ----------
@@ -120,18 +158,35 @@ def _now_iso() -> str:
 def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
     """
     스펙 ([docs/MQTT.md](../../docs/MQTT.md) §1):
-        { "ts": ..., "dht22_a": {...}, "dht22_b": {...},
-          "relay": "OFF", "fan": "ON", "heater": {"state":"OFF","locked":false} }
+        디바이스: { "ts": ..., "dht22_a": {...}, "dht22_b": {...},
+                   "relay": "OFF", "fan": "ON", "heater": {"state":"OFF","locked":false} }
+        카메라:   { "ts": ..., "uptime_sec": ..., "wifi_rssi": ..., "free_heap": ... }
+                  (페이로드 자유 — 서버는 last_seen 만 갱신)
 
-    동작: telemetry INSERT + devices.last_seen_at/is_online UPDATE.
-    device_id 미존재 시 경고 후 무시 (페어링 안 된 디바이스).
+    동작:
+    - device: telemetry INSERT + devices.last_seen_at/is_online UPDATE + 임계값 평가
+    - camera: telemetry INSERT 건너뜀 (스키마 불일치). cameras.last_seen_at/is_online UPDATE 만.
+    - 미페어링: 경고 후 무시.
     """
-    device_uuid = _cached_device_uuid(device_id_text)
-    if device_uuid is None:
+    entity_type, entity_uuid = _resolve_entity(device_id_text)
+    if entity_uuid is None:
         logger.warning("telemetry: 미페어링 device_id=%s 무시", device_id_text)
         return
 
     sb = get_supabase_client()
+
+    if entity_type == "camera":
+        # 카메라는 heartbeat 만 — telemetry 행 INSERT X, last_seen 갱신 O.
+        try:
+            sb.table("cameras").update({
+                "last_seen_at": _now_iso(),
+                "is_online": True,
+            }).eq("id", entity_uuid).execute()
+        except Exception:  # noqa: BLE001
+            logger.exception("cameras UPDATE 실패 (camera=%s)", device_id_text)
+        return
+
+    device_uuid = entity_uuid
     ts = _normalize_ts(payload.get("ts"))
 
     dht_a = payload.get("dht22_a") or {}
@@ -186,14 +241,28 @@ def handle_ack(device_id_text: str, payload: dict[str, Any]) -> None:
     스펙 ([docs/MQTT.md](../../docs/MQTT.md) §3):
         { "msg_id": "<uuid>", "result": "ok", "state": {...} }
 
-    동작: commands UPDATE status='acked', result, acked_at.
-    msg_id 가 본인 디바이스의 commands 가 아니면 매칭 0건이라 자연스럽게 무시.
+    동작:
+    - device ack: commands UPDATE status='acked', result, acked_at + devices.last_seen UPDATE
+    - camera ack: cameras.last_seen UPDATE 만 (camera 대상 commands 테이블 없음 — webrtc 시그널링은
+      별도의 short-lived MQTT 클라이언트가 직접 수신).
     """
-    device_uuid = _cached_device_uuid(device_id_text)
-    if device_uuid is None:
+    entity_type, entity_uuid = _resolve_entity(device_id_text)
+    if entity_uuid is None:
         logger.warning("ack: 미페어링 device_id=%s 무시", device_id_text)
         return
 
+    if entity_type == "camera":
+        try:
+            sb = get_supabase_client()
+            sb.table("cameras").update({
+                "last_seen_at": _now_iso(),
+                "is_online": True,
+            }).eq("id", entity_uuid).execute()
+        except Exception:  # noqa: BLE001
+            logger.exception("cameras UPDATE 실패 (ack camera=%s)", device_id_text)
+        return
+
+    device_uuid = entity_uuid
     msg_id = payload.get("msg_id")
     if not msg_id:
         logger.warning("ack: msg_id 없음 (device=%s, payload=%s)", device_id_text, payload)
@@ -268,7 +337,9 @@ def handle_alert(device_id_text: str, payload: dict[str, Any]) -> None:
 
 
 __all__ = [
+    "_cached_camera_uuid",
     "_cached_device_text",
+    "_resolve_entity",
     "handle_ack",
     "handle_alert",
     "handle_telemetry",

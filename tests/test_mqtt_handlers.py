@@ -15,6 +15,9 @@ from backend.mqtt import handlers
 DEVICE_TEXT = "terra-test01"
 DEVICE_UUID = "11111111-1111-1111-1111-aaaaaaaaaaaa"
 
+CAMERA_TEXT = "p4cam-aabbccdd"
+CAMERA_UUID = "22222222-2222-2222-2222-bbbbbbbbbbbb"
+
 
 def _setup_device_lookup(
     fake_sb: MagicMock, uuid: str | None = DEVICE_UUID
@@ -316,3 +319,63 @@ def test_handle_alert_missing_kind_skipped(fake_sb: MagicMock) -> None:
     handlers.handle_alert(DEVICE_TEXT, {"message": "no kind"})
     table_calls = [c.args[0] for c in fake_sb.table.call_args_list]
     assert "alerts" not in table_calls
+
+
+# ---------- 카메라 케이스 (cameras 테이블 fallback) ----------
+
+
+def _camera_table_factory(updates: list[dict]) -> "callable":
+    """devices 미스 + cameras 히트 + cameras.update 캡처."""
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        if name == "devices":
+            t.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+        elif name == "cameras":
+            t.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+                {"id": CAMERA_UUID}
+            ]
+            t._upd = MagicMock()
+            t._upd.eq.return_value.execute.return_value.data = [{"id": CAMERA_UUID}]
+            t.update.side_effect = lambda payload: updates.append(payload) or t._upd
+        return t
+    return _table
+
+
+def test_handle_telemetry_camera_updates_last_seen_only(fake_sb: MagicMock) -> None:
+    """카메라 telemetry: telemetry 테이블 INSERT 안 하고 cameras.last_seen/is_online 만 갱신."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_table_factory(updates)
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1_748_000_000, "uptime_sec": 60, "wifi_rssi": -55})
+
+    # telemetry INSERT 호출 없음 — 스키마 불일치
+    table_calls = [c.args[0] for c in fake_sb.table.call_args_list]
+    assert "telemetry" not in table_calls
+
+    # cameras UPDATE 한 번
+    assert len(updates) == 1
+    assert updates[0]["is_online"] is True
+    assert "last_seen_at" in updates[0]
+
+
+def test_handle_ack_camera_updates_last_seen_only(fake_sb: MagicMock) -> None:
+    """카메라 ack: commands 매칭 안 하고 cameras.last_seen 만 갱신."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_table_factory(updates)
+
+    handlers.handle_ack(CAMERA_TEXT, {"action": "webrtc_answer", "session_id": "s-1", "sdp": "..."})
+
+    # commands 테이블 안 건드림
+    table_calls = [c.args[0] for c in fake_sb.table.call_args_list]
+    assert "commands" not in table_calls
+
+    # cameras UPDATE 한 번
+    assert len(updates) == 1
+    assert updates[0]["is_online"] is True
+
+
+def test_resolve_entity_unknown_returns_none(fake_sb: MagicMock) -> None:
+    """devices/cameras 둘 다 미스면 (None, None)."""
+    chain = fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value
+    chain.execute.return_value.data = []
+    assert handlers._resolve_entity("ghost-xyz") == (None, None)
