@@ -975,6 +975,14 @@ async function openLive(cameraUuid, cameraIdLabel) {
   liveStatus('ICE 후보 수집 중...', 'warn');
   await waitIceGatheringComplete(livePc, 2000);
 
+  // [진단] offer candidate 줄 콘솔 출력 — mDNS(.local) vs raw IP 확인
+  const _cands = (livePc.localDescription.sdp || '').split('\n')
+    .filter(l => l.startsWith('a=candidate')).map(l => l.trim());
+  console.log('%c[live] OFFER candidates:', 'color:#5af;font-weight:bold');
+  _cands.forEach(c => console.log('  ' + c));
+  console.log('%c[live] HOST 후보(.local=mDNS켜짐 / 192.168.x=raw):', 'color:#fa0;font-weight:bold',
+    _cands.filter(c => c.includes('typ host')));
+
   liveStatus('카메라에 offer 전송 (최대 15초 대기)...', 'warn');
   const ans = await api(`/cameras/${cameraUuid}/webrtc/offer`, {
     method: 'POST',
