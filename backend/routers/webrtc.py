@@ -155,11 +155,16 @@ def create_webrtc_offer(
 ) -> WebRTCAnswerOut:
     camera = _owned_camera(camera_uuid, user_id)
     session_id = body.session_id or str(uuid4())
+    # 카메라(esp_peer)의 mbedtls DTLS 서버는 조각난 ClientHello 재조립을 못 함
+    # (MBEDTLS_ERR_SSL_FEATURE_UNAVAILABLE). offer 의 setup:actpass → passive 로 바꿔
+    # 카메라가 DTLS active(클라이언트)가 되게 강제 → 카메라가 작은 ClientHello 를 보내고
+    # 브라우저(DTLS 서버)가 받음. 브라우저는 answer(setup:active)만 보므로 영향 없음.
+    offer_sdp = body.sdp.replace('a=setup:actpass', 'a=setup:passive')
     command = _command(
         'webrtc_offer',
         session_id,
         body.ttl_sec,
-        sdp=body.sdp,
+        sdp=offer_sdp,
         type=body.type,
     )
 
