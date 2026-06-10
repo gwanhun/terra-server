@@ -7,6 +7,7 @@ worker over MQTT.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -23,6 +24,8 @@ from backend.webrtc_signaling import (
     WebRTCSignalingError,
     WebRTCSignalingTimeout,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/cameras', tags=['webrtc'])
 
@@ -201,23 +204,33 @@ def add_webrtc_ice(
 @router.post(
     '/{camera_uuid}/webrtc/close',
     response_model=WebRTCCommandOut,
-    summary='WebRTC 세션 종료',
+    summary='WebRTC 세션 종료 (best-effort)',
 )
 def close_webrtc(
     camera_uuid: str,
     body: WebRTCCloseIn,
     user_id: str = Depends(get_current_user_id),
 ) -> WebRTCCommandOut:
+    """
+    세션 종료는 idempotent + best-effort. MQTT publish 실패해도 502 안 던짐:
+    - 카메라가 이미 끊겼을 수 있고 (네트워크/재부팅), 카메라 측에서 자체 timeout 으로 세션 정리
+    - DB 의 stream_mode/until 정리는 어떤 경우든 진행해서 다음 라이브 요청 받을 수 있게
+    """
     camera = _owned_camera(camera_uuid, user_id)
     command = _command('webrtc_close', body.session_id, body.ttl_sec)
+    publish_ok = True
     try:
         MqttWebRTCSignaling().publish(camera['camera_id'], command)
-    except WebRTCSignalingError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except WebRTCSignalingError:
+        publish_ok = False
+        # close 는 best-effort — 카메라가 못 받아도 서버 측 정리는 진행.
+        # 진짜 MQTT 인프라 문제라면 webrtc_signaling 측 ERROR 로그가 누적될 거라 운영 감지 가능.
+        logger.warning("webrtc_close publish 실패 (camera=%s session=%s) — 서버 측 정리만 진행",
+                       camera.get('camera_id'), body.session_id)
 
     sb = get_supabase_client()
     sb.table('cameras').update({
         'stream_mode': None,
         'stream_until': None,
     }).eq('id', camera_uuid).eq('owner_id', user_id).execute()
-    return WebRTCCommandOut(ok=True, session_id=body.session_id)
+    return WebRTCCommandOut(ok=publish_ok, session_id=body.session_id)
