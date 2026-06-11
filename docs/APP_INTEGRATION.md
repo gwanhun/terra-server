@@ -495,6 +495,18 @@ R2 presigned URL TTL 1시간. 그 안에 재생/시크 가능. 만료 후 재호
 
 ---
 
+## 7.5 카메라 라이브 스트리밍 (WebRTC)
+
+라이브는 별도 문서: **[docs/APP_WEBRTC.md](APP_WEBRTC.md)**.
+
+요약:
+- 카메라 ↔ 앱 **P2P** 로 직접 흐름 (terra-server 미디어 안 거침, 시그널링만).
+- RTCPeerConnection 만들고 → REST 4개 (config/offer/ice/candidates/close) 호출.
+- 양방향 ICE trickle: 앱→펌웨어는 POST `/webrtc/ice`, 펌웨어→앱은 GET `/webrtc/candidates` long-poll.
+- 의존성: `flutter_webrtc` (Flutter) / `WebRTC.xcframework` (iOS) / `webrtc-sdk:android` (Android).
+
+---
+
 ## 8. 흔한 시나리오
 
 ### 8.1 부팅 — 자동 로그인 + 초기 데이터 로드
