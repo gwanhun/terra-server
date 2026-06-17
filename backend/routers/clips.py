@@ -59,11 +59,12 @@ DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
 
 # R2 object key 패턴 (버킷 petcam-clips 를 petcam-lab 과 공유 → terra-clips/ 로 분리):
-#   비디오: "terra-clips/clips/{YYYY}/{MM}/{DD}/{camera_id}/{clip_id}.mp4"
-#   썸네일: "terra-clips/clips/{YYYY}/{MM}/{DD}/{camera_id}/{clip_id}.jpg"
-# 둘 다 같은 prefix → R2 lifecycle (30일 일괄 삭제) 와 align.
+#   비디오: "terra-clips/clips/{camera_id}/{YYYYMMDD-HHMMSS}_{clip_id}.mp4"
+#   썸네일: "terra-clips/clips/{camera_id}/{YYYYMMDD-HHMMSS}_{clip_id}.jpg"
+# 날짜 디렉토리는 빼서 depth 축소, 대신 파일명 맨 앞에 UTC 시각(started_at) prefix → 정렬·식별 용이.
+# cleanup 은 terra-clips/clips/ prefix 스캔으로 동일 동작.
 _KEY_RE = re.compile(
-    r"^terra-clips/clips/(\d{4})/(\d{2})/(\d{2})/([^/]+)/([0-9a-f-]{36})\.(mp4|jpg)$"
+    r"^terra-clips/clips/(?P<camera>[^/]+)/(?P<stamp>\d{8}-\d{6})_(?P<clip_id>[0-9a-f-]{36})\.(?P<ext>mp4|jpg)$"
 )
 
 
@@ -158,9 +159,14 @@ _R2_ERROR = {502: {"description": "R2 응답 실패"}}
 
 
 def _build_key(camera_id_text: str, clip_id: str, started_at: datetime, ext: str) -> str:
-    """terra-clips/clips/{YYYY}/{MM}/{DD}/{camera_id}/{clip_id}.{ext} — ext 는 'mp4' 또는 'jpg'."""
+    """terra-clips/clips/{camera_id}/{YYYYMMDD-HHMMSS}_{clip_id}.{ext} — ext 는 'mp4' 또는 'jpg'.
+
+    날짜 디렉토리는 빼서 depth 를 줄이고, 파일명 맨 앞에 UTC 시각(started_at) prefix 를 붙여
+    R2 목록에서 시간순 정렬·식별이 쉽게 한다. cleanup 은 'terra-clips/clips/' prefix 스캔으로 동일.
+    """
     ts = started_at.astimezone(timezone.utc) if started_at.tzinfo else started_at.replace(tzinfo=timezone.utc)
-    return f"terra-clips/clips/{ts.year:04d}/{ts.month:02d}/{ts.day:02d}/{camera_id_text}/{clip_id}.{ext}"
+    stamp = ts.strftime("%Y%m%d-%H%M%S")
+    return f"terra-clips/clips/{camera_id_text}/{stamp}_{clip_id}.{ext}"
 
 
 def _parse_key(key: str, expected_camera_id_text: str, expected_ext: str) -> str:
@@ -168,8 +174,8 @@ def _parse_key(key: str, expected_camera_id_text: str, expected_ext: str) -> str
     m = _KEY_RE.match(key)
     if not m:
         raise HTTPException(status_code=400, detail=f"잘못된 key 형식: {key}")
-    cam_in_key = m.group(4)
-    ext_in_key = m.group(6)
+    cam_in_key = m.group("camera")
+    ext_in_key = m.group("ext")
     if cam_in_key != expected_camera_id_text:
         raise HTTPException(
             status_code=400,
@@ -180,7 +186,7 @@ def _parse_key(key: str, expected_camera_id_text: str, expected_ext: str) -> str
             status_code=400,
             detail=f"key 의 확장자가 기대값과 다름 (expected=.{expected_ext}, got=.{ext_in_key})",
         )
-    return m.group(5)
+    return m.group("clip_id")
 
 
 def _load_clip_for_owner(clip_id: str, user_id: str) -> dict[str, Any]:

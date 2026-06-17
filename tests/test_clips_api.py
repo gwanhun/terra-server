@@ -56,8 +56,8 @@ def test_upload_url_returns_presigned(
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["url"].startswith("https://r2.test/put/")
-    # key 포맷: terra-clips/clips/YYYY/MM/DD/{camera_id_text}/{clip_id}.mp4
-    assert body["key"].startswith(f"terra-clips/clips/2026/05/27/{CAMERA_ID_TEXT}/")
+    # key 포맷: terra-clips/clips/{camera_id_text}/{YYYYMMDD-HHMMSS}_{clip_id}.mp4
+    assert body["key"].startswith(f"terra-clips/clips/{CAMERA_ID_TEXT}/20260527-120000_")
     assert body["key"].endswith(".mp4")
     assert body["clip_id"] in body["key"]
     assert body["expires_in"] == 300
@@ -118,7 +118,7 @@ def test_create_clip_meta_ok(
 ) -> None:
     _setup_camera_lookup(fake_sb, authed_camera_row)
     clip_id = "abcdef12-3456-7890-abcd-ef1234567890"
-    key = f"terra-clips/clips/2026/05/27/{CAMERA_ID_TEXT}/{clip_id}.mp4"
+    key = f"terra-clips/clips/{CAMERA_ID_TEXT}/20260527-120000_{clip_id}.mp4"
 
     fake_sb.table.return_value.insert.return_value.execute.return_value.data = [
         {"id": clip_id}
@@ -153,7 +153,7 @@ def test_create_clip_meta_rejects_key_for_other_camera(
     app_client: TestClient, fake_sb: MagicMock, authed_camera_row: dict
 ) -> None:
     _setup_camera_lookup(fake_sb, authed_camera_row)
-    bad_key = "terra-clips/clips/2026/05/27/picam-deadbeef/abcdef12-3456-7890-abcd-ef1234567890.mp4"
+    bad_key = "terra-clips/clips/picam-deadbeef/20260527-120000_abcdef12-3456-7890-abcd-ef1234567890.mp4"
 
     res = app_client.post(
         f"/cameras/{CAMERA_UUID}/clips",

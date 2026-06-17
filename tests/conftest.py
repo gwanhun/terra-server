@@ -85,7 +85,7 @@ def app_client(monkeypatch: pytest.MonkeyPatch, fake_sb: MagicMock) -> TestClien
     monkeypatch.setattr(
         clips_router,
         "generate_presigned_put_url",
-        lambda key, expires_in=300: f"https://r2.test/put/{key}?sig=test",
+        lambda key, content_type="video/mp4", expires_in=300: f"https://r2.test/put/{key}?sig=test",
     )
     monkeypatch.setattr(
         clips_router,
