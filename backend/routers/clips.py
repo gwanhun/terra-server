@@ -58,12 +58,12 @@ clips_router = APIRouter(prefix="/clips", tags=["clips"])
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
 
-# R2 object key 패턴:
-#   비디오: "clips/{YYYY}/{MM}/{DD}/{camera_id}/{clip_id}.mp4"
-#   썸네일: "clips/{YYYY}/{MM}/{DD}/{camera_id}/{clip_id}.jpg"
+# R2 object key 패턴 (버킷 petcam-clips 를 petcam-lab 과 공유 → terra-clips/ 로 분리):
+#   비디오: "terra-clips/clips/{YYYY}/{MM}/{DD}/{camera_id}/{clip_id}.mp4"
+#   썸네일: "terra-clips/clips/{YYYY}/{MM}/{DD}/{camera_id}/{clip_id}.jpg"
 # 둘 다 같은 prefix → R2 lifecycle (30일 일괄 삭제) 와 align.
 _KEY_RE = re.compile(
-    r"^clips/(\d{4})/(\d{2})/(\d{2})/([^/]+)/([0-9a-f-]{36})\.(mp4|jpg)$"
+    r"^terra-clips/clips/(\d{4})/(\d{2})/(\d{2})/([^/]+)/([0-9a-f-]{36})\.(mp4|jpg)$"
 )
 
 
@@ -158,9 +158,9 @@ _R2_ERROR = {502: {"description": "R2 응답 실패"}}
 
 
 def _build_key(camera_id_text: str, clip_id: str, started_at: datetime, ext: str) -> str:
-    """clips/{YYYY}/{MM}/{DD}/{camera_id}/{clip_id}.{ext} — ext 는 'mp4' 또는 'jpg'."""
+    """terra-clips/clips/{YYYY}/{MM}/{DD}/{camera_id}/{clip_id}.{ext} — ext 는 'mp4' 또는 'jpg'."""
     ts = started_at.astimezone(timezone.utc) if started_at.tzinfo else started_at.replace(tzinfo=timezone.utc)
-    return f"clips/{ts.year:04d}/{ts.month:02d}/{ts.day:02d}/{camera_id_text}/{clip_id}.{ext}"
+    return f"terra-clips/clips/{ts.year:04d}/{ts.month:02d}/{ts.day:02d}/{camera_id_text}/{clip_id}.{ext}"
 
 
 def _parse_key(key: str, expected_camera_id_text: str, expected_ext: str) -> str:
