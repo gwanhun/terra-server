@@ -232,7 +232,11 @@ def issue_upload_url(
         thumbnail_url: str | None = None
         if body.with_thumbnail:
             thumbnail_key = _build_key(camera["camera_id"], clip_id, body.started_at, "jpg")
-            thumbnail_url = generate_presigned_put_url(thumbnail_key, expires_in=DEFAULT_PUT_URL_TTL)
+            # 썸네일은 image/jpeg 로 서명해야 한다. 펌웨어가 Content-Type: image/jpeg 로 PUT 하므로
+            # content_type 을 안 넘기면 기본값(video/mp4)으로 서명돼 서명 불일치 → R2 가 403 반환.
+            thumbnail_url = generate_presigned_put_url(
+                thumbnail_key, content_type="image/jpeg", expires_in=DEFAULT_PUT_URL_TTL
+            )
     except (BotoCoreError, ClientError) as exc:
         logger.exception("presigned PUT URL 발급 실패")
         raise HTTPException(status_code=502, detail=f"R2 error: {exc}") from exc
