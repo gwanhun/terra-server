@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -126,6 +127,56 @@ def _command(action: str, session_id: str, ttl_sec: int, **extra: Any) -> dict[s
     return payload
 
 
+_RTPMAP_RE = re.compile(r'^a=rtpmap:(\d+)\s+([A-Za-z0-9.\-]+)/')
+_FMTP_RE = re.compile(r'^a=fmtp:(\d+)\s+(.*)$')
+_PT_ATTR_RE = re.compile(r'^a=(?:rtpmap|rtcp-fb|fmtp):(\d+)\b')
+
+
+def _prune_offer_to_h264(sdp: str) -> str:
+    """브라우저 offer 를 H.264(packetization-mode=1) payload type 만 남기고 깎는다.
+
+    왜: 브라우저 offer 는 VP8/VP9/AV1/H265/H264 5종 + rtx/fec 까지 payload type 50여 개를
+    싣는다(~7KB). 카메라(esp_peer)는 H.264 만 보낼 수 있고, 거대한 SDP 를 다 파싱하지 못해
+    answer 자체를 못 만든다(→ ack 무응답 → REST 504). 코덱만 쳐내면 ~1KB 로 줄어 esp_peer 가
+    무난히 파싱한다.
+
+    안전성: payload type 을 **삭제만** 하고 절대 renumber 하지 않는다. 브라우저의 원본 offer 는
+    살아남은 PT 들을 그대로 매핑하고 있으므로, 카메라가 그중 어떤 PT 로 answer 하든 브라우저가
+    수용한다. 카메라 인코더 profile 이 무엇이든 매칭되도록 H.264 pm=1 PT 는 모두 남긴다.
+    """
+    lines = sdp.replace('\r\n', '\n').split('\n')
+
+    pt_codec: dict[str, str] = {}
+    for ln in lines:
+        m = _RTPMAP_RE.match(ln)
+        if m:
+            pt_codec[m.group(1)] = m.group(2).upper()
+
+    keep: set[str] = set()
+    for ln in lines:
+        m = _FMTP_RE.match(ln)
+        if m and pt_codec.get(m.group(1)) == 'H264' and 'packetization-mode=1' in m.group(2):
+            keep.add(m.group(1))
+    if not keep:  # fmtp 없이도 H.264 가 있으면 전부 유지 (fallback)
+        keep = {pt for pt, c in pt_codec.items() if c == 'H264'}
+    if not keep:  # H.264 자체가 없으면 손대지 않고 그대로 (원인이 다름)
+        return sdp
+
+    out: list[str] = []
+    for ln in lines:
+        if ln.startswith('m=video '):
+            parts = ln.split(' ')
+            kept_pts = [p for p in parts[3:] if p in keep]
+            out.append(' '.join(parts[:3] + kept_pts))
+            continue
+        m = _PT_ATTR_RE.match(ln)
+        if m and m.group(1) not in keep:
+            continue  # 버려진 PT 의 rtpmap/rtcp-fb/fmtp 제거
+        out.append(ln)
+
+    return '\r\n'.join(out)
+
+
 def _extract_answer_sdp(payload: dict[str, Any]) -> str | None:
     sdp = payload.get('sdp')
     if isinstance(sdp, str) and sdp:
@@ -160,6 +211,10 @@ def create_webrtc_offer(
     # 카메라가 DTLS active(클라이언트)가 되게 강제 → 카메라가 작은 ClientHello 를 보내고
     # 브라우저(DTLS 서버)가 받음. 브라우저는 answer(setup:active)만 보므로 영향 없음.
     offer_sdp = body.sdp.replace('a=setup:actpass', 'a=setup:passive')
+    # 코덱 다이어트: H.264 외 payload type 을 쳐내 esp_peer 가 파싱 가능한 크기로 축소.
+    pruned = _prune_offer_to_h264(offer_sdp)
+    logger.info('webrtc offer SDP %d→%d bytes (camera=%s)', len(offer_sdp), len(pruned), camera['camera_id'])
+    offer_sdp = pruned
     command = _command(
         'webrtc_offer',
         session_id,
