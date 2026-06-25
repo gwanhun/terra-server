@@ -133,16 +133,20 @@ _PT_ATTR_RE = re.compile(r'^a=(?:rtpmap|rtcp-fb|fmtp):(\d+)\b')
 
 
 def _prune_offer_to_h264(sdp: str) -> str:
-    """브라우저 offer 를 H.264(packetization-mode=1) payload type 만 남기고 깎는다.
+    """브라우저 offer 를 esp_peer(카메라)가 파싱 가능한 최소 형태로 깎는다.
 
-    왜: 브라우저 offer 는 VP8/VP9/AV1/H265/H264 5종 + rtx/fec 까지 payload type 50여 개를
-    싣는다(~7KB). 카메라(esp_peer)는 H.264 만 보낼 수 있고, 거대한 SDP 를 다 파싱하지 못해
-    answer 자체를 못 만든다(→ ack 무응답 → REST 504). 코덱만 쳐내면 ~1KB 로 줄어 esp_peer 가
-    무난히 파싱한다.
+    카메라(esp_peer)는 단순한 H.264 offer 만 answer 할 수 있다(네이티브 앱 offer 는 정상 동작).
+    Chrome offer 는 그에 비해 과해서 answer 자체를 못 만들고 → ack 무응답 → REST 504 가 된다.
+    세 가지를 쳐낸다:
 
-    안전성: payload type 을 **삭제만** 하고 절대 renumber 하지 않는다. 브라우저의 원본 offer 는
-    살아남은 PT 들을 그대로 매핑하고 있으므로, 카메라가 그중 어떤 PT 로 answer 하든 브라우저가
-    수용한다. 카메라 인코더 profile 이 무엇이든 매칭되도록 H.264 pm=1 PT 는 모두 남긴다.
+    1. 코덱: VP8/VP9/AV1/H265 + rtx/fec payload type 제거, H.264(pm=1)만 유지(~50개→3개).
+    2. mDNS 후보: `a=candidate ...local`(Chrome 호스트 후보)은 호스트명이라 esp_peer 가 못 푼다.
+       srflx(공인 IP) 후보는 남겨 ICE 가 되게 한다.
+    3. RTP 헤더 확장: `a=extmap`/`extmap-allow-mixed` 제거(recvonly 영상엔 불필요).
+
+    안전성: payload type 은 **삭제만** 하고 renumber 안 한다. 브라우저 원본 offer 가 살아남은 PT 를
+    그대로 매핑하므로 카메라가 어떤 PT 로 answer 하든 브라우저가 수용한다. 앱 offer 엔 mDNS/과한
+    extmap 이 없어 이 함수가 앱 경로엔 영향을 주지 않는다.
     """
     lines = sdp.replace('\r\n', '\n').split('\n')
 
@@ -172,6 +176,13 @@ def _prune_offer_to_h264(sdp: str) -> str:
         m = _PT_ATTR_RE.match(ln)
         if m and m.group(1) not in keep:
             continue  # 버려진 PT 의 rtpmap/rtcp-fb/fmtp 제거
+        # mDNS 호스트 후보(...local) 제거 — esp_peer 는 호스트명 후보를 못 풀고 파서가 깨진다.
+        # 앱은 raw IP 후보를 보내서 정상 동작. srflx(공인 IP) 후보는 남겨야 ICE 가 되므로 유지.
+        if ln.startswith('a=candidate:') and '.local' in ln:
+            continue
+        # RTP 헤더 확장(extmap) 정리 — recvonly 영상엔 불필요하고 esp_peer 가 11개를 다 못 씹는다.
+        if ln.startswith('a=extmap:') or ln.startswith('a=extmap-allow-mixed'):
+            continue
         out.append(ln)
 
     return '\r\n'.join(out)
