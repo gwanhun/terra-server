@@ -183,6 +183,11 @@ def _prune_offer_to_h264(sdp: str) -> str:
         # RTP 헤더 확장(extmap) 정리 — recvonly 영상엔 불필요하고 esp_peer 가 11개를 다 못 씹는다.
         if ln.startswith('a=extmap:') or ln.startswith('a=extmap-allow-mixed'):
             continue
+        # trickle 옵션 제거 — 웹은 trickle 을 선언해놓고 후보를 offer 에 다 박은 뒤 끝낸다(end-of-
+        # candidates 신호 없음). esp_peer 가 "후보가 더 온다"고 믿고 answer 를 안 내보낼 수 있어,
+        # non-trickle 로 보이게 해서 즉시 answer 를 유도한다.
+        if ln.startswith('a=ice-options:'):
+            continue
         out.append(ln)
 
     return '\r\n'.join(out)
@@ -226,25 +231,34 @@ def create_webrtc_offer(
     pruned = _prune_offer_to_h264(offer_sdp)
     logger.info('webrtc offer SDP %d→%d bytes (camera=%s)', len(offer_sdp), len(pruned), camera['camera_id'])
     offer_sdp = pruned
-    command = _command(
-        'webrtc_offer',
-        session_id,
-        body.ttl_sec,
-        sdp=offer_sdp,
-        type=body.type,
-    )
 
-    try:
-        answer = MqttWebRTCSignaling().request_answer(
-            camera['camera_id'],
-            command,
-            session_id=session_id,
-            timeout_sec=body.timeout_sec,
-        )
-    except WebRTCSignalingTimeout as exc:
-        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(exc)) from exc
-    except WebRTCSignalingError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    # 재시도: 카메라 esp_peer_open 이 PSRAM 경합(클립 업로드 등)으로 간헐 실패하면 answer 가 안 온다.
+    # 매 시도 새 msg_id 로 offer 를 재발행하면(session_id 는 동일 유지) PSRAM 이 비는 창을 잡아 붙는다.
+    # 새 msg_id 필수 — 펌웨어가 msg_id 중복을 거부하므로 같은 명령을 재전송하면 무시된다.
+    attempts = 3
+    per_timeout = min(body.timeout_sec, 7.0)  # 성공 answer 는 보통 <5s. 실패는 빨리 끊고 재시도.
+    answer: dict[str, Any] = {}
+    last_timeout: WebRTCSignalingTimeout | None = None
+    for i in range(attempts):
+        command = _command('webrtc_offer', session_id, body.ttl_sec, sdp=offer_sdp, type=body.type)
+        try:
+            answer = MqttWebRTCSignaling().request_answer(
+                camera['camera_id'],
+                command,
+                session_id=session_id,
+                timeout_sec=per_timeout,
+            )
+            break
+        except WebRTCSignalingTimeout as exc:
+            last_timeout = exc
+            logger.warning('webrtc offer 무응답 %d/%d (camera=%s) — 재시도',
+                           i + 1, attempts, camera['camera_id'])
+        except WebRTCSignalingError as exc:
+            # MQTT 인프라 오류는 재시도해도 의미 없음 → 즉시 502.
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    else:
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                            detail=str(last_timeout) if last_timeout else 'camera WebRTC answer timed out')
 
     sdp = _extract_answer_sdp(answer)
     if not sdp:
