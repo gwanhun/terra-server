@@ -972,9 +972,12 @@ async function openLive(cameraUuid, cameraIdLabel) {
     return;
   }
 
-  // ICE 후보가 SDP 에 다 박힐 때까지 대기 (non-trickle)
+  // ICE 후보가 SDP 에 다 박힐 때까지 대기 (non-trickle).
+  // 5초: TURN relay 후보 할당(openrelay)이 2초보다 오래 걸려, 짧으면 relay 후보가 offer 에
+  // 누락된다. relay 가 없으면 같은 LAN(NAT 헤어핀 불가)·대칭 NAT 에서 ICE 가 안 뚫린다.
+  // 수집이 일찍 끝나면 그 즉시 반환하므로 정상망에선 5초를 다 안 기다린다.
   liveStatus('ICE 후보 수집 중...', 'warn');
-  await waitIceGatheringComplete(livePc, 2000);
+  await waitIceGatheringComplete(livePc, 5000);
 
   // [진단] offer candidate 줄 콘솔 출력 — mDNS(.local) vs raw IP 확인
   const _cands = (livePc.localDescription.sdp || '').split('\n')
