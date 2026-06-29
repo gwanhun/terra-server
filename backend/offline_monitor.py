@@ -1,11 +1,13 @@
 """
 오프라인 감시 — Stage D.
 
-매 1분 주기로 devices.last_seen_at 검사 → 3분 이상 무응답이면:
-- devices.is_online = false
-- alerts INSERT (kind='offline')
+매 1분 주기로 last_seen_at 검사 → 3분 이상 무응답이면:
+- devices: is_online = false + alerts INSERT (kind='offline')
+- cameras: is_online = false 만 (카메라용 alert 파이프라인 없음)
 재연결 시 handle_telemetry/handle_ack 가 is_online=true 로 자동 복원하고,
 본 모니터가 다음 주기에 offline alert 를 resolve.
+
+> cameras 를 빼먹으면 카메라가 한 번 online 된 뒤 영원히 online 으로 표시된다(웹 거짓 표시).
 
 ## 임계값
 
@@ -33,8 +35,12 @@ from backend.supabase_client import get_supabase_client
 logger = logging.getLogger(__name__)
 
 DEFAULT_INTERVAL_SEC = 60.0
-OFFLINE_THRESHOLD_SEC = 180  # 3분
+OFFLINE_THRESHOLD_SEC = 180  # 3분 (디바이스: telemetry 3초 주기 기준)
 CRITICAL_THRESHOLD_SEC = 600  # 10분
+# 카메라는 telemetry 가 15초 주기(MQTT_TELEMETRY_PERIOD_MS)이고 QoS0(유실 가능)라 더 여유를 둔다.
+# 실측상 정상 카메라도 일시적으로 ~400초 telemetry 공백이 났다(라이브 직후 복귀). 너무 빡빡하면
+# 정상 카메라가 깜빡 offline 으로 튀므로 10분으로 잡는다. 진짜 죽은 카메라(수 시간~일)는 충분히 걸린다.
+CAMERA_OFFLINE_THRESHOLD_SEC = 600  # 10분
 
 
 def _parse_iso(ts: str) -> datetime:
@@ -107,8 +113,33 @@ def _resolve_offline_alert(sb, device_uuid: str) -> None:
         logger.exception("offline resolve 실패: device=%s", device_uuid)
 
 
+def _scan_cameras_offline(sb, now: datetime) -> int:
+    """카메라 is_online 갱신 (offline 판정만).
+
+    카메라는 bridge 가 telemetry/ack 로 is_online=True 만 세팅하고, 어디서도 False 로
+    되돌리지 않아 한 번 online 되면 영원히 online 으로 박힌다(웹 표시가 거짓말). devices 와 달리
+    카메라용 alert 파이프라인은 없으므로 여기선 **is_online=False 플립만** 한다.
+    재연결 시 handle_telemetry/handle_ack 가 다시 True 로 복원한다.
+    """
+    res = sb.table("cameras").select("id, last_seen_at, is_online").execute()
+    flipped = 0
+    for row in res.data or []:
+        last_seen_raw = row.get("last_seen_at")
+        if not last_seen_raw or not bool(row.get("is_online")):
+            continue  # 한 번도 안 켜졌거나 이미 offline
+        age = (now - _parse_iso(last_seen_raw)).total_seconds()
+        if age > CAMERA_OFFLINE_THRESHOLD_SEC:
+            try:
+                sb.table("cameras").update({"is_online": False}).eq("id", row["id"]).execute()
+                flipped += 1
+                logger.info("camera offline 판정: id=%s age=%ds", row["id"], int(age))
+            except Exception:  # noqa: BLE001
+                logger.exception("cameras is_online=false UPDATE 실패")
+    return flipped
+
+
 def scan_once() -> dict[str, int]:
-    """1회 스캔. 통계 반환 (offline_count, recovered_count)."""
+    """1회 스캔. 통계 반환 (offline/recovered: devices, camera_offline: cameras)."""
     sb = get_supabase_client()
     res = (
         sb.table("devices")
@@ -149,7 +180,12 @@ def scan_once() -> dict[str, int]:
             if not was_online:
                 recovered_count += 1
 
-    return {"offline": offline_count, "recovered": recovered_count}
+    camera_offline = _scan_cameras_offline(sb, now)
+    return {
+        "offline": offline_count,
+        "recovered": recovered_count,
+        "camera_offline": camera_offline,
+    }
 
 
 class OfflineMonitor:
@@ -180,7 +216,7 @@ class OfflineMonitor:
         while not self._stop.is_set():
             try:
                 stats = scan_once()
-                if stats["offline"] or stats["recovered"]:
+                if stats["offline"] or stats["recovered"] or stats.get("camera_offline"):
                     logger.info("offline scan: %s", stats)
             except Exception:  # noqa: BLE001
                 logger.exception("offline scan 실패")
@@ -188,6 +224,7 @@ class OfflineMonitor:
 
 
 __all__ = [
+    "CAMERA_OFFLINE_THRESHOLD_SEC",
     "CRITICAL_THRESHOLD_SEC",
     "DEFAULT_INTERVAL_SEC",
     "OFFLINE_THRESHOLD_SEC",
