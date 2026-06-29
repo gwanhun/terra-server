@@ -37,10 +37,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_INTERVAL_SEC = 60.0
 OFFLINE_THRESHOLD_SEC = 180  # 3분 (디바이스: telemetry 3초 주기 기준)
 CRITICAL_THRESHOLD_SEC = 600  # 10분
-# 카메라는 telemetry 가 15초 주기(MQTT_TELEMETRY_PERIOD_MS)이고 QoS0(유실 가능)라 더 여유를 둔다.
-# 실측상 정상 카메라도 일시적으로 ~400초 telemetry 공백이 났다(라이브 직후 복귀). 너무 빡빡하면
-# 정상 카메라가 깜빡 offline 으로 튀므로 10분으로 잡는다. 진짜 죽은 카메라(수 시간~일)는 충분히 걸린다.
-CAMERA_OFFLINE_THRESHOLD_SEC = 600  # 10분
+# 카메라 telemetry 는 15초 주기(MQTT_TELEMETRY_PERIOD_MS) → 180초면 12 비트 연속 유실 = 사실상
+# 끊긴 것(QoS0 라도 12 연속 유실은 끊김 외엔 드묾). 디바이스와 동일 임계값. 너무 길면(10분 등)
+# 끊긴 카메라가 한참 online 으로 남아 표시가 굼떠 보인다 → 3분으로 응답성 확보.
+# 라이브 스트리밍 중 telemetry 가 밀려 깜빡이면 그때 상향 검토.
+CAMERA_OFFLINE_THRESHOLD_SEC = 180  # 3분
 
 
 def _parse_iso(ts: str) -> datetime:
