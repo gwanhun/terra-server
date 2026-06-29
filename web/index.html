@@ -475,7 +475,8 @@ async function api(path, opts = {}) {
   }
   const url = CONFIG.apiBase + path;
   try {
-    const res = await fetch(url, { ...opts, headers });
+    // no-store: 브라우저가 GET 응답(예: /cameras 의 is_online)을 캐시해 옛 상태를 보여주는 것 방지.
+    const res = await fetch(url, { ...opts, cache: 'no-store', headers });
     const text = await res.text();
     let body = text;
     try { body = JSON.parse(text); } catch (e) {}
