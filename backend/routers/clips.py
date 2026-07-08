@@ -67,8 +67,47 @@ _KEY_RE = re.compile(
     r"^terra-clips/clips/(?P<camera>[^/]+)/(?P<stamp>\d{8}-\d{6})_(?P<clip_id>[0-9a-f-]{36})\.(?P<ext>mp4|jpg)$"
 )
 
+# VLM 하이라이트 억제셋 — 개체 프로파일 기반 상시 오탐 제거 (GET /clips/highlights).
+#   shedding: 특정 개체(화이트 할리퀸 모프) 흰 체색을 밤 IR 에서 허물로 오인 → 100% 오탐 (2026-07 실측 30+건).
+#   moving/unseen: 하이라이트 가치 낮음.
+# TODO: 하드코딩 대신 개체별 설정 테이블로 (실제 탈피 영상 확보 시 shedding 해제 가능해야).
+_VLM_SUPPRESSED_ACTIONS = ("moving", "unseen", "shedding")
+_VLM_MIN_CONFIDENCE = 0.5
+# care(건강 신호) vs enrichment(복지 활동) — 앱 2층 구성용.
+_CARE_ACTIONS = frozenset({"hand_feeding", "drinking", "eating_paste", "eating_prey", "shedding"})
+# behavior_labels 유효 action 화이트리스트 — 오타로 인한 GT 오염 방지 (POST /clips/{id}/labels).
+_VALID_ACTIONS = frozenset({
+    "moving", "hand_feeding", "drinking", "eating_paste",
+    "eating_prey", "defecating", "shedding", "unseen",
+})
+
 
 # ---------- Pydantic ----------
+
+
+class Highlight(BaseModel):
+    """밤새 VLM 하이라이트 1건. behavior_logs(source='vlm') + motion_clips 조인 결과."""
+
+    clip_id: str
+    started_at: datetime
+    thumbnail_key: str | None = None
+    vlm_action: str
+    confidence: float | None = None
+    care_level: str = Field(..., description='"care"(건강) | "enrichment"(복지)')
+    # null=미확인 | true=확인 | 정정된 action 문자열 (behavior_logs.verified/corrected_to 유래)
+    user_confirmed: bool | str | None = None
+
+
+class HighlightList(BaseModel):
+    highlights: list[Highlight]
+
+
+class LabelCreate(BaseModel):
+    """하이라이트 사용자 확인/정정 요청 (behavior_labels UPSERT)."""
+
+    action: str = Field(..., description="행동 클래스명 (화이트리스트 검증)")
+    lick_target: str | None = Field(None, description="drinking 등에서 핥은 대상 (옵션)")
+    note: str | None = None
 
 
 class UploadUrlRequest(BaseModel):
@@ -394,6 +433,174 @@ def get_clip_url(
         raise HTTPException(status_code=502, detail=f"R2 error: {exc}") from exc
 
     return ClipUrl(url=url, expires_in=DEFAULT_GET_URL_TTL)
+
+
+@clips_router.get(
+    "/{clip_id}/thumbnail/url",
+    response_model=ClipUrl,
+    summary="썸네일 표시용 presigned GET URL",
+    responses={**_USER_AUTH, **_NOT_FOUND_CLIP, **_R2_ERROR},
+)
+def get_clip_thumbnail_url(
+    clip_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> ClipUrl:
+    """
+    앱 클립 그리드가 썸네일 표시 직전 호출. 재생 URL 과 동일 인증/RLS (본인 카메라 클립만).
+
+    재생 URL 과 로직 동일 — presign 대상만 `r2_key` → `thumbnail_key`.
+    URL 자체가 단발 토큰 → `<img src>` 에 그대로 박을 수 있음.
+    `thumbnail_key` 가 없는 클립은 404 (앱은 아이콘 폴백).
+    """
+    clip = _load_clip_for_owner(clip_id, user_id)
+
+    thumbnail_key = clip.get("thumbnail_key")
+    if not thumbnail_key:
+        raise HTTPException(status_code=404, detail="thumbnail not found")
+
+    try:
+        url = generate_presigned_get_url(thumbnail_key, expires_in=DEFAULT_GET_URL_TTL)
+    except (BotoCoreError, ClientError) as exc:
+        logger.exception("썸네일 presigned GET URL 발급 실패")
+        raise HTTPException(status_code=502, detail=f"R2 error: {exc}") from exc
+
+    return ClipUrl(url=url, expires_in=DEFAULT_GET_URL_TTL)
+
+
+def _highlight_user_confirmed(vlm_action: str, label_action: str | None) -> bool | str | None:
+    """본인 behavior_labels 기준 user_confirmed (GT SOT = behavior_labels).
+
+    없음=None(미확인) | action==vlm=True(확인) | 다르면 정정된 action 문자열.
+    """
+    if label_action is None:
+        return None
+    return True if label_action == vlm_action else label_action
+
+
+@clips_router.get(
+    "/highlights",
+    response_model=HighlightList,
+    summary="밤새 VLM 하이라이트 (어젯밤 리포트)",
+    responses={**_USER_AUTH},
+)
+def get_clip_highlights(
+    since: datetime | None = Query(None, description="이 시각 이후 시작된 클립만 (ISO8601)"),
+    limit: int = Query(20, ge=1, le=100),
+    user_id: str = Depends(get_current_user_id),
+) -> HighlightList:
+    """
+    mac-mini 워커가 behavior_logs(source='vlm') 에 기록한 케어행동 하이라이트.
+    억제셋(개체 프로파일 상시오탐)+저 confidence 제외 → 앱은 받은 것만 "AI 추정" 으로 표시.
+
+    behavior_logs.clip_id ≡ motion_clips.id (미러 동일 UUID) → motion_clips INNER JOIN.
+    미러 아닌 평가셋(source='upload') 로그는 motion_clips 에 없어 자동 배제.
+    """
+    sb = get_supabase_client()
+
+    # 1) vlm 로그: 억제셋·confidence 필터. motion 조인은 2단계.
+    q = (
+        sb.table("behavior_logs")
+        .select("clip_id, action, confidence")
+        .eq("source", "vlm")
+        .gte("confidence", _VLM_MIN_CONFIDENCE)
+    )
+    for action in _VLM_SUPPRESSED_ACTIONS:
+        q = q.neq("action", action)
+    logs = q.execute().data or []
+    if not logs:
+        return HighlightList(highlights=[])
+
+    # clip 당 대표 로그 1개 (confidence 최고)
+    by_clip: dict[str, dict[str, Any]] = {}
+    for log in logs:
+        cid = log.get("clip_id")
+        if not cid:
+            continue
+        cur = by_clip.get(cid)
+        if cur is None or (log.get("confidence") or 0) > (cur.get("confidence") or 0):
+            by_clip[cid] = log
+
+    # 2) motion_clips INNER JOIN 효과 + 본인 것만(service_role 이라 owner_id 명시 필터 필수) + since
+    mq = (
+        sb.table("motion_clips")
+        .select("id, started_at, thumbnail_key")
+        .eq("owner_id", user_id)
+        .in_("id", list(by_clip.keys()))
+    )
+    if since is not None:
+        mq = mq.gte("started_at", since.isoformat())
+    clips = mq.order("started_at", desc=True).limit(limit).execute().data or []
+
+    # 3) 본인 behavior_labels → user_confirmed (GT SOT = behavior_labels, 관리자 라벨웹과 단일화)
+    final_ids = [c["id"] for c in clips]
+    my_labels: dict[str, str] = {}
+    if final_ids:
+        lrows = (
+            sb.table("behavior_labels")
+            .select("clip_id, action")
+            .eq("labeled_by", user_id)
+            .in_("clip_id", final_ids)
+            .execute()
+            .data
+            or []
+        )
+        my_labels = {r["clip_id"]: r["action"] for r in lrows}
+
+    # 4) 조인 결과 합치기 (motion 에 있는 clip_id 만 남음 = INNER JOIN 효과)
+    highlights = [
+        Highlight(
+            clip_id=clip["id"],
+            started_at=clip["started_at"],
+            thumbnail_key=clip.get("thumbnail_key"),
+            vlm_action=by_clip[clip["id"]]["action"],
+            confidence=by_clip[clip["id"]].get("confidence"),
+            care_level="care" if by_clip[clip["id"]]["action"] in _CARE_ACTIONS else "enrichment",
+            user_confirmed=_highlight_user_confirmed(
+                by_clip[clip["id"]]["action"], my_labels.get(clip["id"])
+            ),
+        )
+        for clip in clips
+    ]
+    return HighlightList(highlights=highlights)
+
+
+@clips_router.post(
+    "/{clip_id}/labels",
+    status_code=status.HTTP_201_CREATED,
+    summary="하이라이트 사용자 확인/정정 (GT 라벨)",
+    responses={**_USER_AUTH, **_NOT_FOUND_CLIP},
+)
+def upsert_clip_label(
+    clip_id: str,
+    body: LabelCreate,
+    user_id: str = Depends(get_current_user_id),
+) -> dict[str, Any]:
+    """
+    앱 하이라이트 👍/👎/정정 → 사람 GT. behavior_labels 가 GT SOT (관리자 라벨웹과 단일화).
+    유저당 clip 당 1행 UPSERT (재판정=갱신, 멱등).
+
+    👍(맞음): action=vlm 예측 그대로 / 정정: action=사용자 선택.
+    👎 만 누르고 정답 미선택 상태는 저장 안 함(호출 안 함) → user_confirmed 미확정 유지.
+    """
+    if body.action not in _VALID_ACTIONS:
+        raise HTTPException(status_code=422, detail=f"unknown action: {body.action}")
+    _load_clip_for_owner(clip_id, user_id)  # 본인 소유 clip 만 라벨 (404 else)
+
+    sb = get_supabase_client()
+    row = {
+        "clip_id": clip_id,
+        "labeled_by": user_id,
+        "action": body.action,
+        "lick_target": body.lick_target,
+        "note": body.note,
+    }
+    try:
+        sb.table("behavior_labels").upsert(row, on_conflict="clip_id,labeled_by").execute()
+    except Exception as exc:  # noqa: BLE001 — supabase-py 예외 타입 넓음
+        logger.exception("behavior_labels upsert 실패 (clip=%s)", clip_id)
+        raise HTTPException(status_code=502, detail=f"DB error: {exc}") from exc
+
+    return {"ok": True, "clip_id": clip_id, "action": body.action}
 
 
 @clips_router.delete(

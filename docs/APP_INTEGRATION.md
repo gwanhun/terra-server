@@ -78,6 +78,9 @@ final jwt = session?.accessToken;
 | `POST` | `/cameras/pair` | JWT | 카메라 페어링 (디바이스와 동일 패턴) |
 | `GET` | `/cameras` | JWT | 본인 카메라 목록 |
 | `GET` | `/clips/{id}/url` | JWT | 영상 재생용 presigned GET URL |
+| `GET` | `/clips/{id}/thumbnail/url` | JWT | 썸네일 표시용 presigned GET URL (`thumbnail_key` 없으면 404) |
+| `GET` | `/clips/highlights` | JWT | 밤새 VLM 하이라이트 (`since`, `limit`; 억제셋·confidence 필터 후 본인 것만) |
+| `POST` | `/clips/{id}/labels` | JWT | 하이라이트 👍/👎/정정 → GT (`behavior_labels` UPSERT, 유저·clip당 1행) |
 | `GET` | `/enclosures/{id}/clips` | JWT | 사육장의 모션 클립 목록 |
 
 (※) 디바이스 페어링은 보통 ESP32 가 BLE 로 사용자 JWT 받은 후 직접 `POST /devices/pair` 호출. 자세한 BLE 흐름: [docs/FIRMWARE_INTEGRATION.md §2](FIRMWARE_INTEGRATION.md).
