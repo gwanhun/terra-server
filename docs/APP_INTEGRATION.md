@@ -275,15 +275,18 @@ final rows = await sb.from('telemetry')
 
 #### 시계열 차트 — 장기 데이터
 
-`telemetry` 는 7일 보관. 그 이상은 `telemetry_1m` (1분 평균, 1년 보관):
+`telemetry` 는 7일 보관. 그 이상(추이 그래프)은 `telemetry_30m` (30분 평균/최소/최대, 영구 보관) 사용:
 
 ```dart
-final hourly = await sb.from('telemetry_1m')
-  .select('bucket, t_a_avg, t_a_min, t_a_max, h_a_avg')
+final trend = await sb.from('telemetry_30m')
+  .select('bucket, t_a_avg, t_a_min, t_a_max, h_a_avg, sample_count')
   .eq('device_id', deviceUuid)
   .gte('bucket', oneWeekAgo.toIso8601String())
   .order('bucket');
 ```
+
+> 차트 그리는 법(min/max 밴드, 데이터 빠짐 처리, 실시간+과거 합치기) 전체는 **[docs/APP_TIMESERIES_CHART.md](APP_TIMESERIES_CHART.md)** 참조.
+> (`telemetry_1m` 1분 집계 테이블은 현재 미사용/빈 테이블 — 분 단위 상세가 필요해지면 차후 활성화.)
 
 ### 3.8 SQL 직접 디버깅 (Supabase 대시보드)
 
