@@ -148,9 +148,7 @@ const { data } = await sb.from('commands').insert({
 | `fan_toggle` | — | 🌀 팬 토글 |
 | `heater_toggle` | — | 🔥 히터 토글 (safety latch 활성 시 거부) |
 | `heater_clear` | — | ⚠ safety latch 해제 |
-| `led_on` | — | 💡 LED 점등 |
-| `led_up` | — | 🔆 LED 밝기 + |
-| `led_down` | — | 🔅 LED 밝기 - |
+| `led_toggle` | — | 💡 조명 ON/OFF 토글 (relay/fan 과 동일 방식) |
 | `token_rotate` | `new_token` (string) | 디바이스 NVS 의 mqtt_token 갱신 + MQTT 재연결 |
 
 > ⚠ heater 류는 **사용자에게 확인 dialog** 권장 (잘못 누르면 위험).

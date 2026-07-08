@@ -535,9 +535,7 @@ const QUICK_COMMANDS = [
   { action: 'fan_toggle',    icon: '🌀', title: '팬 토글' },
   { action: 'heater_toggle', icon: '🔥', title: '히터 토글', confirm: true },
   { action: 'heater_clear',  icon: '⚠',  title: '히터 safety latch 해제', confirm: true },
-  { action: 'led_on',        icon: '💡', title: 'LED 점등' },
-  { action: 'led_up',        icon: '🔆', title: 'LED 밝기 +' },
-  { action: 'led_down',      icon: '🔅', title: 'LED 밝기 -' },
+  { action: 'led_toggle',    icon: '💡', title: 'LED 토글' },
 ];
 
 function quickCmdButtons(deviceUuid, online) {
