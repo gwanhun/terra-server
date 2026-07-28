@@ -167,7 +167,7 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
       <button onclick="loadEnclosures()">새로고침</button>
     </div>
     <table id="enc-table">
-      <thead><tr><th>id</th><th>이름</th><th>종</th><th>created</th><th></th></tr></thead>
+      <thead><tr><th>id</th><th>이름</th><th>종</th><th>📷</th><th>📟</th><th>created</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -178,12 +178,13 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
     <div class="row">
       <input id="dev-name" type="text" placeholder="이름" style="flex:2">
       <input id="dev-species" type="text" placeholder="종 (옵션)" style="flex:1">
+      <select id="dev-enc" title="소속 사육장 (옵션)"><option value="">사육장: (없음)</option></select>
       <button onclick="pairDevice()">페어링</button>
       <button onclick="loadDevices()">새로고침</button>
     </div>
     <div id="dev-token" class="hidden"></div>
     <table id="dev-table">
-      <thead><tr><th>device_id</th><th>이름</th><th>online</th><th>온도</th><th>습도</th><th>last_seen</th><th></th></tr></thead>
+      <thead><tr><th>device_id</th><th>이름</th><th>사육장</th><th>online</th><th>온도</th><th>습도</th><th>last_seen</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -242,12 +243,13 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
         <option value="rpi-4">rpi-4</option>
         <option value="ip-camera">ip-camera</option>
       </select>
+      <select id="cam-enc" title="소속 사육장 (옵션)"><option value="">사육장: (없음)</option></select>
       <button onclick="pairCamera()">페어링</button>
       <button onclick="loadCameras()">새로고침</button>
     </div>
     <div id="cam-token" class="hidden"></div>
     <table id="cam-table">
-      <thead><tr><th>camera_id</th><th>이름</th><th>model</th><th>online</th><th></th></tr></thead>
+      <thead><tr><th>camera_id</th><th>이름</th><th>model</th><th>사육장</th><th>online</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -384,7 +386,8 @@ function applySession(s) {
     document.getElementById('user-info').innerText = s.user.email + ' · ' + s.user.id.slice(0, 8);
     renderApiBaseLabel();
     checkAuthMode();
-    loadEnclosures(); loadDevices(); loadCameras(); loadRecentCommands();
+    loadEnclosures();  // 사육장 로드 후 디바이스/카메라 목록까지 연쇄 갱신 (배정 드롭다운 채움)
+    loadRecentCommands();
     loadTelemetryLatest(); loadAlerts();
     subscribeRealtime();
   } else {
@@ -496,15 +499,56 @@ async function api(path, opts = {}) {
 // ─────────────────────────────────────────────────────────────────────────
 // 사육장
 // ─────────────────────────────────────────────────────────────────────────
+// 사육장 목록 캐시 — 디바이스/카메라 배정 드롭다운에서 사용.
+let ENCLOSURES = [];
+
+// 배정용 <option> 문자열. currentId 가 있으면 selected. 첫 항목은 "(없음)".
+function enclosureOptions(currentId) {
+  const none = `<option value=""${currentId ? '' : ' selected'}>(없음)</option>`;
+  const opts = ENCLOSURES.map(e =>
+    `<option value="${e.id}"${e.id === currentId ? ' selected' : ''}>${esc(e.name)}</option>`
+  ).join('');
+  return none + opts;
+}
+
+// 페어링 폼의 사육장 셀렉트 옵션 갱신 (선택값 유지).
+function renderPairEnclosureSelects() {
+  ['dev-enc', 'cam-enc'].forEach(id => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    const keep = sel.value;
+    sel.innerHTML = `<option value="">사육장: (없음)</option>` +
+      ENCLOSURES.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join('');
+    sel.value = keep;
+  });
+}
+
+// 카메라/디바이스를 사육장에 배정/해제 (PATCH enclosure_id). 빈 값 → null(단독).
+async function assignEnclosure(kind, uuid, encId) {
+  const r = await api('/' + kind + '/' + uuid, {
+    method: 'PATCH',
+    body: JSON.stringify({ enclosure_id: encId || null }),
+  });
+  if (r) {
+    toast('사육장 갱신', 'good');
+    loadEnclosures();  // 개수 뱃지 갱신
+  }
+}
+
 async function loadEnclosures() {
   const rows = await api('/enclosures');
+  ENCLOSURES = rows || [];
   const tbody = document.querySelector('#enc-table tbody');
   tbody.innerHTML = '';
-  (rows || []).forEach(r => {
+  ENCLOSURES.forEach(r => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td><code>${r.id.slice(0,8)}</code></td><td>${esc(r.name)}</td><td>${esc(r.species || '-')}</td><td><small>${esc(r.created_at?.slice(0,16) || '')}</small></td><td><button class="danger" onclick="deleteEnclosure('${r.id}')">삭제</button></td>`;
+    tr.innerHTML = `<td><code>${r.id.slice(0,8)}</code></td><td>${esc(r.name)}</td><td>${esc(r.species || '-')}</td><td>${r.camera_count ?? 0}</td><td>${r.device_count ?? 0}</td><td><small>${esc(r.created_at?.slice(0,16) || '')}</small></td><td><button class="danger" onclick="deleteEnclosure('${r.id}')">삭제</button></td>`;
     tbody.appendChild(tr);
   });
+  // 캐시 갱신됐으니 배정 드롭다운/폼도 최신화
+  renderPairEnclosureSelects();
+  loadDevices();
+  loadCameras();
 }
 
 async function createEnclosure() {
@@ -557,6 +601,7 @@ async function loadDevices() {
     tr.innerHTML = `
       <td><code>${esc(r.device_id)}</code></td>
       <td>${esc(r.name)}</td>
+      <td><select onchange="assignEnclosure('devices','${r.id}',this.value)" style="max-width:130px">${enclosureOptions(r.enclosure_id)}</select></td>
       <td>${r.is_online ? '<span class="good">●</span>' : '<span class="muted">○</span>'}</td>
       <td data-dev-temp="${r.id}">${formatDeviceTemp(r.id)}</td>
       <td data-dev-humid="${r.id}">${formatDeviceHumid(r.id)}</td>
@@ -644,15 +689,17 @@ async function loadRecentCommands() {
 async function pairDevice() {
   const name = document.getElementById('dev-name').value.trim();
   const species = document.getElementById('dev-species').value.trim() || null;
+  const enclosure_id = document.getElementById('dev-enc').value || null;
   if (!name) return toast('이름 입력', 'bad');
-  const r = await api('/devices/pair', { method: 'POST', body: JSON.stringify({ name, species }) });
+  const r = await api('/devices/pair', { method: 'POST', body: JSON.stringify({ name, species, enclosure_id }) });
   if (r) {
     document.getElementById('dev-name').value = '';
     document.getElementById('dev-species').value = '';
+    document.getElementById('dev-enc').value = '';
     const box = document.getElementById('dev-token');
     box.classList.remove('hidden');
     box.innerHTML = `<h3>⚠️ MQTT 토큰 (1회만 노출)</h3><div class="token-once">device_id: ${r.device_id}<br>mqtt_token: ${r.mqtt_token}</div>`;
-    loadDevices();
+    loadEnclosures();  // 사육장 개수 뱃지 + 디바이스 목록 갱신
   }
 }
 
@@ -660,7 +707,7 @@ async function deleteDevice(id) {
   if (!confirm('삭제?')) return;
   const r = await fetch(CONFIG.apiBase + '/devices/' + id, { method: 'DELETE', headers: { Authorization: 'Bearer ' + session.access_token } });
   log({ DELETE: '/devices/' + id, status: r.status });
-  loadDevices();
+  loadEnclosures();  // 사육장 개수 뱃지 + 디바이스 목록 갱신
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -855,7 +902,7 @@ async function loadCameras() {
   tbody.innerHTML = '';
   (rows || []).forEach(r => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td>${r.is_online ? '<span class="good">●</span>' : '<span class="muted">○</span>'}</td><td style="white-space:nowrap"><button onclick="openLive('${r.id}', '${esc(r.camera_id)}')">라이브</button> <button class="danger" onclick="deleteCamera('${r.id}')">삭제</button></td>`;
+    tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td><select onchange="assignEnclosure('cameras','${r.id}',this.value)" style="max-width:130px">${enclosureOptions(r.enclosure_id)}</select></td><td>${r.is_online ? '<span class="good">●</span>' : '<span class="muted">○</span>'}</td><td style="white-space:nowrap"><button onclick="openLive('${r.id}', '${esc(r.camera_id)}')">라이브</button> <button class="danger" onclick="deleteCamera('${r.id}')">삭제</button></td>`;
     tbody.appendChild(tr);
   });
 }
@@ -863,15 +910,17 @@ async function loadCameras() {
 async function pairCamera() {
   const name = document.getElementById('cam-name').value.trim();
   const model = document.getElementById('cam-model').value;
+  const enclosure_id = document.getElementById('cam-enc').value || null;
   if (!name) return toast('이름 입력', 'bad');
-  const r = await api('/cameras/pair', { method: 'POST', body: JSON.stringify({ name, model }) });
+  const r = await api('/cameras/pair', { method: 'POST', body: JSON.stringify({ name, model, enclosure_id }) });
   if (r) {
     document.getElementById('cam-name').value = '';
+    document.getElementById('cam-enc').value = '';
     const box = document.getElementById('cam-token');
     box.classList.remove('hidden');
     const tlsTag = r.mqtt_use_tls ? ' (TLS)' : '';
     box.innerHTML = `<h3>⚠️ Camera 토큰 (1회만 노출)</h3><div class="token-once">camera_id: ${esc(r.camera_id)}<br>camera_token: ${esc(r.camera_token)}<br>mqtt_broker: ${esc(r.mqtt_broker_host)}:${r.mqtt_broker_port}${tlsTag}</div>`;
-    loadCameras();
+    loadEnclosures();  // 사육장 개수 뱃지 + 카메라 목록 갱신
   }
 }
 
@@ -879,7 +928,7 @@ async function deleteCamera(id) {
   if (!confirm('삭제?')) return;
   const r = await fetch(CONFIG.apiBase + '/cameras/' + id, { method: 'DELETE', headers: { Authorization: 'Bearer ' + session.access_token } });
   log({ DELETE: '/cameras/' + id, status: r.status });
-  loadCameras();
+  loadEnclosures();  // 사육장 개수 뱃지 + 카메라 목록 갱신
 }
 
 // ─────────────────────────────────────────────────────────────────────────
