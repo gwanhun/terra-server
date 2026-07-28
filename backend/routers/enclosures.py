@@ -40,19 +40,75 @@ class EnclosureUpdate(BaseModel):
     note: str | None = Field(None, max_length=500)
 
 
+class CameraBrief(BaseModel):
+    """사육장에 소속된 카메라 요약 (상세 조회 시 nested)."""
+
+    id: str = Field(..., description="cameras.id (UUID)")
+    camera_id: str = Field(..., description="MQTT client_id")
+    name: str
+    model: str | None
+    is_online: bool
+    stream_mode: str | None = Field(None, description="NULL | snapshot | webrtc")
+    last_seen_at: str | None
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class DeviceBrief(BaseModel):
+    """사육장에 소속된 디바이스(ESP32) 요약 (상세 조회 시 nested)."""
+
+    id: str = Field(..., description="devices.id (UUID)")
+    device_id: str = Field(..., description="MQTT client_id")
+    name: str
+    species: str | None
+    is_online: bool
+    last_seen_at: str | None
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class EnclosureOut(BaseModel):
     id: str = Field(..., description="UUID")
     name: str
     species: str | None
     note: str | None
+    camera_count: int = Field(0, description="이 사육장에 설치된 카메라 대수")
+    device_count: int = Field(0, description="이 사육장에 설치된 디바이스 대수")
     created_at: str = Field(..., description="ISO8601")
     updated_at: str = Field(..., description="ISO8601")
 
     model_config = ConfigDict(extra="ignore")
 
 
+class EnclosureDetailOut(EnclosureOut):
+    """단건 조회 응답. 소속 카메라/디바이스 목록을 nested 로 포함."""
+
+    cameras: list[CameraBrief] = Field(
+        default_factory=list, description="이 사육장에 매칭된 카메라들"
+    )
+    devices: list[DeviceBrief] = Field(
+        default_factory=list, description="이 사육장에 매칭된 디바이스들"
+    )
+
+
 _NOT_FOUND = {404: {"description": "본인 사육장이 아니거나 미존재"}}
 _AUTH_REQUIRED = {401: {"description": "JWT 누락/검증 실패"}}
+
+
+def _count_by_enclosure(sb, table: str, user_id: str) -> dict[str, int]:
+    """본인 소유 카메라/디바이스를 한 번에 조회해 enclosure_id 별로 집계 (N+1 방지)."""
+    res = (
+        sb.table(table)
+        .select("enclosure_id")
+        .eq("owner_id", user_id)
+        .execute()
+    )
+    counts: dict[str, int] = {}
+    for r in res.data or []:
+        eid = r.get("enclosure_id")
+        if eid:
+            counts[eid] = counts.get(eid, 0) + 1
+    return counts
 
 
 @router.post(
@@ -89,7 +145,11 @@ def create_enclosure(
 def list_enclosures(
     user_id: str = Depends(get_current_user_id),
 ) -> list[EnclosureOut]:
-    """생성 시각 내림차순. 페이지네이션 없음 (사용자당 사육장 수가 적다고 가정)."""
+    """생성 시각 내림차순. 각 사육장의 카메라/디바이스 대수 포함.
+
+    페이지네이션 없음 (사용자당 사육장 수가 적다고 가정).
+    카운트는 카메라/디바이스 전체를 한 번씩 조회 후 Python 에서 집계 (N+1 회피).
+    """
     sb = get_supabase_client()
     res = (
         sb.table("enclosures")
@@ -98,20 +158,37 @@ def list_enclosures(
         .order("created_at", desc=True)
         .execute()
     )
-    return [EnclosureOut.model_validate(r) for r in (res.data or [])]
+    rows = res.data or []
+
+    cam_counts = _count_by_enclosure(sb, "cameras", user_id)
+    dev_counts = _count_by_enclosure(sb, "devices", user_id)
+
+    return [
+        EnclosureOut.model_validate(
+            {
+                **r,
+                "camera_count": cam_counts.get(r["id"], 0),
+                "device_count": dev_counts.get(r["id"], 0),
+            }
+        )
+        for r in rows
+    ]
 
 
 @router.get(
     "/{enclosure_id}",
-    response_model=EnclosureOut,
-    summary="사육장 단건 조회",
+    response_model=EnclosureDetailOut,
+    summary="사육장 단건 조회 (소속 카메라/디바이스 포함)",
     responses={**_AUTH_REQUIRED, **_NOT_FOUND},
 )
 def get_enclosure(
     enclosure_id: str,
     user_id: str = Depends(get_current_user_id),
-) -> EnclosureOut:
-    """본인 소유가 아니면 404 (존재 여부 노출 안 함)."""
+) -> EnclosureDetailOut:
+    """본인 소유가 아니면 404 (존재 여부 노출 안 함).
+
+    응답의 `cameras`/`devices` 로 이 사육장에 무엇이 설치됐는지 확인 가능.
+    """
     sb = get_supabase_client()
     res = (
         sb.table("enclosures")
@@ -123,7 +200,37 @@ def get_enclosure(
     row = res.data
     if not row or row["owner_id"] != user_id:
         raise HTTPException(status_code=404, detail="enclosure not found")
-    return EnclosureOut.model_validate(row)
+
+    # 소속 카메라/디바이스 (owner_id 도 명시 필터 — service_role RLS 바이패스 대비)
+    cam_res = (
+        sb.table("cameras")
+        .select("id, camera_id, name, model, is_online, stream_mode, last_seen_at")
+        .eq("enclosure_id", enclosure_id)
+        .eq("owner_id", user_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    cameras = [CameraBrief.model_validate(c) for c in (cam_res.data or [])]
+
+    dev_res = (
+        sb.table("devices")
+        .select("id, device_id, name, species, is_online, last_seen_at")
+        .eq("enclosure_id", enclosure_id)
+        .eq("owner_id", user_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    devices = [DeviceBrief.model_validate(d) for d in (dev_res.data or [])]
+
+    return EnclosureDetailOut.model_validate(
+        {
+            **row,
+            "camera_count": len(cameras),
+            "device_count": len(devices),
+            "cameras": cameras,
+            "devices": devices,
+        }
+    )
 
 
 @router.patch(
@@ -156,7 +263,16 @@ def update_enclosure(
     )
     if not res.data:
         raise HTTPException(status_code=404, detail="enclosure not found")
-    return EnclosureOut.model_validate(res.data[0])
+
+    cam_counts = _count_by_enclosure(sb, "cameras", user_id)
+    dev_counts = _count_by_enclosure(sb, "devices", user_id)
+    return EnclosureOut.model_validate(
+        {
+            **res.data[0],
+            "camera_count": cam_counts.get(enclosure_id, 0),
+            "device_count": dev_counts.get(enclosure_id, 0),
+        }
+    )
 
 
 @router.delete(

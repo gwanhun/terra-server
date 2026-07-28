@@ -2,10 +2,10 @@
 디바이스 관리 라우터.
 
 엔드포인트:
-- POST /devices/pair       — 디바이스 페어링 (ESP32 ↔ 사용자 연결, 토큰 발급)
+- POST /devices/pair       — 디바이스 페어링 (ESP32 ↔ 사용자 연결, 토큰 발급, enclosure 배정 옵션)
 - GET  /devices            — 본인 디바이스 목록
 - GET  /devices/{id}       — 단건 조회
-- PATCH /devices/{id}      — 이름/종 수정
+- PATCH /devices/{id}      — 이름/종/사육장(enclosure_id) 수정
 - DELETE /devices/{id}     — 디바이스 삭제
 
 페어링 흐름:
@@ -39,6 +39,9 @@ router = APIRouter(prefix="/devices", tags=["devices"])
 # ---------- Pydantic 모델 ----------
 
 class DevicePairRequest(BaseModel):
+    enclosure_id: str | None = Field(
+        None, description="소속 사육장 UUID. None 이면 단독 디바이스."
+    )
     name: str = Field(..., min_length=1, max_length=64, examples=["거실 비어디드"])
     species: str | None = Field(None, max_length=32, examples=["bearded_dragon"])
     firmware_ver: str | None = Field(None, max_length=32, examples=["1.0.0"])
@@ -53,6 +56,7 @@ class DevicePairResponse(BaseModel):
 
 
 class DeviceUpdate(BaseModel):
+    enclosure_id: str | None = None
     name: str | None = Field(None, min_length=1, max_length=64)
     species: str | None = Field(None, max_length=32)
 
@@ -60,6 +64,7 @@ class DeviceUpdate(BaseModel):
 class DeviceOut(BaseModel):
     id: str = Field(..., description="UUID")
     device_id: str = Field(..., description="MQTT client_id")
+    enclosure_id: str | None = None
     name: str
     species: str | None
     firmware_ver: str | None
@@ -70,6 +75,24 @@ class DeviceOut(BaseModel):
 
 _AUTH_REQUIRED = {401: {"description": "JWT 누락/검증 실패"}}
 _NOT_FOUND = {404: {"description": "본인 디바이스가 아니거나 미존재"}}
+_BAD_ENCLOSURE = {400: {"description": "enclosure_id 가 본인 사육장이 아님"}}
+
+
+def _verify_enclosure_owner(sb, enclosure_id: str, user_id: str) -> None:
+    """enclosure_id 가 본인 소유 사육장인지 확인. 아니면 400.
+
+    cameras 라우터와 동일 패턴 (service_role 은 RLS 바이패스 → 명시 검증 필수).
+    """
+    res = (
+        sb.table("enclosures")
+        .select("owner_id")
+        .eq("id", enclosure_id)
+        .single()
+        .execute()
+    )
+    row = res.data
+    if not row or row["owner_id"] != user_id:
+        raise HTTPException(status_code=400, detail="enclosure_id 가 본인 사육장이 아님.")
 
 
 # ---------- 엔드포인트 ----------
@@ -79,7 +102,7 @@ _NOT_FOUND = {404: {"description": "본인 디바이스가 아니거나 미존�
     response_model=DevicePairResponse,
     status_code=status.HTTP_201_CREATED,
     summary="신규 디바이스 페어링",
-    responses={**_AUTH_REQUIRED},
+    responses={**_AUTH_REQUIRED, **_BAD_ENCLOSURE},
 )
 def pair_device(
     body: DevicePairRequest,
@@ -90,8 +113,13 @@ def pair_device(
 
     응답의 `mqtt_token` 은 **단 1회만 노출** → ESP32 가 NVS 에 즉시 저장.
     이후 MQTT 브로커 연결 시 `username=device_id`, `password=mqtt_token` 으로 인증.
+
+    `enclosure_id` 가 본인 소유가 아니면 400.
     """
     sb = get_supabase_client()
+
+    if body.enclosure_id:
+        _verify_enclosure_owner(sb, body.enclosure_id, user_id)
 
     device_id = f"terra-{secrets.token_hex(4)}"   # "terra-a1b2c3d4"
     mqtt_token = generate_token()
@@ -99,6 +127,7 @@ def pair_device(
 
     payload: dict[str, Any] = {
         "owner_id": user_id,
+        "enclosure_id": body.enclosure_id,
         "device_id": device_id,
         "token_hash": token_hashed,
         "name": body.name,
@@ -134,7 +163,10 @@ def list_devices(
     sb = get_supabase_client()
     res = (
         sb.table("devices")
-        .select("id, device_id, name, species, firmware_ver, created_at, last_seen_at, is_online")
+        .select(
+            "id, device_id, enclosure_id, name, species, firmware_ver, "
+            "created_at, last_seen_at, is_online"
+        )
         .eq("owner_id", user_id)
         .order("created_at", desc=True)
         .execute()
@@ -156,7 +188,10 @@ def get_device(
     sb = get_supabase_client()
     res = (
         sb.table("devices")
-        .select("id, device_id, name, species, firmware_ver, created_at, last_seen_at, is_online, owner_id")
+        .select(
+            "id, device_id, enclosure_id, name, species, firmware_ver, "
+            "created_at, last_seen_at, is_online, owner_id"
+        )
         .eq("id", device_uuid)
         .single()
         .execute()
@@ -171,10 +206,11 @@ def get_device(
 @router.patch(
     "/{device_uuid}",
     response_model=DeviceOut,
-    summary="디바이스 수정 (이름/종)",
+    summary="디바이스 수정 (이름/종/enclosure_id)",
     responses={
         **_AUTH_REQUIRED,
         **_NOT_FOUND,
+        **_BAD_ENCLOSURE,
         400: {"description": "변경 필드 없음"},
     },
 )
@@ -183,11 +219,18 @@ def update_device(
     body: DeviceUpdate,
     user_id: str = Depends(get_current_user_id),
 ) -> DeviceOut:
-    """전송된 필드만 부분 업데이트 (exclude_unset)."""
+    """전송된 필드만 부분 업데이트 (exclude_unset).
+
+    `enclosure_id` 로 사육장에 배정/해제 (None 이면 단독 디바이스로 분리).
+    본인 소유 사육장이 아니면 400.
+    """
     sb = get_supabase_client()
     updates = body.model_dump(exclude_unset=True)
     if not updates:
         raise HTTPException(status_code=400, detail="변경 필드 없음")
+
+    if "enclosure_id" in updates and updates["enclosure_id"] is not None:
+        _verify_enclosure_owner(sb, updates["enclosure_id"], user_id)
 
     res = (
         sb.table("devices")
