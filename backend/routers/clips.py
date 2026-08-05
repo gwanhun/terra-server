@@ -58,13 +58,13 @@ clips_router = APIRouter(prefix="/clips", tags=["clips"])
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
 
-# R2 object key 패턴 (버킷 petcam-clips 를 petcam-lab 과 공유 → terra-clips/ 로 분리):
-#   비디오: "terra-clips/clips/{camera_id}/{YYYYMMDD-HHMMSS}_{clip_id}.mp4"
-#   썸네일: "terra-clips/clips/{camera_id}/{YYYYMMDD-HHMMSS}_{clip_id}.jpg"
-# 날짜 디렉토리는 빼서 depth 축소, 대신 파일명 맨 앞에 UTC 시각(started_at) prefix → 정렬·식별 용이.
-# cleanup 은 terra-clips/clips/ prefix 스캔으로 동일 동작.
+# R2 object key 패턴 (버킷 petcam-clips 를 petcam-lab 과 공유 → test/ prefix 로 분리):
+#   비디오: "test/{camera_id}/{YYYY-MM-DD}/{HHMMSS}_{clip_id}.mp4"
+#   썸네일: "test/{camera_id}/{YYYY-MM-DD}/{HHMMSS}_{clip_id}.jpg"
+# 카메라별 폴더 → 날짜(UTC)별 폴더로 나누고, 파일명 앞에 시각(HHMMSS) prefix → 하루 내 정렬·식별 용이.
+# cleanup 은 test/ prefix 스캔으로 동일 동작.
 _KEY_RE = re.compile(
-    r"^terra-clips/clips/(?P<camera>[^/]+)/(?P<stamp>\d{8}-\d{6})_(?P<clip_id>[0-9a-f-]{36})\.(?P<ext>mp4|jpg)$"
+    r"^test/(?P<camera>[^/]+)/(?P<date>\d{4}-\d{2}-\d{2})/(?P<time>\d{6})_(?P<clip_id>[0-9a-f-]{36})\.(?P<ext>mp4|jpg)$"
 )
 
 # VLM 하이라이트 억제셋 — 개체 프로파일 기반 상시 오탐 제거 (GET /clips/highlights).
@@ -198,14 +198,15 @@ _R2_ERROR = {502: {"description": "R2 응답 실패"}}
 
 
 def _build_key(camera_id_text: str, clip_id: str, started_at: datetime, ext: str) -> str:
-    """terra-clips/clips/{camera_id}/{YYYYMMDD-HHMMSS}_{clip_id}.{ext} — ext 는 'mp4' 또는 'jpg'.
+    """test/{camera_id}/{YYYY-MM-DD}/{HHMMSS}_{clip_id}.{ext} — ext 는 'mp4' 또는 'jpg'.
 
-    날짜 디렉토리는 빼서 depth 를 줄이고, 파일명 맨 앞에 UTC 시각(started_at) prefix 를 붙여
-    R2 목록에서 시간순 정렬·식별이 쉽게 한다. cleanup 은 'terra-clips/clips/' prefix 스캔으로 동일.
+    카메라별 폴더 아래를 UTC 날짜별 폴더로 나누고, 파일명 앞에 시각(HHMMSS) prefix 를 붙여
+    R2 목록에서 하루 내 시간순 정렬·식별이 쉽게 한다. cleanup 은 'test/' prefix 스캔으로 동일.
     """
     ts = started_at.astimezone(timezone.utc) if started_at.tzinfo else started_at.replace(tzinfo=timezone.utc)
-    stamp = ts.strftime("%Y%m%d-%H%M%S")
-    return f"terra-clips/clips/{camera_id_text}/{stamp}_{clip_id}.{ext}"
+    date = ts.strftime("%Y-%m-%d")
+    time = ts.strftime("%H%M%S")
+    return f"test/{camera_id_text}/{date}/{time}_{clip_id}.{ext}"
 
 
 def _parse_key(key: str, expected_camera_id_text: str, expected_ext: str) -> str:

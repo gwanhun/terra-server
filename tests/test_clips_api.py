@@ -56,8 +56,8 @@ def test_upload_url_returns_presigned(
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["url"].startswith("https://r2.test/put/")
-    # key 포맷: terra-clips/clips/{camera_id_text}/{YYYYMMDD-HHMMSS}_{clip_id}.mp4
-    assert body["key"].startswith(f"terra-clips/clips/{CAMERA_ID_TEXT}/20260527-120000_")
+    # key 포맷: test/{camera_id_text}/{YYYY-MM-DD}/{HHMMSS}_{clip_id}.mp4
+    assert body["key"].startswith(f"test/{CAMERA_ID_TEXT}/2026-05-27/120000_")
     assert body["key"].endswith(".mp4")
     assert body["clip_id"] in body["key"]
     assert body["expires_in"] == 300
@@ -118,7 +118,7 @@ def test_create_clip_meta_ok(
 ) -> None:
     _setup_camera_lookup(fake_sb, authed_camera_row)
     clip_id = "abcdef12-3456-7890-abcd-ef1234567890"
-    key = f"terra-clips/clips/{CAMERA_ID_TEXT}/20260527-120000_{clip_id}.mp4"
+    key = f"test/{CAMERA_ID_TEXT}/2026-05-27/120000_{clip_id}.mp4"
 
     fake_sb.table.return_value.insert.return_value.execute.return_value.data = [
         {"id": clip_id}
@@ -153,7 +153,7 @@ def test_create_clip_meta_rejects_key_for_other_camera(
     app_client: TestClient, fake_sb: MagicMock, authed_camera_row: dict
 ) -> None:
     _setup_camera_lookup(fake_sb, authed_camera_row)
-    bad_key = "terra-clips/clips/picam-deadbeef/20260527-120000_abcdef12-3456-7890-abcd-ef1234567890.mp4"
+    bad_key = "test/picam-deadbeef/2026-05-27/120000_abcdef12-3456-7890-abcd-ef1234567890.mp4"
 
     res = app_client.post(
         f"/cameras/{CAMERA_UUID}/clips",
@@ -207,7 +207,7 @@ def test_list_enclosure_clips_ok(
         "enclosure_id": ENC_ID,
         "started_at": "2026-05-27T12:00:00Z",
         "duration_sec": 10.0,
-        "r2_key": f"terra-clips/clips/2026/05/27/{CAMERA_ID_TEXT}/clip-1.mp4",
+        "r2_key": f"test/{CAMERA_ID_TEXT}/2026-05-27/120000_clip-1.mp4",
         "thumbnail_key": None,
         "file_size": 1024,
         "width": 1280,
@@ -259,7 +259,7 @@ def _setup_clip_lookup(fake_sb: MagicMock, owner_id: str = TEST_USER_ID) -> dict
         "id": "clip-1",
         "camera_id": CAMERA_UUID,
         "owner_id": owner_id,
-        "r2_key": f"terra-clips/clips/2026/05/27/{CAMERA_ID_TEXT}/clip-1.mp4",
+        "r2_key": f"test/{CAMERA_ID_TEXT}/2026-05-27/120000_clip-1.mp4",
         "thumbnail_key": None,
     }
     chain = fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value
@@ -294,7 +294,7 @@ def test_delete_clip_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
         "id": "clip-1",
         "camera_id": CAMERA_UUID,
         "owner_id": TEST_USER_ID,
-        "r2_key": f"terra-clips/clips/2026/05/27/{CAMERA_ID_TEXT}/clip-1.mp4",
+        "r2_key": f"test/{CAMERA_ID_TEXT}/2026-05-27/120000_clip-1.mp4",
         "thumbnail_key": None,
     }
     delete_chain = MagicMock()
