@@ -147,6 +147,8 @@ def test_create_clip_meta_ok(
     assert insert_payload["enclosure_id"] == ENC_ID
     assert insert_payload["owner_id"] == TEST_USER_ID
     assert insert_payload["r2_key"] == key
+    # 촬영 목적: test/ key 에서 서버가 도출 → "test"
+    assert insert_payload["clip_purpose"] == "test"
 
 
 def test_create_clip_meta_rejects_key_for_other_camera(

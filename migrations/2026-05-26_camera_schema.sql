@@ -101,7 +101,9 @@ CREATE TABLE IF NOT EXISTS public.motion_clips (
     owner_id      UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     started_at    TIMESTAMPTZ NOT NULL,
     duration_sec  FLOAT NOT NULL,
-    -- R2 객체 키 (e.g. "clips/2026/05/27/{camera_id}/{clip_id}.mp4")
+    -- R2 객체 키. 현재 terra-server writer 는 test/ prefix 로만 기록한다
+    -- (버킷 petcam-clips 공유 → test/ 로 격리). 촬영 목적은 clip_purpose 참고
+    -- (2026-08-06_clip_purpose.sql). e.g. "test/{camera_id}/{YYYY-MM-DD}/{HHMMSS}_{clip_id}.mp4"
     r2_key        TEXT NOT NULL,
     -- 썸네일 (첫 프레임 JPEG, 옵션)
     thumbnail_key TEXT,
