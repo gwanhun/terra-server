@@ -67,6 +67,35 @@ _KEY_RE = re.compile(
     r"^test/(?P<camera>[^/]+)/(?P<date>\d{4}-\d{2}-\d{2})/(?P<time>\d{6})_(?P<clip_id>[0-9a-f-]{36})\.(?P<ext>mp4|jpg)$"
 )
 
+# clip_purpose — 촬영 목적 계약 (production | test). motion_clips 에 DB 로 고정.
+# 클라이언트 값을 신뢰하지 않고 서버가 r2_key prefix 에서 결정론적으로 도출한다.
+# 라벨링 자격은 이 값과 별개다 (petcam-lab: purpose=production + canonical terra-clips/clips/
+#   + system exclusion 없음 + media 존재 를 모두 요구). 여긴 촬영 목적만 판정.
+CLIP_PURPOSE_TEST = "test"
+CLIP_PURPOSE_PRODUCTION = "production"
+
+# 목적별 허용 prefix (allowlist). `NOT LIKE 'test/%'` 로 열지 않는다 —
+# 임의·오타 경로가 production 으로 새는 것을 막고 DB CHECK 와 정확히 동일하게 유지.
+_TEST_PREFIXES = ("test/",)
+_PRODUCTION_PREFIXES = (
+    "terra-clips/clips/",      # canonical 운영 촬영 경로 (펌웨어 운영 승격 시 writer 연결)
+    "research-quarantine/",    # 운영 촬영본의 연구 격리 disposition
+    "research-excluded/",      # 운영 촬영본의 연구 제외 disposition
+    "deleted/",                # 삭제 예정 disposition
+)
+
+
+def _derive_clip_purpose(key: str) -> str:
+    """검증된 r2_key prefix 에서 clip_purpose 를 도출한다. 미지 prefix 는 400 (fail-closed)."""
+    if key.startswith(_TEST_PREFIXES):
+        return CLIP_PURPOSE_TEST
+    if key.startswith(_PRODUCTION_PREFIXES):
+        return CLIP_PURPOSE_PRODUCTION
+    raise HTTPException(
+        status_code=400,
+        detail="r2_key prefix 가 허용 namespace 에 없음 (clip_purpose 도출 불가)",
+    )
+
 # VLM 하이라이트 억제셋 — 개체 프로파일 기반 상시 오탐 제거 (GET /clips/highlights).
 #   shedding: 특정 개체(화이트 할리퀸 모프) 흰 체색을 밤 IR 에서 허물로 오인 → 100% 오탐 (2026-07 실측 30+건).
 #   moving/unseen: 하이라이트 가치 낮음.
@@ -172,6 +201,7 @@ class ClipOut(BaseModel):
     codec: str | None
     container: str | None
     motion_score: float | None
+    clip_purpose: str | None = None
     created_at: str
 
     model_config = ConfigDict(extra="ignore")
@@ -333,6 +363,9 @@ def create_clip_meta(
         "started_at": body.started_at.isoformat(),
         "duration_sec": body.duration_sec,
         "r2_key": body.key,
+        # 촬영 목적: 검증된 key prefix 에서 서버가 도출 (클라이언트 신뢰 안 함).
+        # _parse_key 가 이미 ^test/ 를 강제하므로 현재는 항상 "test".
+        "clip_purpose": _derive_clip_purpose(body.key),
         "thumbnail_key": body.thumbnail_key,
         "file_size": body.file_size,
         "width": body.width,
