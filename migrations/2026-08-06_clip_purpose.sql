@@ -60,7 +60,8 @@ BEGIN
     IF unmapped > 0 THEN
         RAISE EXCEPTION 'clip_purpose 백필 미완: % 행이 허용 namespace 밖 prefix. 분류 확정 후 재실행', unmapped;
     END IF;
-END $$;
+END;
+$$;
 
 -- Step 3. purpose ↔ prefix 계약을 CHECK 로 고정 (writer 의 _derive_clip_purpose 와 동일 allowlist).
 --         production 을 `NOT LIKE test/` 로 열지 않고 명시적 허용 prefix 로 제한한다.

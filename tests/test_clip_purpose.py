@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi import HTTPException
 
@@ -56,3 +58,9 @@ def test_unknown_prefix_is_fail_closed(key: str) -> None:
 def test_no_production_prefix_is_under_test() -> None:
     """production allowlist 중 test/ 로 시작하는 게 없어야 (분류 충돌 방지)."""
     assert not any(p.startswith("test/") for p in _PRODUCTION_PREFIXES)
+
+
+def test_migration_anonymous_block_has_valid_plpgsql_terminator() -> None:
+    sql = Path("migrations/2026-08-06_clip_purpose.sql").read_text(encoding="utf-8")
+    assert "END;\n$$;" in sql
+    assert "END $$;" not in sql
