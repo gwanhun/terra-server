@@ -203,6 +203,43 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
     </table>
   </div>
 
+  <!-- 예약 타이머 (Stage H-2) -->
+  <div class="panel">
+    <div class="row">
+      <h2 style="margin:0">⏰ 예약 타이머 (Stage H-2)</h2>
+      <span style="flex:1"></span>
+      <button onclick="loadSchedules()">새로고침</button>
+    </div>
+    <small class="muted">예약 등록 → 브리지 러너가 시각 도달 시 commands 발행. 시각은 KST 기준.</small>
+    <div class="row" style="margin-top:8px;flex-wrap:wrap;align-items:center;gap:6px">
+      <select id="sch-device" onchange="loadSchedules()" title="대상 디바이스" style="max-width:160px"></select>
+      <select id="sch-action" onchange="onSchActionChange()" title="동작">
+        <option value="mist">💦 물분무 (mist)</option>
+        <option value="fan_toggle">🌀 팬 토글</option>
+        <option value="led_on">💡 LED on</option>
+        <option value="led_off">💡 LED off</option>
+        <option value="relay_toggle">🔌 릴레이 토글</option>
+        <option value="heater_toggle">🔥 히터 토글</option>
+      </select>
+      <select id="sch-mist-ms" title="물분무 지속시간">
+        <option value="1000">1초</option>
+        <option value="2000" selected>2초</option>
+        <option value="3000">3초</option>
+      </select>
+      <select id="sch-kind" onchange="onSchKindChange()" title="반복">
+        <option value="daily">매일</option>
+        <option value="weekly">요일 지정</option>
+      </select>
+      <input id="sch-time" type="time" value="08:00" title="실행 시각 (KST)" style="width:110px">
+      <span id="sch-days" class="hidden" style="font-size:12px"></span>
+      <button onclick="createSchedule()">예약 추가</button>
+    </div>
+    <table id="sch-table" style="margin-top:8px">
+      <thead><tr><th>디바이스</th><th>동작</th><th>반복</th><th>시각(KST)</th><th>다음 실행</th><th>on</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
   <!-- 실시간 텔레메트리 -->
   <div class="panel">
     <div class="row">
@@ -591,8 +628,31 @@ function quickCmdButtons(deviceUuid, online) {
   ).join(' ');
 }
 
+// 물분무 1/2/3초 — REST POST /devices/{id}/mist (서버가 duration 검증 → commands 큐잉).
+// firmware 가 one-shot 타이머로 자동 OFF (단일 명령 자기완결).
+function mistButtons(deviceUuid, online) {
+  const disabled = online ? '' : 'opacity:.5';
+  return [1000, 2000, 3000].map(ms =>
+    `<button onclick="mistCommand('${deviceUuid}',${ms})" title="물분무 ${ms / 1000}초" `
+    + `style="font-size:11px;padding:2px 5px;background:#0a2a3a;border:1px solid #14506e;color:#8cd;${disabled}">💦${ms / 1000}s</button>`
+  ).join(' ');
+}
+
+async function mistCommand(deviceUuid, durationMs) {
+  const r = await api(`/devices/${deviceUuid}/mist`, {
+    method: 'POST',
+    body: JSON.stringify({ duration_ms: durationMs }),
+  });
+  if (r) {
+    toast(`💦 물분무 ${durationMs / 1000}초`, 'good');
+    setTimeout(loadRecentCommands, 1500);
+  }
+}
+
 async function loadDevices() {
   const rows = await api('/devices');
+  DEVICES = rows || [];             // 예약 패널 디바이스 드롭다운용 캐시
+  refreshScheduleDeviceOptions();
   const tbody = document.querySelector('#dev-table tbody');
   tbody.innerHTML = '';
   (rows || []).forEach(r => {
@@ -608,6 +668,7 @@ async function loadDevices() {
       <td><small>${esc(r.last_seen_at?.slice(0,16) || '-')}</small></td>
       <td style="white-space:nowrap">
         ${quickCmdButtons(r.id, r.is_online)}
+        &nbsp;${mistButtons(r.id, r.is_online)}
         <button class="danger" onclick="deleteDevice('${r.id}')" style="font-size:11px;padding:2px 8px;margin-left:8px">삭제</button>
       </td>`;
     tbody.appendChild(tr);
@@ -686,6 +747,112 @@ async function loadRecentCommands() {
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// 예약 타이머 (Stage H-2) — REST /devices/{id}/schedules, /schedules/{id}
+// ─────────────────────────────────────────────────────────────────────────
+const DAY_LABELS = ['월', '화', '수', '목', '금', '토', '일'];  // index 0 → ISO day 1(월)
+
+function refreshScheduleDeviceOptions() {
+  const sel = document.getElementById('sch-device');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = DEVICES.map(d =>
+    `<option value="${d.id}">${esc(d.device_id)} · ${esc(d.name)}</option>`).join('');
+  if (prev && DEVICES.some(d => d.id === prev)) sel.value = prev;
+  loadSchedules();
+}
+
+function onSchActionChange() {
+  const isMist = document.getElementById('sch-action').value === 'mist';
+  document.getElementById('sch-mist-ms').classList.toggle('hidden', !isMist);
+}
+
+function onSchKindChange() {
+  const weekly = document.getElementById('sch-kind').value === 'weekly';
+  const box = document.getElementById('sch-days');
+  box.classList.toggle('hidden', !weekly);
+  if (weekly && !box.dataset.built) {
+    box.innerHTML = DAY_LABELS.map((lbl, i) =>
+      `<label style="margin-right:4px"><input type="checkbox" class="sch-dow" value="${i + 1}">${lbl}</label>`
+    ).join('');
+    box.dataset.built = '1';
+  }
+}
+
+function getSelectedDays() {
+  return [...document.querySelectorAll('.sch-dow:checked')].map(c => Number(c.value));
+}
+
+// next_run_at(UTC ISO) → KST 표시
+function fmtKst(iso) {
+  if (!iso) return '-';
+  try {
+    return new Date(iso).toLocaleString('ko-KR', {
+      timeZone: 'Asia/Seoul', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit',
+    });
+  } catch (e) { return iso.slice(5, 16); }
+}
+
+async function createSchedule() {
+  const deviceId = document.getElementById('sch-device').value;
+  if (!deviceId) return toast('디바이스 선택', 'bad');
+  const action = document.getElementById('sch-action').value;
+  const kind = document.getElementById('sch-kind').value;
+  const time_of_day = document.getElementById('sch-time').value;
+  if (!time_of_day) return toast('시각 입력', 'bad');
+
+  const body = { action, kind, time_of_day };
+  if (action === 'mist') {
+    body.payload = { duration_ms: Number(document.getElementById('sch-mist-ms').value) };
+  }
+  if (kind === 'weekly') {
+    const days = getSelectedDays();
+    if (!days.length) return toast('요일 최소 1개 선택', 'bad');
+    body.days_of_week = days;
+  }
+  const r = await api(`/devices/${deviceId}/schedules`, { method: 'POST', body: JSON.stringify(body) });
+  if (r) { toast('⏰ 예약 추가', 'good'); loadSchedules(); }
+}
+
+async function loadSchedules() {
+  const sel = document.getElementById('sch-device');
+  const tbody = document.querySelector('#sch-table tbody');
+  if (!sel || !tbody) return;
+  const deviceId = sel.value;
+  if (!deviceId) { tbody.innerHTML = ''; return; }
+  const rows = await api(`/devices/${deviceId}/schedules`);
+  tbody.innerHTML = '';
+  (rows || []).forEach(s => {
+    const label = DEV_LABEL[s.device_id] || s.device_id.slice(0, 8);
+    const actLabel = (s.action === 'mist' && s.payload?.duration_ms)
+      ? `💦 ${s.payload.duration_ms / 1000}s` : s.action;
+    const when = s.kind === 'weekly'
+      ? (s.days_of_week || []).map(d => DAY_LABELS[d - 1]).join(',')
+      : '매일';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><code>${esc(label)}</code></td>
+      <td>${esc(actLabel)}</td>
+      <td>${esc(when)}</td>
+      <td>${esc((s.time_of_day || '').slice(0, 5))}</td>
+      <td><small>${esc(fmtKst(s.next_run_at))}</small></td>
+      <td>${s.enabled ? '<span class="good">●</span>' : '<span class="muted">○</span>'}</td>
+      <td><button class="danger" onclick="deleteSchedule('${s.id}')" style="font-size:11px;padding:2px 8px">삭제</button></td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function deleteSchedule(id) {
+  if (!confirm('예약 삭제?')) return;
+  const r = await fetch(CONFIG.apiBase + '/schedules/' + id, {
+    method: 'DELETE', headers: { Authorization: 'Bearer ' + session.access_token },
+  });
+  log({ DELETE: '/schedules/' + id, status: r.status });
+  if (r.ok) { toast('삭제됨', 'good'); loadSchedules(); }
+  else toast('삭제 실패 ' + r.status, 'bad');
+}
+
 async function pairDevice() {
   const name = document.getElementById('dev-name').value.trim();
   const species = document.getElementById('dev-species').value.trim() || null;
@@ -717,6 +884,7 @@ async function deleteDevice(id) {
 const TEL_LATEST = {};
 // device_uuid → device_id (TEXT) 캐시 (loadDevices 때 갱신)
 const DEV_LABEL = {};
+let DEVICES = [];   // /devices 응답 캐시 (예약 패널 드롭다운)
 
 let _telChannel = null;
 let _alertChannel = null;

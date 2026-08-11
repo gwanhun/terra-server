@@ -67,16 +67,20 @@ def app_client(monkeypatch: pytest.MonkeyPatch, fake_sb: MagicMock) -> TestClien
     from backend import auth_camera
     from backend.routers import cameras as cameras_router
     from backend.routers import clips as clips_router
+    from backend.routers import commands as commands_router
     from backend.routers import devices as devices_router
     from backend.routers import enclosures as enclosures_router
+    from backend.routers import schedules as schedules_router
     from backend.routers import webrtc as webrtc_router
 
     for mod in (
         auth_camera,
         cameras_router,
         clips_router,
+        commands_router,
         devices_router,
         enclosures_router,
+        schedules_router,
         webrtc_router,
     ):
         monkeypatch.setattr(mod, "get_supabase_client", lambda: fake_sb)
