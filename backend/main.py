@@ -26,7 +26,15 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 
 from backend.health import register_health
-from backend.routers import cameras, clips, devices, enclosures, webrtc
+from backend.routers import (
+    cameras,
+    clips,
+    commands,
+    devices,
+    enclosures,
+    schedules,
+    webrtc,
+)
 from backend.webrtc_relay import get_relay
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -72,6 +80,8 @@ tags_metadata = [
     {"name": "enclosures", "description": "사육장(상위 묶음) CRUD. device/camera 가 N:1 로 소속."},
     {"name": "cameras", "description": "카메라 워커 (ESP32-P4 / RPi) 페어링 + CRUD."},
     {"name": "webrtc", "description": "카메라 라이브 스트리밍 WebRTC 시그널링."},
+    {"name": "commands", "description": "액추에이터 명령 (물분무 등). 서버 검증 후 commands 큐잉."},
+    {"name": "schedules", "description": "예약 타이머 (daily/weekly). runner 가 due 시 명령 발행."},
     {
         "name": "clips",
         "description": (
@@ -172,6 +182,9 @@ app.include_router(webrtc.router)
 app.include_router(clips.camera_clips_router)
 app.include_router(clips.enclosure_clips_router)
 app.include_router(clips.clips_router)
+app.include_router(commands.router)
+app.include_router(schedules.device_schedules_router)
+app.include_router(schedules.schedules_router)
 
 # 정적 웹 콘솔 — 루트(/) 에 마운트.
 # 라우터들 다음에 등록해야 /devices, /cameras, /web-config 등이 우선 매칭됨.

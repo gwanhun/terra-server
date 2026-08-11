@@ -12,6 +12,7 @@ systemd 에서는:
 |----------|------|
 | `MqttBridge`        | Mosquitto ↔ Supabase (telemetry/ack/alert 수신) |
 | `CommandDispatcher` | Supabase commands(pending) → MQTT publish (1초 polling) |
+| `ScheduleRunner`    | Supabase schedules(due) → commands INSERT (30초 polling) |
 | `OfflineMonitor`    | devices.last_seen_at 감시 → offline alert (1분 주기) |
 
 모두 같은 프로세스 안. 셋 다 SIGTERM 에서 graceful shutdown.
@@ -26,6 +27,7 @@ import sys
 from backend.mqtt.bridge import MqttBridge
 from backend.mqtt.dispatcher import CommandDispatcher
 from backend.offline_monitor import OfflineMonitor
+from backend.schedule_runner import ScheduleRunner
 
 
 def _setup_logging() -> None:
@@ -40,10 +42,12 @@ def run() -> None:
     _setup_logging()
     bridge = MqttBridge()
     dispatcher = CommandDispatcher(bridge)
+    schedule_runner = ScheduleRunner()
     offline_monitor = OfflineMonitor()
 
     def _shutdown(_signum: int, _frame) -> None:
         offline_monitor.stop()
+        schedule_runner.stop()
         dispatcher.stop()
         bridge.stop()
         sys.exit(0)
@@ -53,6 +57,7 @@ def run() -> None:
 
     bridge.start()
     dispatcher.start()
+    schedule_runner.start()
     offline_monitor.start()
     bridge.wait_stopped()
 
