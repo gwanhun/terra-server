@@ -31,6 +31,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -57,6 +58,9 @@ clips_router = APIRouter(prefix="/clips", tags=["clips"])
 
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
+
+# R2 날짜 폴더 기준 타임존 — 사용자가 보는 날짜와 맞추기 위해 KST
+KST = ZoneInfo("Asia/Seoul")
 
 # R2 object key 패턴 (버킷 petcam-clips 를 petcam-lab 과 공유 → test/ prefix 로 분리):
 #   비디오: "test/{camera_id}/{YYYY-MM-DD}/{HHMMSS}_{clip_id}.mp4"
@@ -230,10 +234,13 @@ _R2_ERROR = {502: {"description": "R2 응답 실패"}}
 def _build_key(camera_id_text: str, clip_id: str, started_at: datetime, ext: str) -> str:
     """test/{camera_id}/{YYYY-MM-DD}/{HHMMSS}_{clip_id}.{ext} — ext 는 'mp4' 또는 'jpg'.
 
-    카메라별 폴더 아래를 UTC 날짜별 폴더로 나누고, 파일명 앞에 시각(HHMMSS) prefix 를 붙여
-    R2 목록에서 하루 내 시간순 정렬·식별이 쉽게 한다. cleanup 은 'test/' prefix 스캔으로 동일.
+    카메라별 폴더 아래를 KST(Asia/Seoul) 날짜별 폴더로 나누고, 파일명 앞에 시각(HHMMSS)
+    prefix 를 붙여 R2 목록에서 하루 내 시간순 정렬·식별이 쉽게 한다. 사용자가 보는 날짜와
+    폴더 날짜를 일치시키기 위해 UTC 가 아닌 KST 기준. cleanup 은 'test/' prefix 스캔으로 동일.
+    naive datetime 은 UTC 로 간주 후 변환 (워커가 UTC 로 보냄).
     """
-    ts = started_at.astimezone(timezone.utc) if started_at.tzinfo else started_at.replace(tzinfo=timezone.utc)
+    aware = started_at if started_at.tzinfo else started_at.replace(tzinfo=timezone.utc)
+    ts = aware.astimezone(KST)
     date = ts.strftime("%Y-%m-%d")
     time = ts.strftime("%H%M%S")
     return f"test/{camera_id_text}/{date}/{time}_{clip_id}.{ext}"
