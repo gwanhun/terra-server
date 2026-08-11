@@ -57,7 +57,8 @@ def test_upload_url_returns_presigned(
     body = res.json()
     assert body["url"].startswith("https://r2.test/put/")
     # key 포맷: test/{camera_id_text}/{YYYY-MM-DD}/{HHMMSS}_{clip_id}.mp4
-    assert body["key"].startswith(f"test/{CAMERA_ID_TEXT}/2026-05-27/120000_")
+    # 날짜/시각은 KST 기준 — UTC 2026-05-27T12:00:00Z → KST 21:00:00 (같은 날)
+    assert body["key"].startswith(f"test/{CAMERA_ID_TEXT}/2026-05-27/210000_")
     assert body["key"].endswith(".mp4")
     assert body["clip_id"] in body["key"]
     assert body["expires_in"] == 300
