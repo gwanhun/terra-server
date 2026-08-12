@@ -115,6 +115,21 @@ def test_create_mist_bad_duration_400(app_client: TestClient, fake_sb: MagicMock
     sch.insert.assert_not_called()
 
 
+def test_create_onoff_actions_allowed(app_client: TestClient, fake_sb: MagicMock) -> None:
+    """요청 1: heater_on/off, fan_on/off, relay_on/off 가 예약 허용 액션이어야."""
+    for action in ("heater_on", "heater_off", "fan_on", "fan_off", "relay_on", "relay_off"):
+        dev = _device_mock()
+        sch = MagicMock()
+        sch.insert.return_value.execute.return_value.data = [_schedule_row(action=action)]
+        fake_sb.table.side_effect = lambda name: {"devices": dev, "schedules": sch}[name]
+
+        res = app_client.post(
+            f"/devices/{DEVICE_UUID}/schedules",
+            json={"action": action, "kind": "daily", "time_of_day": "20:00"},
+        )
+        assert res.status_code == 201, f"{action}: {res.text}"
+
+
 def test_create_disallowed_action_400(app_client: TestClient, fake_sb: MagicMock) -> None:
     dev = _device_mock()
     sch = MagicMock()
@@ -148,6 +163,50 @@ def test_bad_time_format_400(app_client: TestClient, fake_sb: MagicMock) -> None
     res = app_client.post(
         f"/devices/{DEVICE_UUID}/schedules",
         json={"action": "led_on", "kind": "daily", "time_of_day": "25:99"},
+    )
+    assert res.status_code == 400, res.text
+
+
+def test_create_with_guard_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
+    """요청 2: 유효한 skip 가드가 붙은 예약 생성."""
+    dev = _device_mock()
+    sch = MagicMock()
+    guard = {"type": "skip_when_humidity_above", "value": 70, "enabled": True}
+    sch.insert.return_value.execute.return_value.data = [_schedule_row(guard=guard)]
+    fake_sb.table.side_effect = lambda name: {"devices": dev, "schedules": sch}[name]
+
+    res = app_client.post(
+        f"/devices/{DEVICE_UUID}/schedules",
+        json={"action": "mist", "payload": {"duration_ms": 2000},
+              "kind": "daily", "time_of_day": "08:00", "guard": guard},
+    )
+    assert res.status_code == 201, res.text
+    assert sch.insert.call_args.args[0]["guard"] == guard
+
+
+def test_create_bad_guard_type_400(app_client: TestClient, fake_sb: MagicMock) -> None:
+    dev = _device_mock()
+    sch = MagicMock()
+    fake_sb.table.side_effect = lambda name: {"devices": dev, "schedules": sch}[name]
+
+    res = app_client.post(
+        f"/devices/{DEVICE_UUID}/schedules",
+        json={"action": "fan_on", "kind": "daily", "time_of_day": "08:00",
+              "guard": {"type": "nuke_when_bored", "value": 1}},
+    )
+    assert res.status_code == 400, res.text
+    sch.insert.assert_not_called()
+
+
+def test_create_bad_guard_value_400(app_client: TestClient, fake_sb: MagicMock) -> None:
+    dev = _device_mock()
+    sch = MagicMock()
+    fake_sb.table.side_effect = lambda name: {"devices": dev, "schedules": sch}[name]
+
+    res = app_client.post(
+        f"/devices/{DEVICE_UUID}/schedules",
+        json={"action": "fan_on", "kind": "daily", "time_of_day": "08:00",
+              "guard": {"type": "skip_when_temp_above", "value": "hot"}},
     )
     assert res.status_code == 400, res.text
 
