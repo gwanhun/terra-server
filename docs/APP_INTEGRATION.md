@@ -152,7 +152,7 @@ const { data } = await sb.from('commands').insert({
 | `fan_toggle` / `fan_on` / `fan_off` | `fan_on`: `duration_ms` (선택) | 🌀 팬. `duration_ms` 주면 그 시간 뒤 자동 OFF(일회성 타이머, 최대 2h). `fan_off` 로 타이머 취소 |
 | `heater_toggle` / `heater_on` / `heater_off` | — | 🔥 히터 (토글 / 켜기 / 끄기). safety latch 활성 시 `result='locked'` |
 | `heater_clear_lock` | — | ⚠ 히터 safety latch 해제 |
-| `led_toggle` / `led_on` / `led_off` | `led_on`: `brightness` 0~100 (선택) | 💡 조명. `brightness` 로 밝기 조절(PWM). 생략 시 100% |
+| `led_toggle` / `led_on` / `led_off` | `led_on`: `brightness` 0~100 (선택) | 💡 조명. **MOSFET 보드**는 `brightness` 로 밝기 조절(PWM). **릴레이 보드**는 밝기 무시(on/off). 생략 시 100% |
 | `token_rotate` | `new_token` (string) | 디바이스 NVS 의 mqtt_token 갱신 + MQTT 재연결 |
 
 > **on/off vs toggle**: `*_on`/`*_off` 는 **절대 상태(멱등)** — 이미 켜져 있어도 `heater_on` 재전송 무해.
