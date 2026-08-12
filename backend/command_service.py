@@ -50,11 +50,17 @@ def insert_pending_command(
     payload: dict[str, Any] | None = None,
     issued_by: str | None = None,
     ttl_sec: int = DEFAULT_CMD_TTL_SEC,
+    source: str = "manual",
+    source_id: str | None = None,
+    reason: str | None = None,
 ) -> dict[str, Any] | None:
     """`commands` 에 status='pending' 1건 INSERT. 삽입된 row 반환 (실패 시 None).
 
     issued_by 는 사용자 발행이면 owner_id, 시스템(스케줄) 발행도 owner_id 를 넣어
     앱의 명령 이력에서 본인 것으로 보이게 한다 (NULL 도 허용되지만 UX 상 owner 명시).
+
+    source: 'manual' | 'schedule' | 'timer' | 'guard' — 감사 로그 출처 구분 (요청 5).
+    source_id: 연결된 schedules.id 등. reason: 가드 사유 등.
     """
     row: dict[str, Any] = {
         "device_id": device_uuid,
@@ -63,6 +69,9 @@ def insert_pending_command(
         "issued_by": issued_by,
         "ttl_sec": ttl_sec,
         "status": "pending",
+        "source": source,
+        "source_id": source_id,
+        "reason": reason,
     }
     res = sb.table("commands").insert(row).execute()
     data = res.data or []

@@ -37,8 +37,74 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _latest_telemetry(sb: Any, device_uuid: str) -> dict[str, Any] | None:
+    """가드 평가용 최신 telemetry 1건 (t_a/h_a). 없으면 None."""
+    res = (
+        sb.table("telemetry")
+        .select("t_a, h_a, ts")
+        .eq("device_id", device_uuid)
+        .order("ts", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    return rows[0] if rows else None
+
+
+def _evaluate_skip_guard(sb: Any, device_uuid: str, guard: dict[str, Any]) -> str | None:
+    """skip 형 가드 평가. 스킵해야 하면 사유 문자열, 아니면 None.
+
+    이번 단계는 **발행 직전 판단(skip_when_*)** 만 서버가 처리. stop_when_* 는 펌웨어 담당이라
+    서버는 무시(None 반환 → 정상 발행). 최신 telemetry 없으면 판단 불가 → 정상 발행.
+    """
+    gtype = str(guard.get("type", ""))
+    if not gtype.startswith("skip_when_"):
+        return None  # stop_when_* 등은 서버가 관여 안 함
+    value = guard.get("value")
+    if value is None:
+        return None
+
+    tel = _latest_telemetry(sb, device_uuid)
+    if not tel:
+        logger.info("guard: telemetry 없음 (device=%s) → 정상 발행", device_uuid)
+        return None
+
+    h_a, t_a = tel.get("h_a"), tel.get("t_a")
+    if gtype == "skip_when_humidity_above" and h_a is not None and h_a > value:
+        return f"습도 {h_a:.0f}% > {value:.0f}% → 스킵"
+    if gtype == "skip_when_humidity_below" and h_a is not None and h_a < value:
+        return f"습도 {h_a:.0f}% < {value:.0f}% → 스킵"
+    if gtype == "skip_when_temp_above" and t_a is not None and t_a > value:
+        return f"온도 {t_a:.1f}°C > {value:.1f}°C → 스킵"
+    if gtype == "skip_when_temp_below" and t_a is not None and t_a < value:
+        return f"온도 {t_a:.1f}°C < {value:.1f}°C → 스킵"
+    return None
+
+
+def _record_skipped(sb: Any, row: dict[str, Any], reason: str) -> None:
+    """가드로 스킵된 예약을 감사 로그로 남김 — status='skipped', source='guard'.
+
+    발행(publish)은 안 함 (dispatcher 는 status='pending' 만 처리). 앱 감사 로그(commands 조회)에
+    "가드로 스킵됨 + 사유" 가 보이게 하기 위함 (요청 5 §4.3.8).
+    """
+    try:
+        sb.table("commands").insert({
+            "device_id": row["device_id"],
+            "action": row["action"],
+            "payload": row.get("payload"),
+            "issued_by": row.get("owner_id"),
+            "status": "skipped",
+            "result": "guard_skipped",
+            "source": "guard",
+            "source_id": row["id"],
+            "reason": reason,
+        }).execute()
+    except Exception:  # noqa: BLE001
+        logger.exception("skipped 감사 기록 실패 (schedule=%s)", row.get("id"))
+
+
 def _fire_one(sb: Any, row: dict[str, Any], now: datetime) -> None:
-    """예약 1건 발화: next_run_at 갱신(먼저) → commands INSERT."""
+    """예약 1건 발화: next_run_at 갱신(먼저) → (가드 통과 시) commands INSERT."""
     tod = parse_time_of_day(row["time_of_day"])
     next_run = compute_next_run(now, row["kind"], tod, row.get("days_of_week"))
 
@@ -48,7 +114,16 @@ def _fire_one(sb: Any, row: dict[str, Any], now: datetime) -> None:
         "last_run_at": now.isoformat(),
     }).eq("id", row["id"]).execute()
 
-    # 2) 명령 큐잉 — issued_by 는 owner_id (앱 이력에서 본인 것으로 표시)
+    # 2) 스마트 조건(가드) — skip 형이면 발행 안 하고 감사 기록만
+    guard = row.get("guard")
+    if isinstance(guard, dict) and guard.get("enabled"):
+        skip_reason = _evaluate_skip_guard(sb, row["device_id"], guard)
+        if skip_reason:
+            _record_skipped(sb, row, skip_reason)
+            logger.info("schedule %s 가드 스킵: %s", row.get("id"), skip_reason)
+            return
+
+    # 3) 명령 큐잉 — source='schedule' 로 감사 로그에서 예약 발행임을 표시
     inserted = insert_pending_command(
         sb,
         device_uuid=row["device_id"],
@@ -56,6 +131,8 @@ def _fire_one(sb: Any, row: dict[str, Any], now: datetime) -> None:
         payload=row.get("payload"),
         issued_by=row.get("owner_id"),
         ttl_sec=DEFAULT_CMD_TTL_SEC,
+        source="schedule",
+        source_id=row["id"],
     )
     if inserted is None:
         logger.error("schedule %s 발화: 명령 INSERT 실패", row.get("id"))
@@ -73,7 +150,7 @@ def run_once(batch: int = DEFAULT_BATCH) -> int:
 
     res = (
         sb.table("schedules")
-        .select("id, device_id, owner_id, action, payload, kind, time_of_day, days_of_week")
+        .select("id, device_id, owner_id, action, payload, kind, time_of_day, days_of_week, guard")
         .eq("enabled", True)
         .lte("next_run_at", now.isoformat())
         .order("next_run_at")

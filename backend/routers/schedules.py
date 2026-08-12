@@ -40,8 +40,22 @@ _NOT_FOUND = {404: {"description": "본인 리소스가 아니거나 미존재"}
 _BAD = {400: {"description": "검증 실패 (action/payload/time_of_day/요일)"}}
 
 # 예약 가능 action 화이트리스트. mist 는 payload 추가 검증.
+# on/off 계열(절대 상태·멱등)은 "구간 예약"(시작~종료)을 2건으로 만들 때 필수 — toggle 은
+# 상태 어긋남 위험이 있어 히터/팬 구간에 부적합. 펌웨어(terra-iot-nano)가 모두 지원.
 SCHEDULABLE_ACTIONS: frozenset[str] = frozenset({
-    MIST_ACTION, "fan_toggle", "led_on", "led_off", "relay_toggle", "heater_toggle",
+    MIST_ACTION,
+    "relay_toggle", "relay_on", "relay_off",
+    "fan_toggle", "fan_on", "fan_off",
+    "heater_toggle", "heater_on", "heater_off",
+    "led_on", "led_off", "led_toggle",
+})
+
+# 스마트 조건(guard) 타입. skip_when_* 는 서버(schedule_runner)가 발행 직전 평가.
+# stop_when_* 는 펌웨어가 가동 중 처리 — 서버는 저장만(발행은 정상).
+GUARD_TYPES: frozenset[str] = frozenset({
+    "skip_when_humidity_above", "skip_when_humidity_below",
+    "skip_when_temp_above", "skip_when_temp_below",
+    "stop_when_temp_above", "stop_when_humidity_below",
 })
 
 
@@ -57,6 +71,10 @@ class ScheduleCreate(BaseModel):
     days_of_week: list[int] | None = Field(
         None, description="weekly 전용. 1=월 .. 7=일. 최소 1개.", examples=[[1, 3, 5]]
     )
+    guard: dict[str, Any] | None = Field(
+        None,
+        description='스마트 조건. 예: {"type":"skip_when_humidity_above","value":70,"enabled":true}',
+    )
     enabled: bool = True
 
 
@@ -65,6 +83,7 @@ class ScheduleUpdate(BaseModel):
     kind: Literal["daily", "weekly"] | None = None
     time_of_day: str | None = None
     days_of_week: list[int] | None = None
+    guard: dict[str, Any] | None = None
     enabled: bool | None = None
 
 
@@ -76,6 +95,7 @@ class ScheduleOut(BaseModel):
     kind: str
     time_of_day: str
     days_of_week: list[int] | None
+    guard: dict[str, Any] | None = None
     enabled: bool
     next_run_at: str
     last_run_at: str | None
@@ -104,6 +124,19 @@ def _validate_action_payload(action: str, payload: dict[str, Any] | None) -> Non
                 status_code=400,
                 detail=f"mist payload.duration_ms 는 {ALLOWED_MIST_MS} 중 하나여야 함",
             )
+
+
+def _validate_guard(guard: dict[str, Any] | None) -> None:
+    """guard 검증 (있을 때만). type 화이트리스트 + value 숫자. 실패 시 400."""
+    if guard is None:
+        return
+    if guard.get("type") not in GUARD_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"guard.type 는 {sorted(GUARD_TYPES)} 중 하나여야 함",
+        )
+    if not isinstance(guard.get("value"), (int, float)) or isinstance(guard.get("value"), bool):
+        raise HTTPException(status_code=400, detail="guard.value 는 숫자여야 함")
 
 
 def _validate_days(kind: str, days: list[int] | None) -> None:
@@ -163,6 +196,7 @@ def create_schedule(
     _load_device_for_owner(sb, device_uuid, user_id)
     _validate_action_payload(body.action, body.payload)
     _validate_days(body.kind, body.days_of_week)
+    _validate_guard(body.guard)
     next_run = _compute_next(body.kind, body.time_of_day, body.days_of_week)
 
     row = {
@@ -173,6 +207,7 @@ def create_schedule(
         "kind": body.kind,
         "time_of_day": body.time_of_day,
         "days_of_week": body.days_of_week if body.kind == "weekly" else None,
+        "guard": body.guard,
         "enabled": body.enabled,
         "next_run_at": next_run,
     }
@@ -232,6 +267,9 @@ def update_schedule(
     if "action" in updates or "payload" in updates:
         # action 은 수정 불가 항목으로 두되, payload 변경 시 mist 재검증
         _validate_action_payload(existing["action"], updates.get("payload", existing.get("payload")))
+
+    if "guard" in updates:
+        _validate_guard(updates["guard"])
 
     timing_changed = any(k in updates for k in ("kind", "time_of_day", "days_of_week"))
     if timing_changed:
