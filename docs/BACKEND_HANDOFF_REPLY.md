@@ -12,7 +12,7 @@
 | 요청 1 (heater/fan on/off) | ✅ **펌웨어에 이미 구현됨** | 백엔드 화이트리스트 추가만 (즉시 가능) |
 | 요청 2 (스마트 조건 guard) | 신규 설계 필요 | 서버 vs 펌웨어 위치 결정 필요 |
 | 요청 3 (일회성 타이머) | 부분 가능 | A안(duration_ms) 추천, fan은 쉬움/heater는 별도 |
-| 요청 4 (LED 밝기 0~100%) | ✅ **firmware-only 가능** (재검증 정정) | MOSFET 보드 + LEDC 이미 있음 → 밝기 PWM 펌웨어 구현 |
+| 요청 4 (LED 밝기 0~100%) | ✅ **구현됨** (MOSFET 보드), 실물 확인 필요 | 옵토절연 MOSFET → PWM 1kHz. 릴레이 보드는 on/off only |
 | 요청 5 (commands 출처) | 타당 | source 컬럼 추가 (A안) |
 | 질문 A (result 목록) | 앱 지적 맞음 | 문서 수정 완료 |
 | 질문 B (relay_toggle) | 계속 유효 | 부무 매핑 유지 OK |
@@ -86,21 +86,27 @@
 
 → **결정 필요**: A(계약 통일, 가벼움) vs B(앱 기존 가정과 일치). 개인적으론 **A + fan 먼저**, heater는 펌웨어 pulse 추가 후.
 
-### 요청 4 — LED 밝기 0~100% → ✅ 구현 가능 (firmware-only, 하드웨어 변경 불필요)
+### 요청 4 — LED 밝기 0~100% → ✅ 구현됨 (MOSFET 보드), 실물 dim 확인 필요
 
-> **⚠️ 이전 회신 정정**: 처음엔 "하드웨어 미지원"이라 했으나, 배선 재확인 결과 **틀렸음.** 아래가 정확.
+> **⚠️ 정정 이력**: ① 처음엔 "하드웨어 미지원"이라 했다가 → ② MOSFET 보드라 PWM 가능으로 정정 →
+> ③ 실물 모듈 사진 확인 결과 **옵토커플러 절연 MOSFET 모듈**(60N03 + PC817급 옵토). 아래가 최종.
 
-- LED_GPIO(14)는 pump/fan과 **같은 MOSFET 보드**다 (`active_low=false /* MOSFET 보드: PWM HIGH = ON */`).
-  현재 `s_led`를 relay(on/off) 드라이버로 쓰는 건 **하드웨어 한계가 아니라 펌웨어 선택**일 뿐.
-- 펌웨어에 **LEDC PWM 인프라 이미 존재** (LCD 백라이트가 `driver/ledc.h`로 디밍 중, TIMER_0/CH_0 사용).
-- → LED_GPIO를 **빈 LEDC 채널(TIMER_1/CH_1 등)에 붙이고 duty로 밝기 제어**하면 됨. **하드웨어 변경 0.**
-- `led_up`/`led_down`: 펌웨어에 없음 → `unknown_action` 정상. 단계 조정 대신 **0~100% duty 직접 제어**로 가면 됨.
+**하드웨어 (실물 확인)**: 4채널 **옵토절연 N-MOSFET 모듈** (60N03). 신호 경로 = `GPIO → 옵토커플러 → MOSFET → LED`.
+릴레이 아님 → **PWM 밝기 조절 물리적으로 가능.**
 
-**작업량(중)**: 펌웨어 — LEDC 채널 1개 추가 + `led_on` 핸들러가 `payload.brightness`(0~100) 읽어 duty 설정,
-`led_off`=duty 0, `led_toggle` 유지. 백엔드 — `schedules` payload 검증에 brightness 허용(요청 4는 앱이 이미
-`led_on`+`{brightness}` 보내는 중이라 계약도 맞음). → **결정 불필요, 바로 착수 가능.**
+**구현 완료 (펌웨어 `terra-iot-nano`)**:
+- `light_pwm` 모듈 신규 (LEDC, LCD 백라이트와 겹치지 않게 TIMER_1/CH_1)
+- LED를 relay→PWM 전환, `led_on` 이 `payload.brightness`(0~100)를 duty로. `led_off`=0, `led_toggle` 유지
+- **PWM 주파수 1kHz** — 입력이 옵토커플러(turn-off ~18μs)라 5kHz면 낮은 밝기에서 비선형. 1kHz면 0~100% 정확, 깜빡임 없음
 
-> 주의: pump/fan은 모터/펌프성 부하라 PWM 디밍이 부적합(그쪽은 full-on 유지). **밝기 PWM은 LED에만** 적용.
+**⚠️ 보드별 차이 (중요)**:
+- **MOSFET 보드(`terra-iot-nano`)**: 밝기 PWM 적용됨.
+- **릴레이 보드(`terra-iot-nano-relay`)**: 진짜 기계식 릴레이 → **밝기 불가**(PWM 하면 접점 손상). on/off 유지. 이 PWM 펌웨어를 릴레이 보드에 넣으면 안 됨.
+- 앱: 밝기 슬라이더는 MOSFET 보드에서만 의미. 릴레이 보드는 `brightness` 보내도 on/off 로 처리(무시).
+
+**남은 것**: `idf.py build flash` 후 **실물에서 `brightness:30` → 실제 어두워지는지 확인.** dim 이 거칠면 옵토가 더 느린 것 → 500Hz 로 조정.
+
+> 참고: pump/fan 도 이 모듈로 구동되지만 mist/fan 타이머는 on/off(full duty)라 옵토 속도 무관. **밝기 PWM 만** 옵토 속도를 탐.
 
 ### 요청 5 — commands 출처 구분 → 타당, A안 추천
 
@@ -198,7 +204,7 @@
 
 ### 3순위 — 펌웨어 (코드 완료, **빌드/플래시 필요**)
 - [x] **[FW]** 요청 3(fan 타이머): `fan_on`이 `payload.duration_ms` 받아 `relay_pulse`로 자동 OFF, 최대 2h. `fan_off`가 취소
-- [x] **[FW]** 요청 4(LED 밝기): `light_pwm` 모듈 신규(LEDC TIMER_1/CH_1). LED relay→PWM 전환, `led_on`+`brightness`(0~100). command_dispatch/main.c 배선 완료
+- [x] **[FW]** 요청 4(LED 밝기): `light_pwm` 모듈 신규(LEDC TIMER_1/CH_1, **1kHz** — 옵토절연 대응). LED relay→PWM 전환, `led_on`+`brightness`(0~100). **MOSFET 보드만**; 릴레이 보드는 on/off 유지. 실물 dim 확인 필요
 - [ ] **[FW]** 요청 2(stop형) + heater 타이머: heater 조건정지/타이머 (2단계, 안전 직결). **이 보드는 heater 미탑재라 heater 있는 보드에서 진행**
 
 > ⚠️ 펌웨어(terra-iot-nano)는 코드만 반영됨. **`idf.py build flash` 필요** (이 환경엔 툴체인 없음). MQTT RX 버퍼는 현 payload(brightness/duration)엔 충분(작음).
