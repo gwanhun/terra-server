@@ -147,14 +147,17 @@ const { data } = await sb.from('commands').insert({
 
 | action | payload 추가 | 디바이스 동작 |
 |--------|-------------|--------------|
-| `relay_toggle` | — | 💧 워터펌프 토글 |
-| `fan_toggle` | — | 🌀 팬 토글 |
-| `heater_toggle` | — | 🔥 히터 토글 (safety latch 활성 시 거부) |
-| `heater_clear` | — | ⚠ safety latch 해제 |
-| `led_toggle` | — | 💡 조명 ON/OFF 토글 (relay/fan 과 동일 방식) |
+| `relay_toggle` / `relay_on` / `relay_off` | — | 💧 워터펌프 (토글 / 켜기 / 끄기) |
+| `mist` | `duration_ms` (1000·2000·3000) | 💦 물분무 N초 후 자동 OFF (→ [APP_TIMER_MIST.md](APP_TIMER_MIST.md)) |
+| `fan_toggle` / `fan_on` / `fan_off` | `fan_on`: `duration_ms` (선택) | 🌀 팬. `duration_ms` 주면 그 시간 뒤 자동 OFF(일회성 타이머, 최대 2h). `fan_off` 로 타이머 취소 |
+| `heater_toggle` / `heater_on` / `heater_off` | — | 🔥 히터 (토글 / 켜기 / 끄기). safety latch 활성 시 `result='locked'` |
+| `heater_clear_lock` | — | ⚠ 히터 safety latch 해제 |
+| `led_toggle` / `led_on` / `led_off` | `led_on`: `brightness` 0~100 (선택) | 💡 조명. `brightness` 로 밝기 조절(PWM). 생략 시 100% |
 | `token_rotate` | `new_token` (string) | 디바이스 NVS 의 mqtt_token 갱신 + MQTT 재연결 |
 
-> ⚠ heater 류는 **사용자에게 확인 dialog** 권장 (잘못 누르면 위험).
+> **on/off vs toggle**: `*_on`/`*_off` 는 **절대 상태(멱등)** — 이미 켜져 있어도 `heater_on` 재전송 무해.
+> 예약 "구간(시작~종료)" 은 on/off 2건으로 구성한다 (toggle 은 상태 어긋남 위험).
+> ⚠ heater 류는 **사용자 확인 dialog** 권장. 미지원 하드웨어(예: 히터 없는 보드)면 `result='unknown_action'`.
 
 ### 3.3 명령 상태 흐름 (state machine)
 
