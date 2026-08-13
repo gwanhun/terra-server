@@ -245,10 +245,11 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
     <div class="row">
       <h2 style="margin:0">🖥 LCD 커스텀 텍스트 (Stage I)</h2>
     </div>
-    <small class="muted">디바이스 LCD 상단에 텍스트 표시(한글 가능). 서버가 비트맵 렌더 → NVS 저장(재부팅 유지).</small>
+    <small class="muted">디바이스 LCD 상단에 텍스트 표시(한글 가능). 서버가 비트맵 렌더 → NVS 저장(재부팅 유지). 권장: <b>한글 ~8자 / 영문 ~12자</b> (넘으면 자동 축소).</small>
     <div class="row" style="margin-top:8px;gap:6px">
       <select id="lcd-device" title="대상 디바이스" style="max-width:160px"></select>
-      <input id="lcd-text" type="text" placeholder="예: 밥 6시" maxlength="64" style="flex:1">
+      <input id="lcd-text" type="text" placeholder="예: 밥 6시 (한글 ~8자)" maxlength="64" oninput="lcdCharHint()" style="flex:1">
+      <span id="lcd-count" class="muted" style="font-size:11px;min-width:32px;text-align:right">0</span>
       <button onclick="sendLcdText()">표시</button>
       <button onclick="clearLcdText()">초기화</button>
     </div>
@@ -878,6 +879,18 @@ function refreshLcdDeviceOptions() {
   sel.innerHTML = DEVICES.map(d =>
     `<option value="${d.id}">${esc(d.device_id)} · ${esc(d.name)}</option>`).join('');
   if (prev && DEVICES.some(d => d.id === prev)) sel.value = prev;
+}
+
+// 입력 글자수 표시 — 한글 포함 시 폭이 크므로 한글은 1.6배 가중치로 대략 경고.
+function lcdCharHint() {
+  const el = document.getElementById('lcd-text');
+  const c = document.getElementById('lcd-count');
+  if (!el || !c) return;
+  const s = el.value;
+  const hangul = (s.match(/[ㄱ-힝]/g) || []).length;
+  const weight = s.length + hangul * 0.6;   // 한글 1자 ≈ 영문 1.6자 폭
+  c.textContent = String(s.length);
+  c.style.color = weight > 12 ? '#f66' : weight > 9 ? '#fc9' : '';
 }
 
 async function sendLcdText() {
