@@ -664,6 +664,33 @@ async function mistCommand(deviceUuid, durationMs) {
   }
 }
 
+// LED 밝기 슬라이더 — commands 직접 INSERT (led_on + brightness, 0이면 led_off).
+// MOSFET 보드만 실제 밝기 조절; 릴레이 보드는 >0 이면 그냥 ON.
+function ledSlider(deviceUuid, online) {
+  const dis = online ? '' : 'opacity:.5';
+  return `<span title="LED 밝기 %" style="${dis}">💡`
+    + `<input type="range" min="0" max="100" value="100" step="10" `
+    + `onchange="ledBrightness('${deviceUuid}', this.value)" `
+    + `style="width:64px;vertical-align:middle"></span>`;
+}
+
+async function ledBrightness(deviceUuid, pct) {
+  pct = Number(pct);
+  const action = pct <= 0 ? 'led_off' : 'led_on';
+  const payload = pct <= 0 ? null : { brightness: pct };
+  const { data, error } = await sb
+    .from('commands')
+    .insert({ device_id: deviceUuid, issued_by: session.user.id, action, payload })
+    .select()
+    .single();
+  if (error) {
+    log({ led: { pct, error: error.message } });
+    return toast('LED 실패: ' + error.message, 'bad');
+  }
+  toast(`💡 ${pct}%`, 'good');
+  setTimeout(loadRecentCommands, 1500);
+}
+
 async function loadDevices() {
   const rows = await api('/devices');
   DEVICES = rows || [];             // 예약/LCD 패널 디바이스 드롭다운용 캐시
@@ -685,6 +712,7 @@ async function loadDevices() {
       <td style="white-space:nowrap">
         ${quickCmdButtons(r.id, r.is_online)}
         &nbsp;${mistButtons(r.id, r.is_online)}
+        &nbsp;${ledSlider(r.id, r.is_online)}
         <button class="danger" onclick="deleteDevice('${r.id}')" style="font-size:11px;padding:2px 8px;margin-left:8px">삭제</button>
       </td>`;
     tbody.appendChild(tr);
