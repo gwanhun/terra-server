@@ -48,21 +48,25 @@ y=160  └──────────────┘
 
 ## 단계
 
-### I-1 — 파이프라인 + 영문 (먼저 검증)
-- [ ] **firmware** `st7735_draw_bitmap(x,y,w,h, buf, fg,bg)` — 1비트 → 색 blit (fill_rect 의 window 로직 재사용)
-- [ ] **firmware** `command_dispatch.c` `lcd_bitmap` 핸들러 — base64 디코드 → 상단 밴드 blit → ack
-- [ ] **firmware** MQTT RX 버퍼 상향 (~2KB, 기본 1KB — base64 ~700B 수용)
-- [ ] **firmware** 상단 타이틀바를 커스텀 밴드로 전환 (기본 텍스트 "TERRA IOT"), 센서 y offset 조정
-- [ ] **backend** `uv add pillow` + `POST /devices/{id}/lcd` — Pillow 렌더(영문 TTF/기본폰트) → 1비트 패킹 → 큐잉
-- [ ] E2E: 앱 텍스트 → LCD 상단에 영문 표시
+> **진행**: 밴드 높이는 **24px**(y=0~24)로 확정 — 기존 타이틀바 자리 재사용, 센서(y=30~) 안 겹쳐 레이아웃 수정 불필요. 128×24 1비트=384B.
 
-### I-2 — 한글 + NVS + 예약
-- [ ] **backend** 한글 TTF 폰트 번들 (나눔고딕/Pretendard 등 오픈라이선스) + 렌더 폰트 교체
-- [ ] **backend** 길이/폭 검증 — 밴드 폭 초과 시 트렁케이트 또는 자동 축소, 빈 문자열 → clear 취급
-- [ ] **firmware** NVS 저장/복원 — 부팅 시 마지막 비트맵 재표시
-- [ ] **firmware** `lcd_clear` → 기본값 복귀 + NVS 클리어
-- [ ] (선택) `lcd_bitmap` 을 schedules 화이트리스트에 추가 — "매일 아침 문구" 예약
-- [ ] E2E: 한글 표시 + 재부팅 유지 확인
+### I-1 — 파이프라인 + 영문 ✅ (코드 완료, 빌드 필요)
+- [x] **firmware** `st7735_draw_bitmap(x,y,w,h, buf, fg,bg)` — 1비트 → 색 blit (fill_rect 청크 스트리밍 재사용)
+- [x] **firmware** `command_dispatch.c` `lcd_bitmap` 핸들러 — mbedtls base64 디코드 → `lcd_band_set_bitmap` → ack
+- [x] **firmware** MQTT RX 버퍼 2048 상향 (base64 ~700B 한 이벤트 수용)
+- [x] **firmware** 상단 밴드 = 커스텀(미설정 시 "TERRA IOT"). 24px라 센서 offset 조정 불필요
+- [x] **backend** `uv add pillow` + `POST /devices/{id}/lcd` — Pillow 렌더 → 1비트 패킹 → 큐잉
+- [x] **web** 콘솔에 LCD 패널(디바이스 선택 + 텍스트 + 표시/초기화)
+- [ ] E2E: 앱 텍스트 → LCD 상단 표시 (실물 빌드/플래시 후)
+
+### I-2 — 한글 + NVS + clear ✅ (코드 완료)
+- [x] **backend** 한글 TTF 탐색(`LCD_FONT_PATH` env + macOS/Ubuntu 경로), 없으면 기본폰트(영문)
+- [x] **backend** 길이 상한(64자)·빈 문자열 → clear 취급
+- [x] **firmware** `lcd_band` NVS 저장/복원 — 부팅 시 마지막 비트맵 재표시
+- [x] **firmware** `lcd_clear` → 기본값 복귀 + NVS 클리어 (`POST /lcd/clear` 또는 빈 텍스트)
+- [ ] (선택) `lcd_bitmap` 예약 연동 — 후속
+- [ ] E2E: 한글 표시 + 재부팅 유지 확인 (실물)
+- [ ] **배포**: 서버에 한글 TTF 설치(`apt install fonts-nanum`) + `LCD_FONT_PATH` 지정
 
 ### I-3 — 연결 상태 표시 (펌웨어 단독, 서버 무관 — 먼저 해도 됨)
 > 적용 대상: `terra-iot-nano` + `terra-iot-nano-relay` 둘 다 (동일 패치)
