@@ -240,6 +240,20 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
     </table>
   </div>
 
+  <!-- LCD 커스텀 텍스트 (Stage I) -->
+  <div class="panel">
+    <div class="row">
+      <h2 style="margin:0">🖥 LCD 커스텀 텍스트 (Stage I)</h2>
+    </div>
+    <small class="muted">디바이스 LCD 상단에 텍스트 표시(한글 가능). 서버가 비트맵 렌더 → NVS 저장(재부팅 유지).</small>
+    <div class="row" style="margin-top:8px;gap:6px">
+      <select id="lcd-device" title="대상 디바이스" style="max-width:160px"></select>
+      <input id="lcd-text" type="text" placeholder="예: 밥 6시" maxlength="64" style="flex:1">
+      <button onclick="sendLcdText()">표시</button>
+      <button onclick="clearLcdText()">초기화</button>
+    </div>
+  </div>
+
   <!-- 실시간 텔레메트리 -->
   <div class="panel">
     <div class="row">
@@ -651,8 +665,9 @@ async function mistCommand(deviceUuid, durationMs) {
 
 async function loadDevices() {
   const rows = await api('/devices');
-  DEVICES = rows || [];             // 예약 패널 디바이스 드롭다운용 캐시
+  DEVICES = rows || [];             // 예약/LCD 패널 디바이스 드롭다운용 캐시
   refreshScheduleDeviceOptions();
+  refreshLcdDeviceOptions();
   const tbody = document.querySelector('#dev-table tbody');
   tbody.innerHTML = '';
   (rows || []).forEach(r => {
@@ -851,6 +866,35 @@ async function deleteSchedule(id) {
   log({ DELETE: '/schedules/' + id, status: r.status });
   if (r.ok) { toast('삭제됨', 'good'); loadSchedules(); }
   else toast('삭제 실패 ' + r.status, 'bad');
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// LCD 커스텀 텍스트 (Stage I) — REST /devices/{id}/lcd , /lcd/clear
+// ─────────────────────────────────────────────────────────────────────────
+function refreshLcdDeviceOptions() {
+  const sel = document.getElementById('lcd-device');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = DEVICES.map(d =>
+    `<option value="${d.id}">${esc(d.device_id)} · ${esc(d.name)}</option>`).join('');
+  if (prev && DEVICES.some(d => d.id === prev)) sel.value = prev;
+}
+
+async function sendLcdText() {
+  const deviceId = document.getElementById('lcd-device').value;
+  if (!deviceId) return toast('디바이스 선택', 'bad');
+  const text = document.getElementById('lcd-text').value;
+  const r = await api(`/devices/${deviceId}/lcd`, {
+    method: 'POST', body: JSON.stringify({ text }),
+  });
+  if (r) { toast('🖥 LCD 전송', 'good'); setTimeout(loadRecentCommands, 1500); }
+}
+
+async function clearLcdText() {
+  const deviceId = document.getElementById('lcd-device').value;
+  if (!deviceId) return toast('디바이스 선택', 'bad');
+  const r = await api(`/devices/${deviceId}/lcd/clear`, { method: 'POST' });
+  if (r) { toast('🖥 LCD 초기화', 'good'); setTimeout(loadRecentCommands, 1500); }
 }
 
 async function pairDevice() {

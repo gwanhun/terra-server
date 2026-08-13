@@ -70,6 +70,7 @@ def app_client(monkeypatch: pytest.MonkeyPatch, fake_sb: MagicMock) -> TestClien
     from backend.routers import commands as commands_router
     from backend.routers import devices as devices_router
     from backend.routers import enclosures as enclosures_router
+    from backend.routers import lcd as lcd_router
     from backend.routers import schedules as schedules_router
     from backend.routers import webrtc as webrtc_router
 
@@ -80,6 +81,7 @@ def app_client(monkeypatch: pytest.MonkeyPatch, fake_sb: MagicMock) -> TestClien
         commands_router,
         devices_router,
         enclosures_router,
+        lcd_router,
         schedules_router,
         webrtc_router,
     ):

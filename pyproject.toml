@@ -11,7 +11,8 @@ dependencies = [
     "paho-mqtt>=2.1.0",
     "python-dotenv>=1.2.2",
     "bcrypt>=4.2.1",
-    "boto3>=1.43.2",  # R2 (S3 호환) presigned URL 발급
+    "boto3>=1.43.2", # R2 (S3 호환) presigned URL 발급
+    "pillow>=12.3.0",
 ]
 
 [project.scripts]

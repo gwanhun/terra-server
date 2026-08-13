@@ -32,6 +32,7 @@ from backend.routers import (
     commands,
     devices,
     enclosures,
+    lcd,
     schedules,
     webrtc,
 )
@@ -81,6 +82,7 @@ tags_metadata = [
     {"name": "cameras", "description": "카메라 워커 (ESP32-P4 / RPi) 페어링 + CRUD."},
     {"name": "webrtc", "description": "카메라 라이브 스트리밍 WebRTC 시그널링."},
     {"name": "commands", "description": "액추에이터 명령 (물분무 등). 서버 검증 후 commands 큐잉."},
+    {"name": "lcd", "description": "LCD 커스텀 텍스트. 서버가 비트맵 렌더 후 디바이스로 전송."},
     {"name": "schedules", "description": "예약 타이머 (daily/weekly). runner 가 due 시 명령 발행."},
     {
         "name": "clips",
@@ -183,6 +185,7 @@ app.include_router(clips.camera_clips_router)
 app.include_router(clips.enclosure_clips_router)
 app.include_router(clips.clips_router)
 app.include_router(commands.router)
+app.include_router(lcd.router)
 app.include_router(schedules.device_schedules_router)
 app.include_router(schedules.schedules_router)
 
