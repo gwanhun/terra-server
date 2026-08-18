@@ -184,7 +184,7 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
     </div>
     <div id="dev-token" class="hidden"></div>
     <table id="dev-table">
-      <thead><tr><th>device_id</th><th>이름</th><th>사육장</th><th>online</th><th>온도</th><th>습도</th><th>last_seen</th><th></th></tr></thead>
+      <thead><tr><th>device_id</th><th>이름</th><th>사육장</th><th>online</th><th>온도</th><th>습도</th><th>LED</th><th>last_seen</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -215,11 +215,14 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
       <select id="sch-device" onchange="loadSchedules()" title="대상 디바이스" style="max-width:160px"></select>
       <select id="sch-action" onchange="onSchActionChange()" title="동작">
         <option value="mist">💦 물분무 (mist)</option>
-        <option value="fan_toggle">🌀 팬 토글</option>
+        <option value="relay_on">🔌 펌프 on</option>
+        <option value="relay_off">🔌 펌프 off</option>
+        <option value="fan_on">🌀 팬 on</option>
+        <option value="fan_off">🌀 팬 off</option>
         <option value="led_on">💡 LED on</option>
         <option value="led_off">💡 LED off</option>
-        <option value="relay_toggle">🔌 릴레이 토글</option>
-        <option value="heater_toggle">🔥 히터 토글</option>
+        <option value="heater_on">🔥 히터 on</option>
+        <option value="heater_off">🔥 히터 off</option>
       </select>
       <select id="sch-mist-ms" title="물분무 지속시간">
         <option value="1000">1초</option>
@@ -238,6 +241,25 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
       <thead><tr><th>디바이스</th><th>동작</th><th>반복</th><th>시각(KST)</th><th>다음 실행</th><th>on</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
+  </div>
+
+  <!-- 목표 환경 setpoint (device_settings §5) -->
+  <div class="panel">
+    <div class="row">
+      <h2 style="margin:0">🎯 목표 환경 (device_settings)</h2>
+    </div>
+    <small class="muted">목표 온/습도 조회·수정. 서버가 범위(-20~60℃, 0~100%)·min≤max 검증 후 저장 (REST GET/PATCH /devices/{id}/settings).</small>
+    <div class="row" style="margin-top:8px;gap:6px;flex-wrap:wrap">
+      <select id="set-device" onchange="loadSettings()" title="대상 디바이스" style="max-width:160px"></select>
+      <label style="font-size:12px">목표온도℃ <input id="set-temp-c" type="number" step="0.1" style="width:70px"></label>
+      <label style="font-size:12px">목표습도% <input id="set-humid-pct" type="number" step="1" style="width:70px"></label>
+      <label style="font-size:12px">온도min <input id="set-temp-min" type="number" step="0.1" style="width:64px"></label>
+      <label style="font-size:12px">온도max <input id="set-temp-max" type="number" step="0.1" style="width:64px"></label>
+      <label style="font-size:12px">습도min <input id="set-humid-min" type="number" step="1" style="width:56px"></label>
+      <label style="font-size:12px">습도max <input id="set-humid-max" type="number" step="1" style="width:56px"></label>
+      <button onclick="saveSettings()">저장</button>
+      <span id="set-status" class="muted" style="font-size:11px"></span>
+    </div>
   </div>
 
   <!-- LCD 커스텀 텍스트 (Stage I) -->
@@ -664,14 +686,29 @@ async function mistCommand(deviceUuid, durationMs) {
   }
 }
 
-// LED 밝기 슬라이더 — commands 직접 INSERT (led_on + brightness, 0이면 led_off).
-// MOSFET 보드만 실제 밝기 조절; 릴레이 보드는 >0 이면 그냥 ON.
-function ledSlider(deviceUuid, online) {
-  const dis = online ? '' : 'opacity:.5';
-  return `<span title="LED 밝기 %" style="${dis}">💡`
-    + `<input type="range" min="0" max="100" value="100" step="10" `
-    + `onchange="ledBrightness('${deviceUuid}', this.value)" `
-    + `style="width:64px;vertical-align:middle"></span>`;
+// LED 제어 — 보드 능력(capabilities.led_dimmable, §2)에 따라 슬라이더 vs ON/OFF.
+// MOSFET 보드(led_dimmable=true)만 밝기 슬라이더; 릴레이 보드는 ON/OFF 버튼.
+function ledSlider(r) {
+  const dis = r.is_online ? '' : 'opacity:.5';
+  if (r.capabilities?.led_dimmable) {
+    return `<span title="LED 밝기 % (MOSFET)" style="${dis}">💡`
+      + `<input type="range" min="0" max="100" value="100" step="10" `
+      + `onchange="ledBrightness('${r.id}', this.value)" `
+      + `style="width:64px;vertical-align:middle"></span>`;
+  }
+  // 릴레이 보드(또는 미보고) — 밝기 없음, ON/OFF 만
+  return `<span title="LED ON/OFF (릴레이)" style="${dis}">💡`
+    + `<button onclick="ledBrightness('${r.id}',100)" style="font-size:11px;padding:2px 6px">ON</button>`
+    + `<button onclick="ledBrightness('${r.id}',0)" style="font-size:11px;padding:2px 6px">OFF</button></span>`;
+}
+
+// 디바이스 행 LED 상태 셀 — telemetry.led/led_brightness (§4). 없으면 '-'.
+function formatDeviceLed(deviceUuid) {
+  const t = TEL_LATEST[deviceUuid];
+  if (!t || t.led == null) return '<span class="muted">-</span>';
+  const on = t.led === 'ON';
+  const br = (on && t.led_brightness != null) ? ` ${t.led_brightness}%` : '';
+  return `<span class="${on ? 'good' : 'muted'}">💡${t.led}${br}</span>`;
 }
 
 async function ledBrightness(deviceUuid, pct) {
@@ -693,9 +730,10 @@ async function ledBrightness(deviceUuid, pct) {
 
 async function loadDevices() {
   const rows = await api('/devices');
-  DEVICES = rows || [];             // 예약/LCD 패널 디바이스 드롭다운용 캐시
+  DEVICES = rows || [];             // 예약/LCD/설정 패널 디바이스 드롭다운용 캐시
   refreshScheduleDeviceOptions();
   refreshLcdDeviceOptions();
+  refreshSettingsDeviceOptions();
   const tbody = document.querySelector('#dev-table tbody');
   tbody.innerHTML = '';
   (rows || []).forEach(r => {
@@ -708,11 +746,12 @@ async function loadDevices() {
       <td>${r.is_online ? '<span class="good">●</span>' : '<span class="muted">○</span>'}</td>
       <td data-dev-temp="${r.id}">${formatDeviceTemp(r.id)}</td>
       <td data-dev-humid="${r.id}">${formatDeviceHumid(r.id)}</td>
+      <td data-dev-led="${r.id}">${formatDeviceLed(r.id)}</td>
       <td><small>${esc(r.last_seen_at?.slice(0,16) || '-')}</small></td>
       <td style="white-space:nowrap">
         ${quickCmdButtons(r.id, r.is_online)}
         &nbsp;${mistButtons(r.id, r.is_online)}
-        &nbsp;${ledSlider(r.id, r.is_online)}
+        &nbsp;${ledSlider(r)}
         <button class="danger" onclick="deleteDevice('${r.id}')" style="font-size:11px;padding:2px 8px;margin-left:8px">삭제</button>
       </td>`;
     tbody.appendChild(tr);
@@ -740,6 +779,8 @@ function updateDeviceTempCell(deviceUuid) {
   if (tCell) tCell.innerHTML = formatDeviceTemp(deviceUuid);
   const hCell = document.querySelector(`[data-dev-humid="${deviceUuid}"]`);
   if (hCell) hCell.innerHTML = formatDeviceHumid(deviceUuid);
+  const lCell = document.querySelector(`[data-dev-led="${deviceUuid}"]`);
+  if (lCell) lCell.innerHTML = formatDeviceLed(deviceUuid);
 }
 
 // commands 테이블에 직접 INSERT (Supabase JS) — RLS 가 본인 디바이스만 허용.
@@ -809,6 +850,55 @@ function refreshScheduleDeviceOptions() {
 function onSchActionChange() {
   const isMist = document.getElementById('sch-action').value === 'mist';
   document.getElementById('sch-mist-ms').classList.toggle('hidden', !isMist);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 목표 환경 setpoint (device_settings §5) — REST GET/PATCH /devices/{id}/settings
+// ─────────────────────────────────────────────────────────────────────────
+const SETTINGS_FIELDS = {
+  target_temp_c: 'set-temp-c', target_humidity_pct: 'set-humid-pct',
+  target_temp_min: 'set-temp-min', target_temp_max: 'set-temp-max',
+  target_humid_min: 'set-humid-min', target_humid_max: 'set-humid-max',
+};
+
+function refreshSettingsDeviceOptions() {
+  const sel = document.getElementById('set-device');
+  if (!sel) return;
+  const prev = sel.value;
+  sel.innerHTML = DEVICES.map(d =>
+    `<option value="${d.id}">${esc(d.device_id)} · ${esc(d.name)}</option>`).join('');
+  if (prev && DEVICES.some(d => d.id === prev)) sel.value = prev;
+  loadSettings();
+}
+
+async function loadSettings() {
+  const id = document.getElementById('set-device')?.value;
+  const status = document.getElementById('set-status');
+  if (!id) { if (status) status.textContent = ''; return; }
+  const s = await api(`/devices/${id}/settings`);
+  if (!s) return;
+  for (const [key, elId] of Object.entries(SETTINGS_FIELDS)) {
+    const e = document.getElementById(elId);
+    if (e) e.value = (s[key] == null ? '' : s[key]);
+  }
+  if (status) status.textContent = '불러옴';
+}
+
+async function saveSettings() {
+  const id = document.getElementById('set-device')?.value;
+  if (!id) return toast('디바이스 선택', 'bad');
+  const body = {};
+  for (const [key, elId] of Object.entries(SETTINGS_FIELDS)) {
+    const v = document.getElementById(elId).value;
+    if (v !== '') body[key] = Number(v);
+  }
+  if (!Object.keys(body).length) return toast('변경값 없음', 'bad');
+  const r = await api(`/devices/${id}/settings`, { method: 'PATCH', body: JSON.stringify(body) });
+  if (r) {
+    toast('🎯 목표 저장', 'good');
+    const status = document.getElementById('set-status');
+    if (status) status.textContent = '저장됨';
+  }
 }
 
 function onSchKindChange() {
