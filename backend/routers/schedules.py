@@ -126,8 +126,14 @@ def _validate_action_payload(action: str, payload: dict[str, Any] | None) -> Non
             )
 
 
-def _validate_guard(guard: dict[str, Any] | None) -> None:
-    """guard 검증 (있을 때만). type 화이트리스트 + value 숫자. 실패 시 400."""
+def _validate_guard(guard: dict[str, Any] | None, action: str | None = None) -> None:
+    """guard 검증 (있을 때만). type 화이트리스트 + value 숫자. 실패 시 400.
+
+    off 계열 action(`*_off`)에는 guard 부착을 금지한다 (앱 요청 §4-3, 히터 안전):
+    off 예약에 skip 가드가 걸리면 억제 조건 성립 시 off 가 스킵돼 기기가 켜진 채
+    남는다(예: 히터 과열). on/mist 예약에만 가드가 의미 있으므로 서버에서 거부해
+    웹 콘솔 등 다른 클라이언트 경로까지 안전하게 막는다.
+    """
     if guard is None:
         return
     if guard.get("type") not in GUARD_TYPES:
@@ -137,6 +143,15 @@ def _validate_guard(guard: dict[str, Any] | None) -> None:
         )
     if not isinstance(guard.get("value"), (int, float)) or isinstance(guard.get("value"), bool):
         raise HTTPException(status_code=400, detail="guard.value 는 숫자여야 함")
+    if action is not None and action.endswith("_off"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"off action({action!r})에는 guard 를 걸 수 없음 — "
+                "가드로 off 가 스킵되면 기기가 켜진 채 남아 위험하다. "
+                "가드는 on/mist 예약에만 사용."
+            ),
+        )
 
 
 def _validate_days(kind: str, days: list[int] | None) -> None:
@@ -196,7 +211,7 @@ def create_schedule(
     _load_device_for_owner(sb, device_uuid, user_id)
     _validate_action_payload(body.action, body.payload)
     _validate_days(body.kind, body.days_of_week)
-    _validate_guard(body.guard)
+    _validate_guard(body.guard, body.action)
     next_run = _compute_next(body.kind, body.time_of_day, body.days_of_week)
 
     row = {
@@ -269,7 +284,8 @@ def update_schedule(
         _validate_action_payload(existing["action"], updates.get("payload", existing.get("payload")))
 
     if "guard" in updates:
-        _validate_guard(updates["guard"])
+        # action 은 수정 불가라 기존값 기준으로 off+guard 조합 검사
+        _validate_guard(updates["guard"], existing["action"])
 
     timing_changed = any(k in updates for k in ("kind", "time_of_day", "days_of_week"))
     if timing_changed:

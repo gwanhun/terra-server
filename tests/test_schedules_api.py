@@ -211,6 +211,71 @@ def test_create_bad_guard_value_400(app_client: TestClient, fake_sb: MagicMock) 
     assert res.status_code == 400, res.text
 
 
+def test_create_off_with_guard_400(app_client: TestClient, fake_sb: MagicMock) -> None:
+    """§4-3: off 계열 action 에 guard 를 걸면 400 (off 스킵 → 기기 켜진 채 위험)."""
+    dev = _device_mock()
+    sch = MagicMock()
+    fake_sb.table.side_effect = lambda name: {"devices": dev, "schedules": sch}[name]
+
+    res = app_client.post(
+        f"/devices/{DEVICE_UUID}/schedules",
+        json={"action": "heater_off", "kind": "daily", "time_of_day": "08:00",
+              "guard": {"type": "skip_when_temp_above", "value": 35}},
+    )
+    assert res.status_code == 400, res.text
+    sch.insert.assert_not_called()
+
+
+def test_create_on_with_guard_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
+    """§4-3 반례: on 계열 action + guard 는 정상 허용."""
+    dev = _device_mock()
+    sch = MagicMock()
+    guard = {"type": "skip_when_temp_above", "value": 35}
+    sch.insert.return_value.execute.return_value.data = [
+        _schedule_row(action="heater_on", guard=guard)
+    ]
+    fake_sb.table.side_effect = lambda name: {"devices": dev, "schedules": sch}[name]
+
+    res = app_client.post(
+        f"/devices/{DEVICE_UUID}/schedules",
+        json={"action": "heater_on", "kind": "daily", "time_of_day": "08:00", "guard": guard},
+    )
+    assert res.status_code == 201, res.text
+
+
+def test_patch_add_guard_to_off_400(app_client: TestClient, fake_sb: MagicMock) -> None:
+    """§4-3: PATCH 로 off 예약에 guard 를 붙여도 400 (웹 콘솔 등 우회 차단)."""
+    sch = MagicMock()
+    sch.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+        _schedule_row(action="fan_off", owner_id=TEST_USER_ID, guard=None)
+    ]
+    fake_sb.table.side_effect = lambda name: {"schedules": sch}[name]
+
+    res = app_client.patch(
+        "/schedules/sch-1",
+        json={"guard": {"type": "skip_when_humidity_below", "value": 40}},
+    )
+    assert res.status_code == 400, res.text
+    sch.update.assert_not_called()
+
+
+def test_patch_clear_guard_null_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
+    """§4-2: PATCH {"guard": null} 은 가드를 삭제(컬럼 NULL)한다 — 400 아님."""
+    sch = MagicMock()
+    sch.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+        _schedule_row(action="mist", owner_id=TEST_USER_ID,
+                      guard={"type": "skip_when_temp_above", "value": 35})
+    ]
+    sch.update.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+        _schedule_row(action="mist", guard=None)
+    ]
+    fake_sb.table.side_effect = lambda name: {"schedules": sch}[name]
+
+    res = app_client.patch("/schedules/sch-1", json={"guard": None})
+    assert res.status_code == 200, res.text
+    assert sch.update.call_args.args[0]["guard"] is None
+
+
 def test_delete_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
     sch = MagicMock()
     sch.delete.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
