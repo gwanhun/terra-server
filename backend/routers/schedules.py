@@ -78,6 +78,10 @@ class ScheduleCreate(BaseModel):
         None,
         description='스마트 조건. 예: {"type":"skip_when_humidity_above","value":70,"enabled":true}',
     )
+    pair_id: str | None = Field(
+        None,
+        description="구간 예약 묶음 UUID(앱 생성). 같은 pair_id 두 행(on/off)은 한쪽 삭제 시 함께 삭제.",
+    )
     enabled: bool = True
 
 
@@ -99,6 +103,7 @@ class ScheduleOut(BaseModel):
     time_of_day: str
     days_of_week: list[int] | None
     guard: dict[str, Any] | None = None
+    pair_id: str | None = None
     enabled: bool
     next_run_at: str
     last_run_at: str | None
@@ -226,6 +231,7 @@ def create_schedule(
         "time_of_day": body.time_of_day,
         "days_of_week": body.days_of_week if body.kind == "weekly" else None,
         "guard": body.guard,
+        "pair_id": body.pair_id,
         "enabled": body.enabled,
         "next_run_at": next_run,
     }
@@ -320,13 +326,16 @@ def delete_schedule(
     schedule_id: str,
     user_id: str = Depends(get_current_user_id),
 ) -> None:
+    """구간 예약(pair_id 있음)은 짝(on/off)도 함께 삭제 — 고아 예약 방지 (앱 §3)."""
     sb = get_supabase_client()
-    res = (
-        sb.table("schedules")
-        .delete()
-        .eq("id", schedule_id)
-        .eq("owner_id", user_id)
-        .execute()
-    )
+    existing = _load_schedule_for_owner(sb, schedule_id, user_id)  # 404 if 미존재/타인
+
+    q = sb.table("schedules").delete().eq("owner_id", user_id)
+    pair_id = existing.get("pair_id")
+    if pair_id:
+        q = q.eq("pair_id", pair_id)          # 구간이면 짝까지 일괄 삭제
+    else:
+        q = q.eq("id", schedule_id)           # 단건이면 자신만
+    res = q.execute()
     if not res.data:
         raise HTTPException(status_code=404, detail="schedule not found")
