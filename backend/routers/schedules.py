@@ -40,14 +40,17 @@ _NOT_FOUND = {404: {"description": "본인 리소스가 아니거나 미존재"}
 _BAD = {400: {"description": "검증 실패 (action/payload/time_of_day/요일)"}}
 
 # 예약 가능 action 화이트리스트. mist 는 payload 추가 검증.
-# on/off 계열(절대 상태·멱등)은 "구간 예약"(시작~종료)을 2건으로 만들 때 필수 — toggle 은
-# 상태 어긋남 위험이 있어 히터/팬 구간에 부적합. 펌웨어(terra-iot-nano)가 모두 지원.
+# on/off 계열(절대 상태·멱등)만 허용 — 무인 실행에서 상태가 확정돼야 안전하다.
+# toggle(relay/fan/heater/led)은 기기 현재 상태를 뒤집는데, 예약은 무인이라 그 시점
+# 상태를 아무도 못 봐 어긋나면(예: 이미 켜진 히터를 또 toggle→OFF 대신 유지) 과열 위험 →
+# 화이트리스트에서 제외해 예약 생성/수정 시 400 거부 (앱 요청 §6). 펌웨어는 여전히 지원하나
+# 예약 경로만 막는다. 즉시 제어(commands 직접 발행)에는 toggle 사용 가능.
 SCHEDULABLE_ACTIONS: frozenset[str] = frozenset({
     MIST_ACTION,
-    "relay_toggle", "relay_on", "relay_off",
-    "fan_toggle", "fan_on", "fan_off",
-    "heater_toggle", "heater_on", "heater_off",
-    "led_on", "led_off", "led_toggle",
+    "relay_on", "relay_off",
+    "fan_on", "fan_off",
+    "heater_on", "heater_off",
+    "led_on", "led_off",
 })
 
 # 스마트 조건(guard) 타입. skip_when_* 는 서버(schedule_runner)가 발행 직전 평가.

@@ -73,7 +73,7 @@ def test_create_weekly_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
     res = app_client.post(
         f"/devices/{DEVICE_UUID}/schedules",
         json={
-            "action": "fan_toggle",
+            "action": "fan_on",
             "kind": "weekly",
             "time_of_day": "20:00",
             "days_of_week": [1, 3, 5],
@@ -91,7 +91,7 @@ def test_create_weekly_without_days_400(app_client: TestClient, fake_sb: MagicMo
 
     res = app_client.post(
         f"/devices/{DEVICE_UUID}/schedules",
-        json={"action": "fan_toggle", "kind": "weekly", "time_of_day": "20:00"},
+        json={"action": "fan_on", "kind": "weekly", "time_of_day": "20:00"},
     )
     assert res.status_code == 400, res.text
     sch.insert.assert_not_called()
@@ -140,6 +140,21 @@ def test_create_disallowed_action_400(app_client: TestClient, fake_sb: MagicMock
         json={"action": "self_destruct", "kind": "daily", "time_of_day": "08:00"},
     )
     assert res.status_code == 400, res.text
+
+
+def test_create_toggle_rejected_400(app_client: TestClient, fake_sb: MagicMock) -> None:
+    """§6: *_toggle 은 예약 불가 (무인 실행 시 상태 어긋남 → 과열 위험)."""
+    for action in ("relay_toggle", "fan_toggle", "heater_toggle", "led_toggle"):
+        dev = _device_mock()
+        sch = MagicMock()
+        fake_sb.table.side_effect = lambda name: {"devices": dev, "schedules": sch}[name]
+
+        res = app_client.post(
+            f"/devices/{DEVICE_UUID}/schedules",
+            json={"action": action, "kind": "daily", "time_of_day": "08:00"},
+        )
+        assert res.status_code == 400, f"{action}: {res.text}"
+        sch.insert.assert_not_called()
 
 
 def test_create_foreign_device_404(app_client: TestClient, fake_sb: MagicMock) -> None:
