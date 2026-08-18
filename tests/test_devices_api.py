@@ -76,6 +76,49 @@ def test_pair_device_without_enclosure_ok(
     assert payload["enclosure_id"] is None
 
 
+def test_pair_device_with_capabilities_stored(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """§2: 펌웨어가 보고한 capabilities 가 INSERT payload 에 담긴다."""
+    fake_sb.table.return_value.insert.return_value.execute.return_value.data = [
+        {"id": "dev-1", "device_id": "terra-cap"}
+    ]
+    caps = {"board": "mosfet", "led_dimmable": True, "heater": True}
+
+    res = app_client.post(
+        "/devices/pair",
+        json={"name": "밝기 되는 컨트롤러", "capabilities": caps},
+    )
+    assert res.status_code == 201, res.text
+    payload = fake_sb.table.return_value.insert.call_args.args[0]
+    assert payload["capabilities"] == caps
+
+
+def test_list_devices_exposes_capabilities(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """§2: 목록 응답에 capabilities 가 노출된다 (앱 밝기 슬라이더 판단용)."""
+    caps = {"board": "relay", "led_dimmable": False}
+    fake_sb.table.return_value.select.return_value.eq.return_value.order.return_value.execute.return_value.data = [
+        {
+            "id": "dev-1",
+            "device_id": "terra-abcd",
+            "enclosure_id": None,
+            "name": "거실",
+            "species": None,
+            "firmware_ver": None,
+            "capabilities": caps,
+            "created_at": "2026-05-27T00:00:00Z",
+            "last_seen_at": None,
+            "is_online": False,
+        }
+    ]
+
+    res = app_client.get("/devices")
+    assert res.status_code == 200, res.text
+    assert res.json()[0]["capabilities"] == caps
+
+
 def test_update_device_assign_enclosure_ok(
     app_client: TestClient, fake_sb: MagicMock
 ) -> None:
