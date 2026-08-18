@@ -34,6 +34,7 @@ from backend.routers import (
     enclosures,
     lcd,
     schedules,
+    settings,
     webrtc,
 )
 from backend.webrtc_relay import get_relay
@@ -188,6 +189,7 @@ app.include_router(commands.router)
 app.include_router(lcd.router)
 app.include_router(schedules.device_schedules_router)
 app.include_router(schedules.schedules_router)
+app.include_router(settings.router)
 
 # 정적 웹 콘솔 — 루트(/) 에 마운트.
 # 라우터들 다음에 등록해야 /devices, /cameras, /web-config 등이 우선 매칭됨.

@@ -159,7 +159,8 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
     """
     스펙 ([docs/MQTT.md](../../docs/MQTT.md) §1):
         디바이스: { "ts": ..., "dht22_a": {...}, "dht22_b": {...},
-                   "relay": "OFF", "fan": "ON", "heater": {"state":"OFF","locked":false} }
+                   "relay": "OFF", "fan": "ON", "heater": {"state":"OFF","locked":false},
+                   "led": "ON", "led_brightness": 75 }  # led_brightness 는 MOSFET 보드만
         카메라:   { "ts": ..., "uptime_sec": ..., "wifi_rssi": ..., "free_heap": ... }
                   (페이로드 자유 — 서버는 last_seen 만 갱신)
 
@@ -206,6 +207,8 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
         "fan": payload.get("fan"),
         "heater_state": heater.get("state"),
         "heater_locked": heater.get("locked"),
+        "led": payload.get("led"),                       # 'ON' | 'OFF' | None (§4)
+        "led_brightness": payload.get("led_brightness"),  # 0~100 (MOSFET), 릴레이는 None
     }
 
     try:

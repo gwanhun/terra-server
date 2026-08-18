@@ -94,6 +94,8 @@ def test_handle_telemetry_inserts_full_payload(fake_sb: MagicMock) -> None:
         "relay": "OFF",
         "fan": "ON",
         "heater": {"state": "OFF", "locked": False},
+        "led": "ON",
+        "led_brightness": 75,
     }
     # telemetry.insert + devices.update 두 호출 — table() 호출별 분리
     inserts: list[dict] = []
@@ -129,6 +131,8 @@ def test_handle_telemetry_inserts_full_payload(fake_sb: MagicMock) -> None:
     assert row["fan"] == "ON"
     assert row["heater_state"] == "OFF"
     assert row["heater_locked"] is False
+    assert row["led"] == "ON"
+    assert row["led_brightness"] == 75
     assert row["ts"].startswith("2025-")
 
     # devices 도 last_seen_at 갱신
@@ -173,6 +177,8 @@ def test_handle_telemetry_handles_missing_sensors(fake_sb: MagicMock) -> None:
     row = inserts[0]
     assert row["t_a"] is None
     assert row["a_ok"] is False
+    assert row["led"] is None            # led 미보고 시 None
+    assert row["led_brightness"] is None
     assert row["t_b"] is None
     assert row["heater_state"] is None
 

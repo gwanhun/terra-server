@@ -45,6 +45,11 @@ class DevicePairRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=64, examples=["거실 비어디드"])
     species: str | None = Field(None, max_length=32, examples=["bearded_dragon"])
     firmware_ver: str | None = Field(None, max_length=32, examples=["1.0.0"])
+    capabilities: dict[str, Any] | None = Field(
+        None,
+        description='보드 능력 플래그(펌웨어 보고). 예: {"board":"mosfet","led_dimmable":true}',
+        examples=[{"board": "mosfet", "led_dimmable": True, "heater": True}],
+    )
 
 
 class DevicePairResponse(BaseModel):
@@ -68,6 +73,7 @@ class DeviceOut(BaseModel):
     name: str
     species: str | None
     firmware_ver: str | None
+    capabilities: dict[str, Any] | None = None
     created_at: str
     last_seen_at: str | None
     is_online: bool
@@ -133,6 +139,7 @@ def pair_device(
         "name": body.name,
         "species": body.species,
         "firmware_ver": body.firmware_ver,
+        "capabilities": body.capabilities,
     }
 
     res = sb.table("devices").insert(payload).execute()
@@ -165,7 +172,7 @@ def list_devices(
         sb.table("devices")
         .select(
             "id, device_id, enclosure_id, name, species, firmware_ver, "
-            "created_at, last_seen_at, is_online"
+            "capabilities, created_at, last_seen_at, is_online"
         )
         .eq("owner_id", user_id)
         .order("created_at", desc=True)
@@ -190,7 +197,7 @@ def get_device(
         sb.table("devices")
         .select(
             "id, device_id, enclosure_id, name, species, firmware_ver, "
-            "created_at, last_seen_at, is_online, owner_id"
+            "capabilities, created_at, last_seen_at, is_online, owner_id"
         )
         .eq("id", device_uuid)
         .single()

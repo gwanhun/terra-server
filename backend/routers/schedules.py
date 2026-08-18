@@ -40,14 +40,17 @@ _NOT_FOUND = {404: {"description": "본인 리소스가 아니거나 미존재"}
 _BAD = {400: {"description": "검증 실패 (action/payload/time_of_day/요일)"}}
 
 # 예약 가능 action 화이트리스트. mist 는 payload 추가 검증.
-# on/off 계열(절대 상태·멱등)은 "구간 예약"(시작~종료)을 2건으로 만들 때 필수 — toggle 은
-# 상태 어긋남 위험이 있어 히터/팬 구간에 부적합. 펌웨어(terra-iot-nano)가 모두 지원.
+# on/off 계열(절대 상태·멱등)만 허용 — 무인 실행에서 상태가 확정돼야 안전하다.
+# toggle(relay/fan/heater/led)은 기기 현재 상태를 뒤집는데, 예약은 무인이라 그 시점
+# 상태를 아무도 못 봐 어긋나면(예: 이미 켜진 히터를 또 toggle→OFF 대신 유지) 과열 위험 →
+# 화이트리스트에서 제외해 예약 생성/수정 시 400 거부 (앱 요청 §6). 펌웨어는 여전히 지원하나
+# 예약 경로만 막는다. 즉시 제어(commands 직접 발행)에는 toggle 사용 가능.
 SCHEDULABLE_ACTIONS: frozenset[str] = frozenset({
     MIST_ACTION,
-    "relay_toggle", "relay_on", "relay_off",
-    "fan_toggle", "fan_on", "fan_off",
-    "heater_toggle", "heater_on", "heater_off",
-    "led_on", "led_off", "led_toggle",
+    "relay_on", "relay_off",
+    "fan_on", "fan_off",
+    "heater_on", "heater_off",
+    "led_on", "led_off",
 })
 
 # 스마트 조건(guard) 타입. skip_when_* 는 서버(schedule_runner)가 발행 직전 평가.
@@ -75,6 +78,10 @@ class ScheduleCreate(BaseModel):
         None,
         description='스마트 조건. 예: {"type":"skip_when_humidity_above","value":70,"enabled":true}',
     )
+    pair_id: str | None = Field(
+        None,
+        description="구간 예약 묶음 UUID(앱 생성). 같은 pair_id 두 행(on/off)은 한쪽 삭제 시 함께 삭제.",
+    )
     enabled: bool = True
 
 
@@ -96,6 +103,7 @@ class ScheduleOut(BaseModel):
     time_of_day: str
     days_of_week: list[int] | None
     guard: dict[str, Any] | None = None
+    pair_id: str | None = None
     enabled: bool
     next_run_at: str
     last_run_at: str | None
@@ -126,8 +134,14 @@ def _validate_action_payload(action: str, payload: dict[str, Any] | None) -> Non
             )
 
 
-def _validate_guard(guard: dict[str, Any] | None) -> None:
-    """guard 검증 (있을 때만). type 화이트리스트 + value 숫자. 실패 시 400."""
+def _validate_guard(guard: dict[str, Any] | None, action: str | None = None) -> None:
+    """guard 검증 (있을 때만). type 화이트리스트 + value 숫자. 실패 시 400.
+
+    off 계열 action(`*_off`)에는 guard 부착을 금지한다 (앱 요청 §4-3, 히터 안전):
+    off 예약에 skip 가드가 걸리면 억제 조건 성립 시 off 가 스킵돼 기기가 켜진 채
+    남는다(예: 히터 과열). on/mist 예약에만 가드가 의미 있으므로 서버에서 거부해
+    웹 콘솔 등 다른 클라이언트 경로까지 안전하게 막는다.
+    """
     if guard is None:
         return
     if guard.get("type") not in GUARD_TYPES:
@@ -137,6 +151,15 @@ def _validate_guard(guard: dict[str, Any] | None) -> None:
         )
     if not isinstance(guard.get("value"), (int, float)) or isinstance(guard.get("value"), bool):
         raise HTTPException(status_code=400, detail="guard.value 는 숫자여야 함")
+    if action is not None and action.endswith("_off"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"off action({action!r})에는 guard 를 걸 수 없음 — "
+                "가드로 off 가 스킵되면 기기가 켜진 채 남아 위험하다. "
+                "가드는 on/mist 예약에만 사용."
+            ),
+        )
 
 
 def _validate_days(kind: str, days: list[int] | None) -> None:
@@ -196,7 +219,7 @@ def create_schedule(
     _load_device_for_owner(sb, device_uuid, user_id)
     _validate_action_payload(body.action, body.payload)
     _validate_days(body.kind, body.days_of_week)
-    _validate_guard(body.guard)
+    _validate_guard(body.guard, body.action)
     next_run = _compute_next(body.kind, body.time_of_day, body.days_of_week)
 
     row = {
@@ -208,6 +231,7 @@ def create_schedule(
         "time_of_day": body.time_of_day,
         "days_of_week": body.days_of_week if body.kind == "weekly" else None,
         "guard": body.guard,
+        "pair_id": body.pair_id,
         "enabled": body.enabled,
         "next_run_at": next_run,
     }
@@ -269,7 +293,8 @@ def update_schedule(
         _validate_action_payload(existing["action"], updates.get("payload", existing.get("payload")))
 
     if "guard" in updates:
-        _validate_guard(updates["guard"])
+        # action 은 수정 불가라 기존값 기준으로 off+guard 조합 검사
+        _validate_guard(updates["guard"], existing["action"])
 
     timing_changed = any(k in updates for k in ("kind", "time_of_day", "days_of_week"))
     if timing_changed:
@@ -301,13 +326,16 @@ def delete_schedule(
     schedule_id: str,
     user_id: str = Depends(get_current_user_id),
 ) -> None:
+    """구간 예약(pair_id 있음)은 짝(on/off)도 함께 삭제 — 고아 예약 방지 (앱 §3)."""
     sb = get_supabase_client()
-    res = (
-        sb.table("schedules")
-        .delete()
-        .eq("id", schedule_id)
-        .eq("owner_id", user_id)
-        .execute()
-    )
+    existing = _load_schedule_for_owner(sb, schedule_id, user_id)  # 404 if 미존재/타인
+
+    q = sb.table("schedules").delete().eq("owner_id", user_id)
+    pair_id = existing.get("pair_id")
+    if pair_id:
+        q = q.eq("pair_id", pair_id)          # 구간이면 짝까지 일괄 삭제
+    else:
+        q = q.eq("id", schedule_id)           # 단건이면 자신만
+    res = q.execute()
     if not res.data:
         raise HTTPException(status_code=404, detail="schedule not found")
