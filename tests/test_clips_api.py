@@ -56,9 +56,9 @@ def test_upload_url_returns_presigned(
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["url"].startswith("https://r2.test/put/")
-    # key 포맷: test/{camera_id_text}/{YYYY-MM-DD}/{HHMMSS}_{clip_id}.mp4
+    # key 포맷: terra-clips/clips/{camera_id_text}/{YYYY-MM-DD}/{HHMMSS}_{clip_id}.mp4
     # 날짜/시각은 KST 기준 — UTC 2026-05-27T12:00:00Z → KST 21:00:00 (같은 날)
-    assert body["key"].startswith(f"test/{CAMERA_ID_TEXT}/2026-05-27/210000_")
+    assert body["key"].startswith(f"terra-clips/clips/{CAMERA_ID_TEXT}/2026-05-27/210000_")
     assert body["key"].endswith(".mp4")
     assert body["clip_id"] in body["key"]
     assert body["expires_in"] == 300
@@ -119,7 +119,7 @@ def test_create_clip_meta_ok(
 ) -> None:
     _setup_camera_lookup(fake_sb, authed_camera_row)
     clip_id = "abcdef12-3456-7890-abcd-ef1234567890"
-    key = f"test/{CAMERA_ID_TEXT}/2026-05-27/120000_{clip_id}.mp4"
+    key = f"terra-clips/clips/{CAMERA_ID_TEXT}/2026-05-27/120000_{clip_id}.mp4"
 
     fake_sb.table.return_value.insert.return_value.execute.return_value.data = [
         {"id": clip_id}
@@ -148,15 +148,15 @@ def test_create_clip_meta_ok(
     assert insert_payload["enclosure_id"] == ENC_ID
     assert insert_payload["owner_id"] == TEST_USER_ID
     assert insert_payload["r2_key"] == key
-    # 촬영 목적: test/ key 에서 서버가 도출 → "test"
-    assert insert_payload["clip_purpose"] == "test"
+    # 촬영 목적: terra-clips/clips/ key 에서 서버가 도출 → "production" (운영 승격)
+    assert insert_payload["clip_purpose"] == "production"
 
 
 def test_create_clip_meta_rejects_key_for_other_camera(
     app_client: TestClient, fake_sb: MagicMock, authed_camera_row: dict
 ) -> None:
     _setup_camera_lookup(fake_sb, authed_camera_row)
-    bad_key = "test/picam-deadbeef/2026-05-27/120000_abcdef12-3456-7890-abcd-ef1234567890.mp4"
+    bad_key = "terra-clips/clips/picam-deadbeef/2026-05-27/120000_abcdef12-3456-7890-abcd-ef1234567890.mp4"
 
     res = app_client.post(
         f"/cameras/{CAMERA_UUID}/clips",
