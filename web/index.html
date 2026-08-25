@@ -238,7 +238,17 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
       <button onclick="createSchedule()">예약 추가</button>
     </div>
     <table id="sch-table" style="margin-top:8px">
-      <thead><tr><th>디바이스</th><th>동작</th><th>반복</th><th>시각(KST)</th><th>다음 실행</th><th>on</th><th></th></tr></thead>
+      <thead><tr><th>디바이스</th><th>동작</th><th>반복</th><th>시각(KST)</th><th>다음 실행</th><th>마지막 실행</th><th>on</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="row" style="margin-top:12px;align-items:center">
+      <h3 style="margin:0;font-size:14px">📜 예약 실행 내역</h3>
+      <span style="flex:1"></span>
+      <button onclick="loadScheduleHistory()" style="font-size:11px;padding:2px 8px">새로고침</button>
+    </div>
+    <small class="muted">commands 중 source=schedule(발행) / guard(가드 스킵) 최근 30건. 선택 디바이스 기준.</small>
+    <table id="sch-history-table" style="margin-top:6px">
+      <thead><tr><th>실행시각(KST)</th><th>동작</th><th>출처</th><th>상태</th><th>결과/사유</th><th>ack</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -971,8 +981,51 @@ async function loadSchedules() {
       <td>${esc(when)}</td>
       <td>${esc((s.time_of_day || '').slice(0, 5))}</td>
       <td><small>${esc(fmtKst(s.next_run_at))}</small></td>
+      <td><small>${esc(fmtKst(s.last_run_at))}</small></td>
       <td>${s.enabled ? '<span class="good">●</span>' : '<span class="muted">○</span>'}</td>
       <td><button class="danger" onclick="deleteSchedule('${s.id}')" style="font-size:11px;padding:2px 8px">삭제</button></td>`;
+    tbody.appendChild(tr);
+  });
+  loadScheduleHistory();
+}
+
+// 예약 실행 내역 — commands 에서 source='schedule'(발행) / 'guard'(가드 스킵) 만 조회.
+// Supabase JS 직접 조회 (RLS 가 본인 디바이스만 허용). 별도 REST 없이 감사 로그 재활용.
+async function loadScheduleHistory() {
+  if (!sb) return;
+  const tbody = document.querySelector('#sch-history-table tbody');
+  const deviceId = document.getElementById('sch-device')?.value;
+  if (!tbody) return;
+  if (!deviceId) { tbody.innerHTML = ''; return; }
+  const { data, error } = await sb
+    .from('commands')
+    .select('id, action, payload, status, result, reason, source, issued_at, acked_at')
+    .eq('device_id', deviceId)
+    .in('source', ['schedule', 'guard'])
+    .order('issued_at', { ascending: false })
+    .limit(30);
+  if (error) { log({ schedule_history: error.message }); return; }
+  tbody.innerHTML = '';
+  if (!data?.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="muted">실행 내역 없음</td></tr>';
+    return;
+  }
+  data.forEach(c => {
+    const statusColor = {
+      pending: 'muted', sent: 'good', acked: 'good',
+      rejected: 'bad', expired: 'bad', skipped: 'muted',
+    }[c.status] || '';
+    const actLabel = (c.action === 'mist' && c.payload?.duration_ms)
+      ? `💦 ${c.payload.duration_ms / 1000}s` : c.action;
+    const src = c.source === 'guard' ? '🛡 가드 스킵' : '⏰ 예약';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><small>${esc(fmtKst(c.issued_at))}</small></td>
+      <td>${esc(actLabel)}</td>
+      <td>${esc(src)}</td>
+      <td><span class="${statusColor}">${esc(c.status)}</span></td>
+      <td><small>${esc(c.reason || c.result || '-')}</small></td>
+      <td><small>${esc(c.acked_at ? fmtKst(c.acked_at) : '-')}</small></td>`;
     tbody.appendChild(tr);
   });
 }
