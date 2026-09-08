@@ -177,6 +177,9 @@ if entity_type == "camera":
 - [ ] terra-api + mqtt bridge 배포 (`docs/DEPLOYMENT.md`)
 - [ ] 배포 후 앱 팀 통보 + 펌웨어 회신 문서 §8/§10 갱신
 
+**E2E 중 발견한 선행 버그 (2026-09-08)**
+- `registry.py` 카메라 ACL 에 `telemetry` 쓰기가 없어 Mosquitto 가 카메라 heartbeat 를 조용히 버리고 있었음 (`last_seen` 이 WebRTC ack 로만 갱신, `capabilities` 영원히 NULL). 수정 후 **기존 카메라 ACL 재생성 필요**: 서버에서 `scripts/regen_acl.py` 실행하거나, API 재배포 후 테스트 콘솔에서 아무 카메라/디바이스나 삭제·페어링(둘 다 `regenerate_acl()` 트리거).
+
 **구현 중 결정한 것**
 - capabilities 는 값이 같으면 UPDATE 에서 제외 — 앱이 cameras Realtime 을 구독하므로 15초마다 UPDATE 이벤트가 나가는 걸 막기 위해 필수로 격상.
 - 재발행 최소 간격 60초 — 카메라가 적용 실패로 옛 값을 계속 보고해도 15초마다 명령이 나가지 않게.

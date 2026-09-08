@@ -148,11 +148,14 @@ def _build_acl_content() -> str:
         did = row["device_id"]
         buf.write(_acl_block(did, ["telemetry", "ack", "alert"], ["command"]))
 
-    # 카메라 (write motion_event/ack/alert, read command)
+    # 카메라 (write telemetry/motion_event/ack/alert, read command)
+    # telemetry: 15초 heartbeat(last_seen/is_online) + rotate_180/capabilities 보고.
+    # 2026-09-08 이전엔 빠져 있어 Mosquitto 가 카메라 telemetry 를 조용히 버렸다
+    # (last_seen 이 ack 로만 갱신되던 원인). 기존 카메라는 regenerate_acl() 로 재생성 필요.
     cam_res = sb.table("cameras").select("camera_id").execute()
     for row in cam_res.data or []:
         cid = row["camera_id"]
-        buf.write(_acl_block(cid, ["motion_event", "ack", "alert"], ["command"]))
+        buf.write(_acl_block(cid, ["telemetry", "motion_event", "ack", "alert"], ["command"]))
 
     return buf.getvalue()
 

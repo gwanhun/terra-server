@@ -139,9 +139,11 @@ def test_regenerate_acl_builds_content_from_db(
     assert "topic write esp32/terra-aa/telemetry" in content
     assert "topic read  esp32/terra-aa/command" in content
     assert "user terra-bb" in content
-    # camera
+    # camera — telemetry 쓰기 필수 (heartbeat + rotate_180/capabilities 보고)
     assert "user p4cam-cc" in content
+    assert "topic write esp32/p4cam-cc/telemetry" in content
     assert "topic write esp32/p4cam-cc/motion_event" in content
+    assert "topic read  esp32/p4cam-cc/command" in content
 
 
 def test_regenerate_acl_skips_bridge_if_env_missing(

@@ -22,6 +22,7 @@
 
 | 토픽 | 방향 | QoS | retain | 빈도 |
 |------|------|-----|--------|------|
+| `esp32/{camera_id}/telemetry` | 카메라 → 서버 | 1 | false | 15초 (heartbeat + `rotate_180`/`capabilities`) |
 | `esp32/{camera_id}/motion_event` | 카메라 → 서버 | 1 | false | 모션 감지 시 |
 | `esp32/{camera_id}/alert` | 카메라 → 서버 | 1 | false | SD 풀/업로드 실패 등 |
 | `esp32/{camera_id}/command` | 서버 → 카메라 | 1 | false | 설정 변경, 스트리밍 시작/종료 등 |
@@ -185,6 +186,7 @@ topic read  esp32/terra-a1b2c3d4/command
 
 # 카메라 (ESP32-P4 워커)
 user p4cam-a1b2c3d4
+topic write esp32/p4cam-a1b2c3d4/telemetry
 topic write esp32/p4cam-a1b2c3d4/motion_event
 topic write esp32/p4cam-a1b2c3d4/alert
 topic write esp32/p4cam-a1b2c3d4/ack
@@ -192,6 +194,7 @@ topic read  esp32/p4cam-a1b2c3d4/command
 
 # 카메라 (RPi 워커, 대안)
 user picam-b2c3d4e5
+topic write esp32/picam-b2c3d4e5/telemetry
 topic write esp32/picam-b2c3d4e5/motion_event
 topic write esp32/picam-b2c3d4e5/alert
 topic write esp32/picam-b2c3d4e5/ack
@@ -209,3 +212,4 @@ topic read  esp32/picam-b2c3d4e5/command
 | 2026-05-27 | 0.3.0 | 카메라 하드웨어 RPi Zero 2 W 로 변경 (H.264, mp4) |
 | 2026-05-27 | 0.4.0 | 메인 카메라 워커 ESP32-P4 로 변경, Stage G(라이브 스트리밍) action 추가 |
 | 2026-09-08 | 0.5.0 | 카메라 `set_rotation` action, 카메라 telemetry `rotate_180`/`capabilities` (앱 핸드오프 rotate180) |
+| 2026-09-08 | 0.5.1 | **ACL 버그 수정**: 카메라 계정에 `telemetry` 쓰기 권한 추가 (누락으로 카메라 heartbeat 가 브로커에서 버려지던 문제). 기존 카메라는 `scripts/regen_acl.py` 로 재생성 |
