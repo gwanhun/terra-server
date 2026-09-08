@@ -8,7 +8,7 @@ Supabase mock 만으로 단위 테스트 가능.
 
 | 핸들러 | DB 작업 |
 |--------|---------|
-| handle_telemetry | telemetry INSERT + devices.last_seen_at/is_online UPDATE |
+| handle_telemetry | telemetry INSERT + devices.last_seen_at/is_online UPDATE. 카메라는 last_seen + capabilities 저장 + rotate_180 동기화 |
 | handle_ack       | commands status='acked', result, acked_at UPDATE |
 | handle_alert     | alerts INSERT |
 
@@ -30,15 +30,34 @@ DB FK 는 각각 `devices.id` / `cameras.id` (UUID). 매 메시지마다 SELECT 
 from __future__ import annotations
 
 import logging
+import threading
+import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any
 
 from supabase import Client
 
+from backend.mqtt.camera_commands import rotation_command
 from backend.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
+
+
+# ---------- 카메라 명령 발행기 (브리지가 등록) ----------
+#
+# handlers 는 paho 의존이 없어야 하므로 publish 함수를 주입받는다.
+# MqttBridge.__init__ 이 set_command_publisher(self.publish_command) 로 등록.
+# 미등록(테스트/단독 실행)이면 동기화 명령은 로그만 남기고 건너뛴다.
+
+CommandPublisher = Callable[[str, dict[str, Any]], bool]
+_command_publisher: CommandPublisher | None = None
+
+
+def set_command_publisher(publisher: CommandPublisher | None) -> None:
+    global _command_publisher
+    _command_publisher = publisher
 
 
 # ---------- device_id → UUID 캐시 ----------
@@ -121,6 +140,96 @@ def reset_device_cache() -> None:
     _cached_device_uuid.cache_clear()
     _cached_device_text.cache_clear()
     _cached_camera_uuid.cache_clear()
+    with _camera_state_lock:
+        _camera_state_cache.clear()
+        _rotation_resend_at.clear()
+
+
+# ---------- 카메라 설정 상태 캐시 (rotate_180 / capabilities) ----------
+#
+# 텔레메트리는 15초 주기라 매번 SELECT 하지 않도록 TTL 캐시. lru_cache 를 안 쓰는 이유:
+# PATCH 는 API 프로세스, 텔레메트리는 브리지 프로세스라 무효화 신호가 안 오므로
+# 시간 만료로만 최신값을 따라간다. 최악의 경우 PATCH 직후 명령이 유실됐을 때
+# 수렴이 최대 TTL 만큼 늦어진다.
+
+CAMERA_STATE_TTL_SEC = 30.0
+# 카메라가 적용 실패로 계속 옛 값을 보고할 때 15초마다 재발행하지 않도록 최소 간격.
+ROTATION_RESEND_MIN_SEC = 60.0
+
+_camera_state_lock = threading.Lock()
+_camera_state_cache: dict[str, tuple[float, dict[str, Any]]] = {}   # uuid → (expires, row)
+_rotation_resend_at: dict[str, float] = {}                          # uuid → last publish monotonic
+
+
+def _camera_state(sb: Client, camera_uuid: str) -> dict[str, Any] | None:
+    """cameras.rotate_180 / capabilities 를 TTL 캐시 경유로 조회. 실패/미존재면 None."""
+    now = time.monotonic()
+    with _camera_state_lock:
+        hit = _camera_state_cache.get(camera_uuid)
+        if hit and hit[0] > now:
+            return hit[1]
+    try:
+        res = (
+            sb.table("cameras")
+            .select("rotate_180, capabilities")
+            .eq("id", camera_uuid)
+            .limit(1)
+            .execute()
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("cameras 상태 조회 실패 (camera=%s)", camera_uuid)
+        return None
+    rows = res.data or []
+    if not rows:
+        return None
+    row = {"rotate_180": rows[0].get("rotate_180"), "capabilities": rows[0].get("capabilities")}
+    with _camera_state_lock:
+        _camera_state_cache[camera_uuid] = (now + CAMERA_STATE_TTL_SEC, row)
+    return row
+
+
+def _camera_state_patch(camera_uuid: str, **fields: Any) -> None:
+    """DB 에 UPDATE 한 값을 캐시에도 반영 (같은 값으로 반복 UPDATE 방지)."""
+    with _camera_state_lock:
+        hit = _camera_state_cache.get(camera_uuid)
+        if hit:
+            hit[1].update(fields)
+
+
+def _sync_camera_rotation(
+    sb: Client, camera_id_text: str, camera_uuid: str, reported: bool
+) -> None:
+    """카메라가 보고한 rotate_180 이 DB(진실)와 다르면 set_rotation 재발행.
+
+    PATCH 직후 명령이 유실됐거나(오프라인·QoS1 비보존), 재부팅 후 NVS 값이 다르거나,
+    펌웨어를 교체한 경우 모두 여기서 DB 값으로 수렴한다. 구 펌웨어는 rotate_180 을
+    보고하지 않으므로 호출되지 않는다.
+    """
+    state = _camera_state(sb, camera_uuid)
+    if state is None or not isinstance(state.get("rotate_180"), bool):
+        return
+    desired: bool = state["rotate_180"]
+    if desired == reported:
+        return
+
+    now = time.monotonic()
+    with _camera_state_lock:
+        last = _rotation_resend_at.get(camera_uuid, 0.0)
+        if now - last < ROTATION_RESEND_MIN_SEC:
+            return
+        _rotation_resend_at[camera_uuid] = now
+
+    if _command_publisher is None:
+        logger.warning(
+            "rotate_180 불일치 camera=%s (보고=%s, DB=%s) — 발행기 미등록, 건너뜀",
+            camera_id_text, reported, desired,
+        )
+        return
+    ok = _command_publisher(camera_id_text, rotation_command(desired))
+    logger.warning(
+        "rotate_180 불일치 camera=%s (보고=%s, DB=%s) → set_rotation 재발행 %s",
+        camera_id_text, reported, desired, "ok" if ok else "실패",
+    )
 
 
 # ---------- ts 정규화 ----------
@@ -161,12 +270,15 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
         디바이스: { "ts": ..., "dht22_a": {...}, "dht22_b": {...},
                    "relay": "OFF", "fan": "ON", "heater": {"state":"OFF","locked":false},
                    "led": "ON", "led_brightness": 75 }  # led_brightness 는 MOSFET 보드만
-        카메라:   { "ts": ..., "uptime_sec": ..., "wifi_rssi": ..., "free_heap": ... }
-                  (페이로드 자유 — 서버는 last_seen 만 갱신)
+        카메라:   { "ts": ..., "uptime_sec": ..., "free_heap": ...,
+                   "rotate_180": false,                      # 현재 NVS 값 (2026-09-08+)
+                   "capabilities": {"rotate_180": true} }     # 연결 직후 1회일 수 있음 (2026-09-08+)
 
     동작:
     - device: telemetry INSERT + devices.last_seen_at/is_online UPDATE + 임계값 평가
-    - camera: telemetry INSERT 건너뜀 (스키마 불일치). cameras.last_seen_at/is_online UPDATE 만.
+    - camera: telemetry INSERT 건너뜀 (스키마 불일치). cameras.last_seen_at/is_online UPDATE.
+              capabilities 가 있고 DB 와 다르면 함께 저장. rotate_180 보고값이 DB 와 다르면
+              set_rotation 재발행 (_sync_camera_rotation).
     - 미페어링: 경고 후 무시.
     """
     entity_type, entity_uuid = _resolve_entity(device_id_text)
@@ -178,13 +290,33 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
 
     if entity_type == "camera":
         # 카메라는 heartbeat 만 — telemetry 행 INSERT X, last_seen 갱신 O.
+        update: dict[str, Any] = {
+            "last_seen_at": _now_iso(),
+            "is_online": True,
+        }
+
+        # capabilities 보고 → 저장. 같은 값이면 UPDATE 에서 빼서 Realtime UPDATE 잡음을
+        # 줄인다 (앱이 cameras 테이블 Realtime 을 구독 중).
+        caps = payload.get("capabilities")
+        if isinstance(caps, dict):
+            state = _camera_state(sb, entity_uuid)
+            if state is None or state.get("capabilities") != caps:
+                update["capabilities"] = caps
+
         try:
-            sb.table("cameras").update({
-                "last_seen_at": _now_iso(),
-                "is_online": True,
-            }).eq("id", entity_uuid).execute()
+            sb.table("cameras").update(update).eq("id", entity_uuid).execute()
         except Exception:  # noqa: BLE001
             logger.exception("cameras UPDATE 실패 (camera=%s)", device_id_text)
+        else:
+            if "capabilities" in update:
+                _camera_state_patch(entity_uuid, capabilities=update["capabilities"])
+
+        reported = payload.get("rotate_180")
+        if isinstance(reported, bool):
+            try:
+                _sync_camera_rotation(sb, device_id_text, entity_uuid, reported)
+            except Exception:  # noqa: BLE001
+                logger.exception("rotate_180 동기화 실패 (camera=%s)", device_id_text)
         return
 
     device_uuid = entity_uuid

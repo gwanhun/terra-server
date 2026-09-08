@@ -385,3 +385,130 @@ def test_resolve_entity_unknown_returns_none(fake_sb: MagicMock) -> None:
     chain = fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value
     chain.execute.return_value.data = []
     assert handlers._resolve_entity("ghost-xyz") == (None, None)
+
+
+# ---------- 카메라 rotate_180 / capabilities 동기화 (2026-09-08) ----------
+
+
+def _camera_state_table_factory(
+    updates: list[dict], *, rotate_180: bool = False, capabilities: dict | None = None
+) -> "callable":
+    """_camera_table_factory + cameras.select('rotate_180, capabilities') 응답."""
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        if name == "devices":
+            t.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
+        elif name == "cameras":
+            def _select(cols: str = "id") -> MagicMock:
+                sel = MagicMock()
+                if "rotate_180" in cols:
+                    data = [{"rotate_180": rotate_180, "capabilities": capabilities}]
+                else:
+                    data = [{"id": CAMERA_UUID}]
+                sel.eq.return_value.limit.return_value.execute.return_value.data = data
+                return sel
+            t.select.side_effect = _select
+            t._upd = MagicMock()
+            t._upd.eq.return_value.execute.return_value.data = [{"id": CAMERA_UUID}]
+            t.update.side_effect = lambda payload: updates.append(payload) or t._upd
+        return t
+    return _table
+
+
+@pytest.fixture
+def published() -> list[tuple[str, dict]]:
+    calls: list[tuple[str, dict]] = []
+    handlers.set_command_publisher(lambda cid, payload: calls.append((cid, payload)) or True)
+    yield calls
+    handlers.set_command_publisher(None)
+
+
+def test_camera_telemetry_legacy_payload_unchanged(
+    fake_sb: MagicMock, published: list
+) -> None:
+    """구 펌웨어(rotate_180/capabilities 없음): last_seen 만, 발행 없음, 상태 SELECT 도 없음."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_state_table_factory(updates, rotate_180=True)
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1_748_000_000, "uptime_sec": 60, "free_heap": 1})
+
+    assert len(updates) == 1
+    assert set(updates[0]) == {"last_seen_at", "is_online"}
+    assert published == []
+
+
+def test_camera_telemetry_stores_capabilities_when_changed(
+    fake_sb: MagicMock, published: list
+) -> None:
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_state_table_factory(updates, capabilities=None)
+
+    handlers.handle_telemetry(
+        CAMERA_TEXT, {"ts": 1, "rotate_180": False, "capabilities": {"rotate_180": True}}
+    )
+
+    assert updates[0]["capabilities"] == {"rotate_180": True}
+    assert published == []  # DB rotate_180=False == 보고 False → 발행 없음
+
+    # 두 번째 보고(같은 capabilities): 캐시 반영돼 UPDATE 에서 빠짐 (Realtime 잡음 방지)
+    handlers.handle_telemetry(
+        CAMERA_TEXT, {"ts": 2, "rotate_180": False, "capabilities": {"rotate_180": True}}
+    )
+    assert "capabilities" not in updates[1]
+
+
+def test_camera_telemetry_skips_capabilities_when_same_as_db(
+    fake_sb: MagicMock, published: list
+) -> None:
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_state_table_factory(
+        updates, capabilities={"rotate_180": True}
+    )
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "capabilities": {"rotate_180": True}})
+
+    assert "capabilities" not in updates[0]
+
+
+def test_camera_telemetry_rotation_mismatch_republishes(
+    fake_sb: MagicMock, published: list
+) -> None:
+    """DB rotate_180=True, 카메라 보고 False → set_rotation(True) 재발행."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_state_table_factory(updates, rotate_180=True)
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "rotate_180": False})
+
+    assert len(published) == 1
+    cid, cmd = published[0]
+    assert cid == CAMERA_TEXT
+    assert cmd["action"] == "set_rotation"
+    assert cmd["rotate_180"] is True
+    assert cmd["ttl_sec"] == 60
+
+    # 15초 뒤 같은 보고: 최소 재발행 간격(60초) 안이라 중복 발행 없음
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 2, "rotate_180": False})
+    assert len(published) == 1
+
+
+def test_camera_telemetry_rotation_match_no_publish(
+    fake_sb: MagicMock, published: list
+) -> None:
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_state_table_factory(updates, rotate_180=True)
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "rotate_180": True})
+
+    assert published == []
+
+
+def test_camera_telemetry_mismatch_without_publisher_is_noop(fake_sb: MagicMock) -> None:
+    """브리지 미등록(발행기 None)이면 경고만 남기고 예외 없이 last_seen 갱신은 유지."""
+    handlers.set_command_publisher(None)
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_state_table_factory(updates, rotate_180=True)
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "rotate_180": False})
+
+    assert len(updates) == 1
+    assert updates[0]["is_online"] is True

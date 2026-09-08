@@ -8,7 +8,7 @@ MQTT 브리지 — Mosquitto ↔ Supabase 양방향 다리.
    - `esp32/+/ack`       → ack_handler
    - `esp32/+/alert`     → alert_handler
 3. paho 자동 재연결 (지수 백오프)
-4. `publish_command()` — 외부 (CommandDispatcher) 가 호출하는 publish 인터페이스
+4. `publish_command()` — 외부 (CommandDispatcher, handlers 카메라 동기화) 가 호출하는 publish 인터페이스
 
 ## 컴포넌트 분리
 - 본 모듈: MQTT 연결 + 수신 핸들러 위임 + publish API
@@ -80,6 +80,9 @@ class MqttBridge:
 
         self._sb = get_supabase_client()
         self._stop_event = threading.Event()
+
+        # 카메라 rotate_180 동기화(handlers._sync_camera_rotation)가 명령을 발행할 수 있게 주입.
+        handlers.set_command_publisher(self.publish_command)
 
     # ---------- 라이프사이클 ----------
 

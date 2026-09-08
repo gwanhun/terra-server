@@ -161,3 +161,92 @@ def test_delete_camera_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
 
     res = app_client.delete("/cameras/cam-uuid")
     assert res.status_code == 204
+
+
+# ---------- rotate_180 / capabilities (2026-09-08 앱 핸드오프 rotate180) ----------
+
+
+def _install_fake_signaling(monkeypatch, calls: list[tuple[str, dict]], *, raise_exc: bool = False):
+    """cameras_router.MqttWebRTCSignaling 을 publish 캡처용 stub 으로 교체."""
+    from backend.routers import cameras as cameras_router
+
+    class _FakeSignaling:
+        def __init__(self) -> None:
+            if raise_exc:
+                raise RuntimeError("MQTT env missing")
+
+        def publish(self, camera_id: str, command: dict, **_: object) -> None:
+            calls.append((camera_id, command))
+
+    monkeypatch.setattr(cameras_router, "MqttWebRTCSignaling", _FakeSignaling)
+
+
+def test_update_camera_rotate_180_publishes_set_rotation(
+    app_client: TestClient, fake_sb: MagicMock, monkeypatch
+) -> None:
+    calls: list[tuple[str, dict]] = []
+    _install_fake_signaling(monkeypatch, calls)
+    chain = fake_sb.table.return_value.update.return_value.eq.return_value.eq.return_value
+    chain.execute.return_value.data = [_camera_row(rotate_180=True)]
+
+    res = app_client.patch("/cameras/cam-uuid", json={"rotate_180": True})
+    assert res.status_code == 200
+    assert res.json()["rotate_180"] is True
+
+    # DB UPDATE 에 rotate_180 포함
+    update_payload = fake_sb.table.return_value.update.call_args.args[0]
+    assert update_payload == {"rotate_180": True}
+
+    # set_rotation 명령 1회, 계약 필드 그대로
+    assert len(calls) == 1
+    camera_id, cmd = calls[0]
+    assert camera_id == "p4cam-aabbccdd"
+    assert cmd["action"] == "set_rotation"
+    assert cmd["rotate_180"] is True
+    assert cmd["ttl_sec"] == 60
+    assert "msg_id" in cmd and "issued_at" in cmd
+
+
+def test_update_camera_without_rotate_does_not_publish(
+    app_client: TestClient, fake_sb: MagicMock, monkeypatch
+) -> None:
+    calls: list[tuple[str, dict]] = []
+    _install_fake_signaling(monkeypatch, calls)
+    chain = fake_sb.table.return_value.update.return_value.eq.return_value.eq.return_value
+    chain.execute.return_value.data = [_camera_row(name="새이름")]
+
+    res = app_client.patch("/cameras/cam-uuid", json={"name": "새이름"})
+    assert res.status_code == 200
+    assert calls == []
+
+
+def test_update_camera_rotate_publish_failure_is_best_effort(
+    app_client: TestClient, fake_sb: MagicMock, monkeypatch
+) -> None:
+    """MQTT 발행 실패(env 누락 등)해도 DB 는 갱신됐으므로 200. 텔레메트리 동기화가 수렴."""
+    calls: list[tuple[str, dict]] = []
+    _install_fake_signaling(monkeypatch, calls, raise_exc=True)
+    chain = fake_sb.table.return_value.update.return_value.eq.return_value.eq.return_value
+    chain.execute.return_value.data = [_camera_row(rotate_180=False)]
+
+    res = app_client.patch("/cameras/cam-uuid", json={"rotate_180": False})
+    assert res.status_code == 200
+    assert res.json()["rotate_180"] is False
+    assert calls == []
+
+
+def test_get_camera_capabilities_null_and_dict(app_client: TestClient, fake_sb: MagicMock) -> None:
+    chain = fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value
+
+    # 구 펌웨어: 컬럼 NULL → null (앱은 토글 숨김)
+    chain.execute.return_value.data = _camera_row()
+    res = app_client.get("/cameras/cam-uuid")
+    assert res.status_code == 200
+    assert res.json()["capabilities"] is None
+    assert res.json()["rotate_180"] is False   # 컬럼 없던 행도 기본 False
+
+    # 신 펌웨어
+    chain.execute.return_value.data = _camera_row(capabilities={"rotate_180": True}, rotate_180=True)
+    res = app_client.get("/cameras/cam-uuid")
+    assert res.json()["capabilities"] == {"rotate_180": True}
+    assert res.json()["rotate_180"] is True

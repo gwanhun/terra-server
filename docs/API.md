@@ -49,7 +49,7 @@ Content-Type: application/json
 | `POST` | `/cameras/pair` | JWT | 카메라 워커 페어링 + camera_token 발급 |
 | `GET` | `/cameras` | JWT | 본인 카메라 목록 |
 | `GET` | `/cameras/{id}` | JWT | 카메라 단건 |
-| `PATCH` | `/cameras/{id}` | JWT | 카메라 수정 |
+| `PATCH` | `/cameras/{id}` | JWT | 카메라 수정 (name/resolution/fps/clip_sec/enclosure_id/**rotate_180**) |
 | `DELETE` | `/cameras/{id}` | JWT | 카메라 삭제 |
 | `POST` | `/cameras/{id}/clips/upload-url` | **Camera Token** | R2 presigned PUT URL 발급 |
 | `POST` | `/cameras/{id}/clips` | **Camera Token** | 업로드 완료 후 모션 클립 메타 등록 |
@@ -254,6 +254,24 @@ AND issued_by = auth.uid()
 | `token_rotate` | `new_token` (string) | NVS 의 mqtt_token 갱신 + MQTT 재연결 |
 
 > ⚠ 카메라 워커 명령 (snapshot/webrtc 류) 은 별도 — [docs/MQTT.md §2](MQTT.md) 참조 (Stage G).
+
+#### 3.7.4 카메라 180° 회전 (`rotate_180`, 2026-09-08)
+
+선언적 설정. 앱은 REST 한 번만 호출하고 ack/텔레메트리를 보지 않는다.
+
+```
+PATCH /cameras/{id}
+{ "rotate_180": true }
+→ 200 CameraOut  (rotate_180 갱신됨. DB 반영 즉시 응답, 카메라 적용은 비동기)
+```
+
+- `CameraOut.rotate_180` (bool, 기본 false) — 현재 설정값(진실).
+- `CameraOut.capabilities` (object | null) — 펌웨어가 telemetry 로 보고한 능력 플래그.
+  예 `{"rotate_180": true}`. **null 또는 키 없음 = 구 펌웨어 → 앱은 토글 숨김.**
+- 적용 시점: 카메라 온라인이면 즉시(다음 프레임, 라이브 중 재연결 없음). 오프라인이면 다음
+  재연결 시 telemetry 동기화로 적용. 구 펌웨어는 DB 에만 저장되고 카메라는 무시.
+- 서버 내부: PATCH 직후 `set_rotation` MQTT 명령 발행(best-effort) + telemetry 의 `rotate_180`
+  보고값이 DB 와 다르면 브리지가 재발행. 앱 화면 반영은 `cameras` Realtime UPDATE.
 
 #### 3.7.3 명령 상태 흐름
 

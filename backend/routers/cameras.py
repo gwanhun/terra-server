@@ -32,7 +32,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from backend.auth import get_current_user_id
 from backend.crypto import generate_token, hash_token
 from backend.mqtt import registry
+from backend.mqtt.camera_commands import rotation_command
 from backend.supabase_client import get_supabase_client
+from backend.webrtc_signaling import MqttWebRTCSignaling
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +83,13 @@ class CameraUpdate(BaseModel):
     resolution: str | None = None
     fps: int | None = Field(None, ge=1, le=60)
     clip_sec: int | None = Field(None, ge=1, le=60)
+    rotate_180: bool | None = Field(
+        None,
+        description=(
+            "영상 180° 회전(설치 방향 보정). DB 갱신 즉시 200 응답, 카메라 적용은 비동기 "
+            "(온라인이면 보통 1초 내, 오프라인이면 다음 재연결 시)."
+        ),
+    )
 
 
 class CameraOut(BaseModel):
@@ -95,6 +104,11 @@ class CameraOut(BaseModel):
     clip_sec: int | None
     stream_mode: str | None = Field(None, description="NULL | snapshot | webrtc (Stage G)")
     stream_until: str | None
+    rotate_180: bool = Field(False, description="영상 180° 회전 설정값 (선언적, 진실)")
+    capabilities: dict[str, Any] | None = Field(
+        None,
+        description='펌웨어 보고 능력 플래그. 예 {"rotate_180": true}. null = 구 펌웨어(미보고)',
+    )
     created_at: str
     updated_at: str
     last_seen_at: str | None
@@ -302,7 +316,32 @@ def update_camera(
     )
     if not res.data:
         raise HTTPException(status_code=404, detail="camera not found")
-    return CameraOut.model_validate(res.data[0])
+    cam = res.data[0]
+
+    if "rotate_180" in updates and updates["rotate_180"] is not None:
+        _publish_rotation(cam.get("camera_id", ""), bool(updates["rotate_180"]))
+
+    return CameraOut.model_validate(cam)
+
+
+def _publish_rotation(camera_id_text: str, rotate_180: bool) -> None:
+    """set_rotation 명령 즉시 발행 (best-effort).
+
+    DB 는 이미 갱신됐고, 발행이 실패해도 카메라 텔레메트리 동기화
+    (backend/mqtt/handlers.py handle_telemetry camera 분기)가 DB 값으로 수렴시키므로
+    5xx 를 던지지 않는다. MqttWebRTCSignaling 은 이름과 달리 "카메라 command 토픽
+    one-shot publish" 이며 __init__ 이 env 누락 시 예외를 던지므로 통째로 감싼다.
+    """
+    if not camera_id_text:
+        return
+    try:
+        MqttWebRTCSignaling().publish(camera_id_text, rotation_command(rotate_180))
+        logger.info("set_rotation 발행 camera=%s rotate_180=%s", camera_id_text, rotate_180)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "set_rotation 발행 실패 camera=%s (텔레메트리 동기화로 수렴)",
+            camera_id_text, exc_info=True,
+        )
 
 
 @router.delete(

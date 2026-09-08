@@ -15,7 +15,7 @@
 | `telemetry_1m` | IoT | 분 단위 다운샘플 | (device_id, bucket) |
 | `commands` | IoT | 명령 이력 | UUID, device_id FK |
 | `alerts` | IoT | 알림 이력 | UUID, device_id FK |
-| `cameras` | 영상 | 카메라 워커 등록 (ESP32-P4 / RPi) | UUID, owner_id + enclosure_id FK |
+| `cameras` | 영상 | 카메라 워커 등록 (ESP32-P4 / RPi). `rotate_180`(180° 회전 설정, 진실) + `capabilities`(펌웨어 보고, NULL=구 펌웨어) — 2026-09-08 | UUID, owner_id + enclosure_id FK |
 | `motion_clips` | 영상 | 모션 영상 메타 (R2 키, H.264 mp4) | UUID, camera_id FK |
 
 ## ERD (ASCII)

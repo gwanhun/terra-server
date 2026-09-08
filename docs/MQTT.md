@@ -57,6 +57,24 @@
 - 센서 fault 시 `ok: false`, `t/h` 값은 무의미
 - `relay` 는 실제 워터펌프 (API 호환성 위해 이름 유지)
 
+카메라 워커 telemetry (15초 주기, heartbeat 성격 — 서버는 `telemetry` 행을 INSERT 하지 않음):
+
+```json
+{
+  "ts": 1757300000,
+  "uptime_sec": 123,
+  "free_heap": 456789,
+  "rotate_180": false,
+  "capabilities": { "rotate_180": true }
+}
+```
+
+- `rotate_180` (2026-09-08+): 카메라의 현재 NVS 값. 서버가 `cameras.rotate_180`(진실)과 비교해
+  다르면 `set_rotation` 재발행. 구 펌웨어는 키 없음 → 동기화 비활성.
+- `capabilities` (2026-09-08+): 펌웨어 능력 플래그. 서버가 `cameras.capabilities` 에 저장
+  (값이 같으면 UPDATE 생략 — 앱이 cameras Realtime 구독 중). MQTT 연결 직후 1회만 실어도 되고
+  매번 실어도 된다. 앱은 `capabilities.rotate_180 == true` 일 때만 회전 토글을 노출.
+
 ### 2. Command (서버 → 디바이스)
 
 ```json
@@ -81,6 +99,10 @@
   - `webrtc_offer` (추가: `sdp`, `session_id`) — Stage G2
   - `webrtc_ice` (추가: `candidate`, `session_id`) — Stage G2
   - `webrtc_close` (추가: `session_id`) — Stage G2
+  - `set_rotation` (추가: `rotate_180: bool`) — 영상 180° 회전(설치 방향 보정). `ttl_sec` 60.
+    서버가 `PATCH /cameras/{id}` 직후 발행하고, 카메라 telemetry 의 `rotate_180` 이 DB 와
+    다르면 브리지가 재발행(카메라당 최소 60초 간격). 펌웨어는 vflip+hmirror 동시 적용 후
+    NVS 저장, ack `"ok"`. 구 펌웨어는 `rejected_unknown_action`.
   - `token_rotate`
 
 ### 3. Ack
@@ -186,3 +208,4 @@ topic read  esp32/picam-b2c3d4e5/command
 | 2026-05-26 | 0.2.0 | ESP32-CAM 토픽 추가 (motion_event), ACL 분리 |
 | 2026-05-27 | 0.3.0 | 카메라 하드웨어 RPi Zero 2 W 로 변경 (H.264, mp4) |
 | 2026-05-27 | 0.4.0 | 메인 카메라 워커 ESP32-P4 로 변경, Stage G(라이브 스트리밍) action 추가 |
+| 2026-09-08 | 0.5.0 | 카메라 `set_rotation` action, 카메라 telemetry `rotate_180`/`capabilities` (앱 핸드오프 rotate180) |
