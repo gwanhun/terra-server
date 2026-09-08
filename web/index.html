@@ -696,17 +696,18 @@ async function mistCommand(deviceUuid, durationMs) {
   }
 }
 
-// LED 제어 — 보드 능력(capabilities.led_dimmable, §2)에 따라 슬라이더 vs ON/OFF.
-// MOSFET 보드(led_dimmable=true)만 밝기 슬라이더; 릴레이 보드는 ON/OFF 버튼.
+// LED 제어 — 기본은 밝기 슬라이더. capabilities.led_dimmable === false (릴레이 보드,
+// 조광 불가 명시 보고)일 때만 ON/OFF 버튼. 미보고(null)는 MOSFET 취급 → 슬라이더.
 function ledSlider(r) {
   const dis = r.is_online ? '' : 'opacity:.5';
-  if (r.capabilities?.led_dimmable) {
-    return `<span title="LED 밝기 % (MOSFET)" style="${dis}">💡`
-      + `<input type="range" min="0" max="100" value="100" step="10" `
+  if (r.capabilities?.led_dimmable !== false) {
+    const cur = TEL_LATEST[r.id]?.led_brightness ?? 100;
+    return `<span title="LED 밝기 %" style="${dis}">💡`
+      + `<input type="range" min="0" max="100" value="${cur}" step="10" `
       + `onchange="ledBrightness('${r.id}', this.value)" `
       + `style="width:64px;vertical-align:middle"></span>`;
   }
-  // 릴레이 보드(또는 미보고) — 밝기 없음, ON/OFF 만
+  // 릴레이 보드(led_dimmable=false 보고) — 밝기 없음, ON/OFF 만
   return `<span title="LED ON/OFF (릴레이)" style="${dis}">💡`
     + `<button onclick="ledBrightness('${r.id}',100)" style="font-size:11px;padding:2px 6px">ON</button>`
     + `<button onclick="ledBrightness('${r.id}',0)" style="font-size:11px;padding:2px 6px">OFF</button></span>`;
