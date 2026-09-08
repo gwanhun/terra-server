@@ -333,7 +333,7 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
     </div>
     <div id="cam-token" class="hidden"></div>
     <table id="cam-table">
-      <thead><tr><th>camera_id</th><th>이름</th><th>model</th><th>사육장</th><th>online</th><th></th></tr></thead>
+      <thead><tr><th>camera_id</th><th>이름</th><th>model</th><th>사육장</th><th>online</th><th title="rotate_180 설정(진실). capabilities.rotate_180 보고 전엔 비활성">회전 180°</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -1117,6 +1117,7 @@ let DEVICES = [];   // /devices 응답 캐시 (예약 패널 드롭다운)
 
 let _telChannel = null;
 let _alertChannel = null;
+let _camChannel = null;
 
 function subscribeRealtime() {
   if (!sb) return;
@@ -1154,6 +1155,23 @@ function subscribeRealtime() {
         })
     .subscribe();
 
+  // cameras UPDATE: 텔레메트리(last_seen/capabilities) + rotate_180 PATCH 가 앱과 같은 경로로 들어온다.
+  _camChannel = sb
+    .channel('rt-cameras')
+    .on('postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'cameras' },
+        (payload) => {
+          const n = payload.new, o = payload.old || {};
+          if (o.rotate_180 !== undefined && o.rotate_180 !== n.rotate_180) {
+            toast(`📷 ${n.camera_id} rotate_180 → ${n.rotate_180}`, 'good');
+          }
+          if (JSON.stringify(o.capabilities ?? null) !== JSON.stringify(n.capabilities ?? null) && n.capabilities) {
+            toast(`📷 ${n.camera_id} capabilities 보고: ${JSON.stringify(n.capabilities)}`, 'good');
+          }
+          updateCameraRow(n);
+        })
+    .subscribe();
+
   // critical 알림용 브라우저 권한 요청 (1회)
   if ('Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission();
@@ -1163,6 +1181,7 @@ function subscribeRealtime() {
 function unsubscribeRealtime() {
   if (_telChannel) { sb.removeChannel(_telChannel); _telChannel = null; }
   if (_alertChannel) { sb.removeChannel(_alertChannel); _alertChannel = null; }
+  if (_camChannel) { sb.removeChannel(_camChannel); _camChannel = null; }
 }
 
 // 페이지 진입 시 1회 — 디바이스별 최신 telemetry 1건씩 가져와 캐시 채움
@@ -1293,15 +1312,53 @@ async function resolveAlert(alertId) {
 // ─────────────────────────────────────────────────────────────────────────
 // 카메라
 // ─────────────────────────────────────────────────────────────────────────
+// 회전 셀: 토글(설정값) + capabilities 표시. 구 펌웨어(capabilities 미보고)는 앱과 같은 규칙으로 비활성.
+function rotateCellHtml(r) {
+  const caps = r.capabilities && r.capabilities.rotate_180 === true;
+  const on = r.rotate_180 === true;
+  const title = caps ? 'PATCH /cameras/{id} {rotate_180}' : '구 펌웨어 또는 텔레메트리 미수신 (capabilities 없음)';
+  return `<label title="${title}" style="white-space:nowrap;cursor:${caps ? 'pointer' : 'not-allowed'}">
+    <input type="checkbox" ${on ? 'checked' : ''} ${caps ? '' : 'disabled'} onchange="toggleRotate('${r.id}', this)">
+    <span class="${on ? 'good' : 'muted'}">${on ? 'ON' : 'OFF'}</span>
+    <small class="muted">${caps ? 'caps✓' : 'caps—'}</small></label>`;
+}
+
+function onlineCellHtml(r) {
+  return r.is_online ? '<span class="good">●</span>' : '<span class="muted">○</span>';
+}
+
 async function loadCameras() {
   const rows = await api('/cameras');
   const tbody = document.querySelector('#cam-table tbody');
   tbody.innerHTML = '';
   (rows || []).forEach(r => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td><select onchange="assignEnclosure('cameras','${r.id}',this.value)" style="max-width:130px">${enclosureOptions(r.enclosure_id)}</select></td><td>${r.is_online ? '<span class="good">●</span>' : '<span class="muted">○</span>'}</td><td style="white-space:nowrap"><button onclick="openLive('${r.id}', '${esc(r.camera_id)}')">라이브</button> <button class="danger" onclick="deleteCamera('${r.id}')">삭제</button></td>`;
+    tr.dataset.id = r.id;
+    tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td><select onchange="assignEnclosure('cameras','${r.id}',this.value)" style="max-width:130px">${enclosureOptions(r.enclosure_id)}</select></td><td class="cam-online">${onlineCellHtml(r)}</td><td class="cam-rotate">${rotateCellHtml(r)}</td><td style="white-space:nowrap"><button onclick="openLive('${r.id}', '${esc(r.camera_id)}')">라이브</button> <button class="danger" onclick="deleteCamera('${r.id}')">삭제</button></td>`;
     tbody.appendChild(tr);
   });
+}
+
+// 회전 토글 → PATCH. 응답은 DB 값(선언적). 카메라 적용은 비동기라 라이브 패널로 눈으로 확인.
+async function toggleRotate(id, el) {
+  const want = el.checked;
+  el.disabled = true;
+  const r = await api('/cameras/' + id, { method: 'PATCH', body: JSON.stringify({ rotate_180: want }) });
+  if (r) {
+    toast(`rotate_180=${r.rotate_180} 저장됨 — 카메라 적용은 온라인이면 ~1초, 오프라인이면 재연결 시`, 'good');
+    updateCameraRow(r);
+  } else {
+    el.checked = !want;   // 실패 시 되돌림
+    el.disabled = false;
+  }
+}
+
+// cameras Realtime UPDATE(텔레메트리 15초 last_seen, capabilities 갱신, PATCH) → 해당 행만 갱신
+function updateCameraRow(r) {
+  const tr = document.querySelector(`#cam-table tr[data-id="${r.id}"]`);
+  if (!tr) { loadCameras(); return; }
+  const on = tr.querySelector('.cam-online'); if (on) on.innerHTML = onlineCellHtml(r);
+  const rc = tr.querySelector('.cam-rotate'); if (rc) rc.innerHTML = rotateCellHtml(r);
 }
 
 async function pairCamera() {
