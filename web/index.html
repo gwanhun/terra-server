@@ -1121,6 +1121,7 @@ let DEVICES = [];   // /devices 응답 캐시 (예약 패널 드롭다운)
 let _telChannel = null;
 let _alertChannel = null;
 let _camChannel = null;
+let CAM_LAST = {};   // cameras 행 캐시 (id → row). Realtime UPDATE 변경 감지용
 
 function subscribeRealtime() {
   if (!sb) return;
@@ -1164,12 +1165,15 @@ function subscribeRealtime() {
     .on('postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'cameras' },
         (payload) => {
-          const n = payload.new, o = payload.old || {};
-          if (o.rotate_180 !== undefined && o.rotate_180 !== n.rotate_180) {
-            toast(`📷 ${n.camera_id} rotate_180 → ${n.rotate_180}`, 'good');
-          }
-          if (JSON.stringify(o.capabilities ?? null) !== JSON.stringify(n.capabilities ?? null) && n.capabilities) {
-            toast(`📷 ${n.camera_id} capabilities 보고: ${JSON.stringify(n.capabilities)}`, 'good');
+          // payload.old 는 REPLICA IDENTITY 기본값이라 PK 만 옴 → 직전 행은 클라이언트 캐시(CAM_LAST)와 비교.
+          const n = payload.new, o = CAM_LAST[n.id];
+          if (o) {
+            if (o.rotate_180 !== n.rotate_180) {
+              toast(`📷 ${n.camera_id} rotate_180 → ${n.rotate_180}`, 'good');
+            }
+            if (n.capabilities && JSON.stringify(o.capabilities ?? null) !== JSON.stringify(n.capabilities)) {
+              toast(`📷 ${n.camera_id} capabilities 보고: ${JSON.stringify(n.capabilities)}`, 'good');
+            }
           }
           updateCameraRow(n);
         })
@@ -1335,7 +1339,9 @@ async function loadCameras() {
   const rows = await api('/cameras');
   const tbody = document.querySelector('#cam-table tbody');
   tbody.innerHTML = '';
+  CAM_LAST = {};
   (rows || []).forEach(r => {
+    CAM_LAST[r.id] = r;
     const tr = document.createElement('tr');
     tr.dataset.id = r.id;
     tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td><select onchange="assignEnclosure('cameras','${r.id}',this.value)" style="max-width:130px">${enclosureOptions(r.enclosure_id)}</select></td><td class="cam-online">${onlineCellHtml(r)}</td><td class="cam-rotate">${rotateCellHtml(r)}</td><td style="white-space:nowrap"><button onclick="openLive('${r.id}', '${esc(r.camera_id)}')">라이브</button> <button class="danger" onclick="deleteCamera('${r.id}')">삭제</button></td>`;
@@ -1359,6 +1365,7 @@ async function toggleRotate(id, el) {
 
 // cameras Realtime UPDATE(텔레메트리 15초 last_seen, capabilities 갱신, PATCH) → 해당 행만 갱신
 function updateCameraRow(r) {
+  CAM_LAST[r.id] = r;
   const tr = document.querySelector(`#cam-table tr[data-id="${r.id}"]`);
   if (!tr) { loadCameras(); return; }
   const on = tr.querySelector('.cam-online'); if (on) on.innerHTML = onlineCellHtml(r);
