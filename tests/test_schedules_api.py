@@ -116,8 +116,9 @@ def test_create_mist_bad_duration_400(app_client: TestClient, fake_sb: MagicMock
 
 
 def test_create_onoff_actions_allowed(app_client: TestClient, fake_sb: MagicMock) -> None:
-    """요청 1: heater_on/off, fan_on/off, relay_on/off 가 예약 허용 액션이어야."""
-    for action in ("heater_on", "heater_off", "fan_on", "fan_off", "relay_on", "relay_off"):
+    """요청 1: heater_on/off, fan_on/off(냉각팬 fan2 포함), relay_on/off 가 예약 허용 액션이어야."""
+    for action in ("heater_on", "heater_off", "fan_on", "fan_off",
+                   "fan2_on", "fan2_off", "relay_on", "relay_off"):
         dev = _device_mock()
         sch = MagicMock()
         sch.insert.return_value.execute.return_value.data = [_schedule_row(action=action)]

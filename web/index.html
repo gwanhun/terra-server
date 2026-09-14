@@ -219,6 +219,8 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
         <option value="relay_off">🔌 펌프 off</option>
         <option value="fan_on">🌀 팬 on</option>
         <option value="fan_off">🌀 팬 off</option>
+        <option value="fan2_on">❄️ 냉각팬 on</option>
+        <option value="fan2_off">❄️ 냉각팬 off</option>
         <option value="led_on">💡 LED on</option>
         <option value="led_off">💡 LED off</option>
         <option value="heater_on">🔥 히터 on</option>
@@ -297,7 +299,7 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
     </div>
     <small class="muted">Supabase Realtime 으로 telemetry INSERT 자동 수신. 디바이스별 최신값.</small>
     <table id="tel-table">
-      <thead><tr><th>device_id</th><th>T1 °C</th><th>H1 %</th><th>T2 °C</th><th>H2 %</th><th>relay</th><th>fan</th><th>heater</th><th>업데이트</th></tr></thead>
+      <thead><tr><th>device_id</th><th>T1 °C</th><th>H1 %</th><th>T2 °C</th><th>H2 %</th><th>relay</th><th>fan</th><th>냉각팬</th><th>heater</th><th>업데이트</th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -661,6 +663,7 @@ async function deleteEnclosure(id) {
 const QUICK_COMMANDS = [
   { action: 'relay_toggle',  icon: '💧', title: '워터펌프 토글' },
   { action: 'fan_toggle',    icon: '🌀', title: '팬 토글' },
+  { action: 'fan2_toggle',   icon: '❄️', title: '냉각팬 토글' },
   { action: 'heater_toggle', icon: '🔥', title: '히터 토글', confirm: true },
   { action: 'heater_clear',  icon: '⚠',  title: '히터 safety latch 해제', confirm: true },
   { action: 'led_toggle',    icon: '💡', title: 'LED 토글' },
@@ -1233,6 +1236,7 @@ function renderTelemetry() {
       <td class="${bOk}">${r.h_b ?? '-'}</td>
       <td>${esc(r.relay || '-')}</td>
       <td>${esc(r.fan || '-')}</td>
+      <td>${esc(r.fan2 || '-')}</td>
       <td>${esc(heater)}${lock}</td>
       <td><small>${esc(r.ts?.slice(11,19) || '-')}</small></td>`;
     tbody.appendChild(tr);

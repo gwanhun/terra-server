@@ -49,6 +49,7 @@ SCHEDULABLE_ACTIONS: frozenset[str] = frozenset({
     MIST_ACTION,
     "relay_on", "relay_off",
     "fan_on", "fan_off",
+    "fan2_on", "fan2_off",   # 냉각팬 — 펌웨어 동작은 fan 과 동일
     "heater_on", "heater_off",
     "led_on", "led_off",
 })

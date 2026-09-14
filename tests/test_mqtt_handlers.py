@@ -93,6 +93,7 @@ def test_handle_telemetry_inserts_full_payload(fake_sb: MagicMock) -> None:
         "dht22_b": {"t": 24.8, "h": 60.5, "ok": True},
         "relay": "OFF",
         "fan": "ON",
+        "fan2": "OFF",
         "heater": {"state": "OFF", "locked": False},
         "led": "ON",
         "led_brightness": 75,
@@ -129,6 +130,7 @@ def test_handle_telemetry_inserts_full_payload(fake_sb: MagicMock) -> None:
     assert row["t_b"] == 24.8
     assert row["relay"] == "OFF"
     assert row["fan"] == "ON"
+    assert row["fan2"] == "OFF"
     assert row["heater_state"] == "OFF"
     assert row["heater_locked"] is False
     assert row["led"] == "ON"

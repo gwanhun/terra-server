@@ -50,13 +50,18 @@
   "dht22_b": { "t": 24.8, "h": 60.5, "ok": true },
   "relay":  "OFF",
   "fan":    "ON",
-  "heater": { "state": "OFF", "locked": false }
+  "fan2":   "OFF",
+  "heater": { "state": "OFF", "locked": false },
+  "led":    "ON",
+  "led_brightness": 75
 }
 ```
 
 - `ts`: SNTP 동기화 시 epoch seconds, 미동기화 시 boot 후 monotonic ms
 - 센서 fault 시 `ok: false`, `t/h` 값은 무의미
 - `relay` 는 실제 워터펌프 (API 호환성 위해 이름 유지)
+- `fan2` 는 냉각팬 (두 번째 팬, 동작은 `fan` 과 동일). 구 펌웨어는 키 없음 → 서버는 NULL 저장
+- `led_brightness` 는 MOSFET 보드만 (0~100), 릴레이 보드는 키 없음
 
 카메라 워커 telemetry (15초 주기, heartbeat 성격 — 서버는 `telemetry` 행을 INSERT 하지 않음):
 
