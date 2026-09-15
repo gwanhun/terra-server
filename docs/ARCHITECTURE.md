@@ -85,7 +85,7 @@ auth.users (Supabase)
      │
      ├──► devices    (ESP32-S3, 1:N)
      │     ├──► device_settings (1:1)
-     │     ├──► telemetry / telemetry_1m
+     │     ├──► telemetry (7일) / telemetry_30m (영구, 장기차트)
      │     ├──► commands
      │     └──► alerts
      │

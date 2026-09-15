@@ -79,8 +79,12 @@ auth.users (Supabase Auth)
 
 ## 시계열 관리 정책
 
-- **`telemetry` 원본**: 7일 보관 (pg_cron 자동 DELETE, Stage E)
-- **`telemetry_1m`**: 1년 보관 (pg_cron 매분 INSERT, Stage E)
+- **`telemetry` 원본**: 7일 보관 (pg_cron `cleanup-telemetry-7d` 자동 DELETE)
+- **`telemetry_30m`**: 30분 집계, 삭제 cron 없음 → **사실상 영구**. 장기 차트의 정본
+  - `sample_count` 는 버킷 내 **행 수**. 지표별 유효 표본 수는 `t_a_count` / `h_a_count` / `t_b_count` / `h_b_count`
+    (`2026-09-15_telemetry_30m_valid_counts.sql` 이후 버킷부터, 그 전은 NULL·복원 불가)
+  - 센서 fault(`a_ok`/`b_ok` false) 샘플은 집계에서 제외됨
+- **`telemetry_1m`**: ⚠️ **미사용 — 채우는 cron 이 없어 영구히 빈 테이블** (Stage E 보류). 앱은 쓰지 말 것
 
 ## 영상 보관 정책
 

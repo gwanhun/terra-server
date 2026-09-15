@@ -201,7 +201,13 @@ Authorization: Bearer <jwt>
 
 ### 3.6 `DELETE /devices/{device_uuid}`
 
-디바이스 삭제. cascade 로 `device_settings`, `telemetry`, `commands`, `alerts` 도 삭제.
+디바이스 삭제. **hard delete 이며 cascade 범위가 넓습니다.**
+
+cascade 동반 삭제: `device_settings`, `telemetry`, `telemetry_1m`, **`telemetry_30m`**(장기 통계), `commands`, `alerts`, **`schedules`**.
+
+> ⚠️ 이 엔드포인트는 "등록 해제"가 아니라 **과거 기록 전체 삭제**입니다. 앱의 기기 관리 화면에서
+> 기록 보존이 필요한 해제 동작으로 쓰면 안 됩니다 (소프트 해제는 미구현 —
+> [BACKEND_HANDOFF_REPLY_REDESIGN_2026-09-15.md](BACKEND_HANDOFF_REPLY_REDESIGN_2026-09-15.md) §2).
 
 **응답** (204 No Content)
 
@@ -382,18 +388,29 @@ const { data } = await supabase
   .single();
 ```
 
-#### 시계열 차트용 — 분 단위 다운샘플 (`telemetry_1m`)
+#### 시계열 차트용 — 30분 다운샘플 (`telemetry_30m`)
 
-`telemetry` 는 7일만 보관. 장기 차트는 `telemetry_1m` (1년 보관, 1분 평균):
+`telemetry` 원본은 **7일만** 보관. 장기 차트는 **`telemetry_30m`** (30분 집계, 사실상 영구):
 
 ```javascript
 const { data } = await supabase
-  .from('telemetry_1m')
-  .select('bucket, t_a_avg, t_a_min, t_a_max, h_a_avg')
+  .from('telemetry_30m')
+  .select('bucket, t_a_avg, t_a_min, t_a_max, h_a_avg, sample_count, t_a_count, h_a_count')
   .eq('device_id', deviceUuid)
   .gte('bucket', '2026-06-01T00:00:00Z')
   .order('bucket', { ascending: true });
 ```
+
+> ⚠️ **`telemetry_1m` 을 쓰지 마세요.** 테이블은 존재하지만 채우는 cron 이 없어 **영구히 빈 테이블**입니다
+> (Stage E 보류 — `specs/stage-e-timeseries-downsample.md`). 붙으면 빈 차트가 나옵니다.
+>
+> - `sample_count` = 버킷 내 원본 **행 수** (빠짐 진단용). **지표별 유효 표본 수가 아닙니다.**
+> - `t_a_count` / `h_a_count` / `t_b_count` / `h_b_count` = **지표별 유효 표본 수** (센서 fault 제외).
+>   `2026-09-15_telemetry_30m_valid_counts.sql` 적용 이후 버킷부터 채워지고, 그 전은 `null`(복원 불가).
+>   가중평균을 계산할 땐 `sample_count` 가 아니라 이 값을 가중치로 쓰세요.
+> - 버킷 경계는 **UTC 기준** 정시/30분. KST 일 단위로 묶을 땐 `bucket + 9h` 로 날짜를 만드세요.
+>
+> 상세 계약: [APP_TIMESERIES_CHART.md](APP_TIMESERIES_CHART.md)
 
 ---
 
@@ -662,7 +679,7 @@ ICE candidate 추가.
 | 204 | 성공 (응답 본문 없음) | |
 | 400 | 잘못된 요청 (필수 필드 누락 등) | `{ "detail": "변경 필드 없음" }` |
 | 401 | 인증 실패 | `{ "detail": "Authorization 헤더가 없음." }` |
-| 403 | 권한 없음 (RLS/소유권 위반) | `{ "detail": "권한 없음" }` |
+| ~~403~~ | **사용하지 않음.** 소유권 위반은 404(조회·수정·삭제) 또는 400(그룹 배정)으로 응답합니다 | — |
 | 404 | 리소스 없음 | `{ "detail": "device not found" }` |
 | 422 | Pydantic 유효성 검증 실패 | (FastAPI 자동 응답, field 별 detail) |
 | 500 | 서버 내부 오류 | `{ "detail": "..." }` |

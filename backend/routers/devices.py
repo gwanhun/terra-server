@@ -264,7 +264,13 @@ def delete_device(
     device_uuid: str,
     user_id: str = Depends(get_current_user_id),
 ) -> None:
-    """cascade 로 `device_settings`, `telemetry`, `commands`, `alerts` 동시 삭제."""
+    """**hard delete.** cascade 범위가 넓으니 "등록 해제" 용도로 쓰면 안 된다.
+
+    동반 삭제: `device_settings`, `telemetry`, `telemetry_1m`, `telemetry_30m`(장기 통계),
+    `commands`, `alerts`, `schedules`.
+
+    기록을 남기는 해제는 미구현 (docs/BACKEND_HANDOFF_REPLY_REDESIGN_2026-09-15.md §2).
+    """
     sb = get_supabase_client()
     res = (
         sb.table("devices")
