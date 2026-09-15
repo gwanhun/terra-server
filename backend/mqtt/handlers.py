@@ -232,6 +232,27 @@ def _sync_camera_rotation(
     )
 
 
+# ---------- 센서 값 정규화 ----------
+
+
+def _sensor_values(dht: dict[str, Any]) -> tuple[float | None, float | None, bool]:
+    """DHT22 한 채널 → (온도, 습도, ok).
+
+    `ok: false` 는 센서 fault 이고 이때 t/h 는 무의미하다(docs/MQTT.md §1).
+    예전에는 그 값을 그대로 INSERT 해서 telemetry_30m 평균·최소·최대가 오염됐다
+    (2026-09-15 앱 회신 §5.3). 이제 fault 면 NULL 로 저장한다 — a_ok/b_ok 자체는
+    그대로 남으니 "고장이었다"는 정보는 잃지 않는다.
+
+    롤업 SQL 쪽에도 FILTER (WHERE a_ok) 를 넣어 이중으로 막는다
+    (migrations/2026-09-15_telemetry_30m_valid_counts.sql). 이미 쌓인 오염 행이
+    원본 보존기간(7일) 동안 남아 있기 때문.
+    """
+    ok = bool(dht.get("ok", False))
+    if not ok:
+        return (None, None, False)
+    return (dht.get("t"), dht.get("h"), True)
+
+
 # ---------- ts 정규화 ----------
 
 # epoch seconds 임계 (2017-07-14 이후) — 이보다 작으면 monotonic ms / 비정상 값으로 판단
@@ -327,15 +348,18 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
     dht_b = payload.get("dht22_b") or {}
     heater = payload.get("heater") or {}
 
+    t_a, h_a, a_ok = _sensor_values(dht_a)
+    t_b, h_b, b_ok = _sensor_values(dht_b)
+
     row = {
         "device_id": device_uuid,
         "ts": ts,
-        "t_a": dht_a.get("t"),
-        "h_a": dht_a.get("h"),
-        "a_ok": bool(dht_a.get("ok", False)),
-        "t_b": dht_b.get("t"),
-        "h_b": dht_b.get("h"),
-        "b_ok": bool(dht_b.get("ok", False)),
+        "t_a": t_a,
+        "h_a": h_a,
+        "a_ok": a_ok,
+        "t_b": t_b,
+        "h_b": h_b,
+        "b_ok": b_ok,
         "relay": payload.get("relay"),
         "fan": payload.get("fan"),
         "fan2": payload.get("fan2"),                     # 냉각팬 — 구 펌웨어는 None

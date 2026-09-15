@@ -16,7 +16,8 @@ Supabase 에 적용한 마이그레이션 기록(SOT). `migrations/*.sql` 을 SQ
 | ✅ | `2026-08-18_device_settings_setpoint.sql` | 2026-08-18 | §5 `device_settings.target_temp_c` / `target_humidity_pct` |
 | ✅ | `2026-08-18_schedules_pair_id.sql` | 2026-08-18 | §3 `schedules.pair_id` + 부분 인덱스 |
 | ✅ | `2026-08-18_telemetry_led.sql` | 2026-08-18 | §4 `telemetry.led` + `led_brightness` |
-| ⬜ | `2026-09-08_cameras_rotate_capabilities.sql` | — | 카메라 `rotate_180` + `capabilities` (앱 핸드오프 rotate180 R4/R5). **미적용 — 배포 전 SQL Editor 실행** |
+| ✅ | `2026-09-08_cameras_rotate_capabilities.sql` | 2026-09-15 | 카메라 `rotate_180` + `capabilities` (앱 핸드오프 rotate180 R4/R5) |
+| ⬜ | `2026-09-15_telemetry_30m_valid_counts.sql` | — | `telemetry_30m` 지표별 유효 표본 수 + 센서 fault 집계 제외. **미적용 — SQL Editor 실행 필요** |
 | ✅ | `2026-09-07_telemetry_fan2.sql` | 2026-09-07 | `telemetry.fan2` (냉각팬 상태) |
 
 ## 규칙

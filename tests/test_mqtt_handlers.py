@@ -185,6 +185,60 @@ def test_handle_telemetry_handles_missing_sensors(fake_sb: MagicMock) -> None:
     assert row["heater_state"] is None
 
 
+def test_sensor_values_drops_readings_when_fault() -> None:
+    """ok=false 면 t/h 를 버린다 — fault 값이 telemetry_30m 평균을 오염시켰던 버그."""
+    assert handlers._sensor_values({"t": 0.0, "h": 0.0, "ok": False}) == (None, None, False)
+    assert handlers._sensor_values({"t": -999, "h": 200, "ok": False}) == (None, None, False)
+
+
+def test_sensor_values_keeps_readings_when_ok() -> None:
+    assert handlers._sensor_values({"t": 25.3, "h": 62.1, "ok": True}) == (25.3, 62.1, True)
+
+
+def test_sensor_values_missing_ok_treated_as_fault() -> None:
+    """ok 키 자체가 없으면 신뢰할 수 없으므로 fault 취급 (기존 bool(get('ok', False)) 유지)."""
+    assert handlers._sensor_values({"t": 25.3, "h": 62.1}) == (None, None, False)
+    assert handlers._sensor_values({}) == (None, None, False)
+
+
+def test_handle_telemetry_fault_sensor_stored_as_null(fake_sb: MagicMock) -> None:
+    """A센서 fault + B센서 정상 → A만 NULL, B는 보존. ok 플래그는 그대로 남는다."""
+    _setup_device_lookup(fake_sb)
+
+    inserts: list[dict] = []
+
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        if name == "devices":
+            t.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+                {"id": DEVICE_UUID}
+            ]
+            t._upd = MagicMock()
+            t._upd.eq.return_value.execute.return_value.data = [{"id": DEVICE_UUID}]
+            t.update.return_value = t._upd
+        elif name == "telemetry":
+            t.insert.side_effect = lambda payload: inserts.append(payload) or t._ins
+            t._ins = MagicMock()
+            t._ins.execute.return_value.data = [{}]
+        return t
+
+    fake_sb.table.side_effect = _table
+
+    handlers.handle_telemetry(DEVICE_TEXT, {
+        "ts": 1_748_000_000,
+        "dht22_a": {"t": 0.0, "h": 0.0, "ok": False},    # fault — 값 무의미
+        "dht22_b": {"t": 24.8, "h": 60.5, "ok": True},
+    })
+
+    row = inserts[0]
+    assert row["t_a"] is None
+    assert row["h_a"] is None
+    assert row["a_ok"] is False
+    assert row["t_b"] == 24.8
+    assert row["h_b"] == 60.5
+    assert row["b_ok"] is True
+
+
 def test_handle_telemetry_duplicate_pk_swallowed(
     fake_sb: MagicMock, caplog: pytest.LogCaptureFixture
 ) -> None:
