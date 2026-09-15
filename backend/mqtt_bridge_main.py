@@ -30,12 +30,25 @@ from backend.offline_monitor import OfflineMonitor
 from backend.schedule_runner import ScheduleRunner
 
 
+# 서드파티 로거 소음 억제.
+# supabase-py 는 모든 REST 호출을 httpx INFO 로 찍는다. 디바이스 4대(3초 주기)만으로도
+# 하루 30만 줄이 넘어가 정작 우리 WARNING 이 묻힌다 (2026-09-15 운영 로그 확인).
+# 우리 코드의 로그는 그대로 두고 HTTP 클라이언트만 WARNING 으로 올린다.
+_NOISY_LOGGERS = ("httpx", "httpcore", "hpack", "urllib3")
+
+
+def _quiet_third_party_loggers() -> None:
+    for name in _NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
 def _setup_logging() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[logging.StreamHandler(sys.stdout)],
     )
+    _quiet_third_party_loggers()
 
 
 def run() -> None:

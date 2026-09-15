@@ -47,6 +47,11 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 
+# supabase-py 가 모든 REST 호출을 httpx INFO 로 찍어 실제 경고가 묻힌다.
+# 우리 코드 로그는 INFO 유지, HTTP 클라이언트만 WARNING (브리지도 동일 처리).
+for _noisy in ("httpx", "httpcore", "hpack", "urllib3"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
 _APP_DESCRIPTION = """
 파충류/양서류 **사육장 통합 백엔드** REST API.
 
