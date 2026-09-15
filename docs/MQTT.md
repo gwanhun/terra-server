@@ -95,9 +95,13 @@
 - `msg_id`: commands.id (UUID) 그대로 사용
 - `ttl_sec`: 기본 10초. 디바이스는 `now - issued_at > ttl_sec` 이면 폐기
 - `action` (IoT 디바이스, ESP32-S3):
-  - `relay_toggle` / `fan_toggle`
-  - `heater_toggle` / `heater_clear`
-  - `led_on` / `led_up` / `led_down`
+  - `relay_on` / `relay_off` / `relay_toggle` — 워터펌프
+  - `fan_on` / `fan_off` / `fan_toggle` — 팬 (`*_on` 은 `duration_ms` 옵션: one-shot 자동 OFF, 최대 2h)
+  - `fan2_on` / `fan2_off` / `fan2_toggle` — 냉각팬 (동작은 fan 과 동일)
+  - `heater_on` / `heater_off` / `heater_toggle` / `heater_clear_lock`
+  - `led_on` (payload `brightness` 0~100 옵션, MOSFET 조광) / `led_off` / `led_toggle`
+  - `mist` (`duration_ms`: 1000|2000|3000) / `spray_1s` / `spray_3s` / `spray_5s`
+  - `lcd_bitmap` / `lcd_clear`
   - `token_rotate` (추가 필드: `new_token`)
 - `action` (카메라 워커, ESP32-P4 / RPi):
   - `snapshot_stream` (추가: `interval_ms`, `duration_sec`) — Stage G1
@@ -216,5 +220,6 @@ topic read  esp32/picam-b2c3d4e5/command
 | 2026-05-26 | 0.2.0 | ESP32-CAM 토픽 추가 (motion_event), ACL 분리 |
 | 2026-05-27 | 0.3.0 | 카메라 하드웨어 RPi Zero 2 W 로 변경 (H.264, mp4) |
 | 2026-05-27 | 0.4.0 | 메인 카메라 워커 ESP32-P4 로 변경, Stage G(라이브 스트리밍) action 추가 |
+| 2026-09-07 | 0.4.1 | telemetry `fan2`(냉각팬) 추가, IoT action 목록 현행화 (`fan2_*`, on/off 계열, mist/lcd) |
 | 2026-09-08 | 0.5.0 | 카메라 `set_rotation` action, 카메라 telemetry `rotate_180`/`capabilities` (앱 핸드오프 rotate180) |
 | 2026-09-08 | 0.5.1 | **ACL 버그 수정**: 카메라 계정에 `telemetry` 쓰기 권한 추가 (누락으로 카메라 heartbeat 가 브로커에서 버려지던 문제). 기존 카메라는 `scripts/regen_acl.py` 로 재생성 |
