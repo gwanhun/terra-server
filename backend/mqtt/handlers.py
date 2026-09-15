@@ -515,6 +515,14 @@ def handle_ack(device_id_text: str, payload: dict[str, Any]) -> None:
             "ack: 매칭되는 command 없음 (msg_id=%s, device=%s) — replay/foreign",
             msg_id, device_id_text,
         )
+    else:
+        # 푸시 이벤트 적재. res.data[0] 은 갱신된 commands 행 전체라
+        # (issued_by/source/source_id/action/result) JOIN 없이 다 들어있다.
+        # 실패해도 ack 처리 자체는 성공이므로 절대 예외를 올리지 않는다.
+        try:
+            _enqueue_command_event(res.data[0], device_id_text, device_uuid)
+        except Exception:  # noqa: BLE001
+            logger.exception("push 이벤트 적재 실패 (msg_id=%s)", msg_id)
 
     # devices.last_seen_at 도 갱신 — ack 도 디바이스 살아있다는 신호
     try:
@@ -524,6 +532,23 @@ def handle_ack(device_id_text: str, payload: dict[str, Any]) -> None:
         }).eq("id", device_uuid).execute()
     except Exception:  # noqa: BLE001
         logger.exception("devices UPDATE 실패 (ack)")
+
+
+def _enqueue_command_event(
+    command_row: dict[str, Any], device_id_text: str, device_uuid: str
+) -> None:
+    """acked command → push_outbox. 발행 대상이 아니면 아무 것도 안 한다.
+
+    순환 import 회피용 지연 import (push_events 는 supabase_client 만 쓰지만
+    alerts.py 와 같은 관례를 따른다).
+    """
+    from backend import push_events
+
+    event = push_events.build_command_event(
+        command_row, device_id_text, device_meta(device_uuid)
+    )
+    if event is not None:
+        push_events.enqueue(event)
 
 
 def handle_alert(device_id_text: str, payload: dict[str, Any]) -> None:

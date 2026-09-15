@@ -372,6 +372,97 @@ def test_handle_ack_updates_command(fake_sb: MagicMock) -> None:
     assert "acked_at" in updates[0]
 
 
+def _ack_table_factory(cmd_row: dict | None) -> object:
+    """devices/commands mock. commands UPDATE 는 갱신된 행 전체를 돌려준다
+    (postgrest return=representation) — 푸시 훅이 이 값을 쓴다."""
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        if name == "devices":
+            t.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = (
+                [{"id": DEVICE_UUID, "owner_id": "owner-1", "name": "사육장 1",
+                  "enclosure_id": "enc-1"}]
+            )
+            t._upd = MagicMock()
+            t._upd.eq.return_value.execute.return_value.data = [{"id": DEVICE_UUID}]
+            t.update.return_value = t._upd
+        elif name == "commands":
+            chain = MagicMock()
+            chain.eq.return_value.eq.return_value.execute.return_value.data = (
+                [cmd_row] if cmd_row else []
+            )
+            t.update.return_value = chain
+        return t
+    return _table
+
+
+def test_handle_ack_enqueues_push_event_for_schedule(
+    fake_sb: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """예약 명령 ACK 확정 → push_outbox 적재까지 이어진다."""
+    from backend import push_events
+
+    fake_sb.table.side_effect = _ack_table_factory({
+        "id": "cmd-1", "device_id": DEVICE_UUID, "issued_by": "owner-1",
+        "action": "fan_on", "result": "ok", "source": "schedule", "source_id": "sch-1",
+    })
+
+    captured: list[dict] = []
+    monkeypatch.setenv("PUSH_EVENT_INGEST_URL", "https://example.test/ingest")
+    monkeypatch.setenv("PUSH_EVENT_INGEST_SECRET", "s3cr3t")
+    monkeypatch.setattr(push_events, "enqueue", lambda ev: captured.append(ev) or True)
+
+    handlers.handle_ack(DEVICE_TEXT, {"msg_id": "cmd-1", "result": "ok"})
+
+    assert len(captured) == 1
+    ev = captured[0]
+    assert ev["type"] == push_events.EVENT_STARTED
+    assert ev["payload"]["device_name"] == "사육장 1"
+    assert ev["payload"]["enclosure_id"] == "enc-1"
+    assert ev["payload"]["schedule_id"] == "sch-1"
+
+
+def test_handle_ack_manual_command_not_enqueued(
+    fake_sb: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from backend import push_events
+
+    fake_sb.table.side_effect = _ack_table_factory({
+        "id": "cmd-1", "device_id": DEVICE_UUID, "issued_by": "owner-1",
+        "action": "mist", "result": "ok", "source": "manual", "source_id": None,
+    })
+    captured: list[dict] = []
+    monkeypatch.setenv("PUSH_EVENT_INGEST_URL", "https://example.test/ingest")
+    monkeypatch.setenv("PUSH_EVENT_INGEST_SECRET", "s3cr3t")
+    monkeypatch.setattr(push_events, "enqueue", lambda ev: captured.append(ev) or True)
+
+    handlers.handle_ack(DEVICE_TEXT, {"msg_id": "cmd-1", "result": "ok"})
+    assert captured == []
+
+
+def test_handle_ack_push_failure_does_not_break_ack(
+    fake_sb: MagicMock, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """푸시 적재가 터져도 ack 처리(devices last_seen 갱신)는 계속돼야 한다."""
+    from backend import push_events
+
+    fake_sb.table.side_effect = _ack_table_factory({
+        "id": "cmd-1", "device_id": DEVICE_UUID, "issued_by": "owner-1",
+        "action": "fan_on", "result": "ok", "source": "schedule", "source_id": "sch-1",
+    })
+    monkeypatch.setenv("PUSH_EVENT_INGEST_URL", "https://example.test/ingest")
+    monkeypatch.setenv("PUSH_EVENT_INGEST_SECRET", "s3cr3t")
+
+    def _boom(_ev: dict) -> bool:
+        raise RuntimeError("outbox down")
+
+    monkeypatch.setattr(push_events, "enqueue", _boom)
+
+    handlers.handle_ack(DEVICE_TEXT, {"msg_id": "cmd-1", "result": "ok"})
+
+    table_calls = [c.args[0] for c in fake_sb.table.call_args_list]
+    assert "devices" in table_calls          # last_seen 갱신까지 도달
+
+
 def test_handle_ack_missing_msg_id_skipped(fake_sb: MagicMock) -> None:
     _setup_device_lookup(fake_sb)
     handlers.handle_ack(DEVICE_TEXT, {"result": "ok"})

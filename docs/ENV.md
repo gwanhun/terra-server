@@ -90,6 +90,23 @@ ESP32-CAM 모션 영상 저장용. S3 호환 API.
    - Prefix: `clips/`
    - Action: Delete after 30 days
 
+### 앱 푸시 이벤트 (2026-09-15)
+
+예약(`schedule`)·가드(`guard`)로 실행된 명령의 **기기 ACK 가 확정된 시점**에 앱측
+Edge Function 으로 이벤트를 보낸다. 브리지가 `push_outbox` 에 적재하고
+`PushOutboxWorker` 가 5초 주기로 전송한다(지수 백오프 재시도 포함).
+
+| 변수 | 필수 | 설명 |
+|------|:---:|------|
+| `PUSH_EVENT_INGEST_URL` | 기능 사용 시 | 앱 Edge Function 엔드포인트 |
+| `PUSH_EVENT_INGEST_SECRET` | 기능 사용 시 | `Authorization: Bearer` 로 전송. **앱 팀에서 안전 채널로 수령** |
+| `PUSH_EVENT_SOURCES` | X | 알릴 `commands.source` 목록(쉼표). 기본 `schedule,guard` |
+
+- **둘 다 비어 있으면 워커가 시작하지 않는다.** 미설정이 기본이며 아무 것도 안 보낸다.
+- secret 은 **헤더로만** 나간다. `push_outbox.body` 나 로그에 들어가지 않는다.
+- `manual`(사용자 즉시 제어)은 앱 요청대로 기본 제외다.
+- 계약 상세: [BACKEND_HANDOFF_REPLY_PUSH_2026-09-15.md](BACKEND_HANDOFF_REPLY_PUSH_2026-09-15.md)
+
 ## .env 생성 가이드 (Lightsail)
 
 ```bash

@@ -14,8 +14,10 @@ systemd 에서는:
 | `CommandDispatcher` | Supabase commands(pending) → MQTT publish (1초 polling) |
 | `ScheduleRunner`    | Supabase schedules(due) → commands INSERT (30초 polling) |
 | `OfflineMonitor`    | devices.last_seen_at 감시 → offline alert (1분 주기) |
+| `PushOutboxWorker`  | push_outbox(pending) → 앱 Edge Function POST (5초 polling) |
 
-모두 같은 프로세스 안. 셋 다 SIGTERM 에서 graceful shutdown.
+모두 같은 프로세스 안. 전부 SIGTERM 에서 graceful shutdown.
+PushOutboxWorker 는 PUSH_EVENT_INGEST_URL/SECRET 미설정이면 시작하지 않는다.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ import sys
 from backend.mqtt.bridge import MqttBridge
 from backend.mqtt.dispatcher import CommandDispatcher
 from backend.offline_monitor import OfflineMonitor
+from backend.push_events import PushOutboxWorker
 from backend.schedule_runner import ScheduleRunner
 
 
@@ -57,8 +60,10 @@ def run() -> None:
     dispatcher = CommandDispatcher(bridge)
     schedule_runner = ScheduleRunner()
     offline_monitor = OfflineMonitor()
+    push_worker = PushOutboxWorker()
 
     def _shutdown(_signum: int, _frame) -> None:
+        push_worker.stop()
         offline_monitor.stop()
         schedule_runner.stop()
         dispatcher.stop()
@@ -72,6 +77,7 @@ def run() -> None:
     dispatcher.start()
     schedule_runner.start()
     offline_monitor.start()
+    push_worker.start()
     bridge.wait_stopped()
 
 

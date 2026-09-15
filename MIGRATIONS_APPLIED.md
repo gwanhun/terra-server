@@ -19,6 +19,7 @@ Supabase 에 적용한 마이그레이션 기록(SOT). `migrations/*.sql` 을 SQ
 | ✅ | `2026-09-07_telemetry_fan2.sql` | 2026-09-07 | `telemetry.fan2` (냉각팬 상태) |
 | ✅ | `2026-09-08_cameras_rotate_capabilities.sql` | 2026-09-15 | 카메라 `rotate_180` + `capabilities` (앱 핸드오프 rotate180 R4/R5) |
 | ✅ | `2026-09-15_telemetry_30m_valid_counts.sql` | 2026-09-15 | `telemetry_30m` 지표별 유효 표본 수 + 센서 fault 집계 제외 (cron `downsample-telemetry-30m` jobid=1 덮어씀) |
+| ⬜ | `2026-09-15_push_outbox.sql` | — | 앱 푸시 이벤트 전송 대기열 + 정리 cron. **미적용 — SQL Editor 실행 필요** |
 
 ## 규칙
 - 새 마이그레이션은 `migrations/YYYY-MM-DD_설명.sql` 로 추가하고, 적용 후 이 표에 행 추가.
