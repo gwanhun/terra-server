@@ -19,12 +19,13 @@ Supabase mock 만으로 단위 테스트 가능.
 - 카메라 워커: `p4cam-XXXXXXXX` / `picam-XXXXXXXX` → `cameras` 테이블
 
 DB FK 는 각각 `devices.id` / `cameras.id` (UUID). 매 메시지마다 SELECT 하면 DB 왕복 비용 큼.
-→ lru_cache 로 device_id_text → UUID 캐싱 (각 1000 entries).
+→ TTL 캐시로 device_id_text ↔ UUID 캐싱.
 
 `_resolve_entity()` 가 두 테이블을 순차 조회하고 (type, uuid) 튜플로 반환.
 
-캐시 invalidation 은 token_rotate / 디바이스 삭제 시 별도 처리 필요 (Stage C/B).
-지금은 캐시 만료 없음 — 운영 중 디바이스 식별자 변경 안 됨 (페어링 시점에만 결정).
+브리지는 API 서버와 별도 프로세스라 기기 삭제·이름 변경 신호를 받지 못한다. 그래서
+만료 없는 lru_cache 대신 TTL 캐시를 쓴다 (성공 5분 / 미존재 15초). `reset_device_cache()`
+는 같은 프로세스 안에서 즉시 비울 때만 쓴다(테스트).
 """
 
 from __future__ import annotations
@@ -34,7 +35,6 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
-from functools import lru_cache
 from typing import Any
 
 from supabase import Client
@@ -60,64 +60,127 @@ def set_command_publisher(publisher: CommandPublisher | None) -> None:
     _command_publisher = publisher
 
 
-# ---------- device_id → UUID 캐시 ----------
+# ---------- device_id ↔ UUID 캐시 (TTL) ----------
+#
+# lru_cache 를 안 쓰는 이유: 브리지는 API 서버와 **별도 프로세스**라 기기 삭제·이름 변경
+# 신호가 오지 않는다. 만료 없는 캐시면
+#   - 삭제된 기기: 옛 UUID 를 계속 써서 telemetry INSERT 가 FK 위반으로 3초마다 실패
+#   - 이름 변경: 푸시/로그에 옛 이름이 영원히 나감
+# 이 되므로 시간 만료로만 최신값을 따라간다 (_camera_state_cache 와 같은 패턴).
+#
+# 실패(None)는 더 짧게 캐싱한다. 페어링 직후 첫 메시지가 캐시 미스로 None 을 박아두면
+# 그 기기가 만료 전까지 통째로 무시되기 때문.
+
+ENTITY_TTL_SEC = 300.0        # 5분 — 조회 성공
+ENTITY_NEG_TTL_SEC = 15.0     # 15초 — 미존재(미페어링) 결과
+
+_entity_lock = threading.Lock()
+# key → (expires_monotonic, value)
+_entity_cache: dict[tuple[str, str], tuple[float, Any]] = {}
 
 
-@lru_cache(maxsize=1000)
-def _cached_device_uuid(device_id_text: str) -> str | None:
-    """devices.device_id (TEXT) → devices.id (UUID). 미존재면 None.
+def _cache_get(kind: str, key: str) -> tuple[bool, Any]:
+    """(hit, value). 만료됐거나 없으면 (False, None)."""
+    now = time.monotonic()
+    with _entity_lock:
+        hit = _entity_cache.get((kind, key))
+        if hit is not None and hit[0] > now:
+            return (True, hit[1])
+    return (False, None)
 
-    sb 인자를 lru_cache key 에 안 넣기 위해 모듈 함수에서 get_supabase_client() 호출.
-    """
+
+def _cache_put(kind: str, key: str, value: Any) -> None:
+    ttl = ENTITY_TTL_SEC if value is not None else ENTITY_NEG_TTL_SEC
+    with _entity_lock:
+        _entity_cache[(kind, key)] = (time.monotonic() + ttl, value)
+
+
+def _lookup_one(table: str, column: str, where_col: str, where_val: str) -> Any:
+    """단일 컬럼 조회. 실패하면 None 이 아니라 예외를 올려 캐시 오염을 막는다."""
     sb = get_supabase_client()
     res = (
-        sb.table("devices")
-        .select("id")
-        .eq("device_id", device_id_text)
+        sb.table(table)
+        .select(column)
+        .eq(where_col, where_val)
         .limit(1)
         .execute()
     )
     rows = res.data or []
     if not rows:
         return None
-    return rows[0]["id"]
+    return rows[0][column]
 
 
-@lru_cache(maxsize=1000)
+def _cached_device_uuid(device_id_text: str) -> str | None:
+    """devices.device_id (TEXT) → devices.id (UUID). 미존재면 None."""
+    hit, val = _cache_get("device_uuid", device_id_text)
+    if hit:
+        return val
+    try:
+        val = _lookup_one("devices", "id", "device_id", device_id_text)
+    except Exception:  # noqa: BLE001 — DB 장애를 "미페어링" 으로 굳히지 않는다
+        logger.exception("devices 조회 실패 (device_id=%s)", device_id_text)
+        return None
+    _cache_put("device_uuid", device_id_text, val)
+    return val
+
+
 def _cached_device_text(device_uuid: str) -> str | None:
     """devices.id (UUID) → devices.device_id (TEXT). 미존재면 None.
 
     dispatcher 가 commands.device_id (UUID) → MQTT 토픽의 device_id (TEXT) 매핑할 때 사용.
     """
-    sb = get_supabase_client()
-    res = (
-        sb.table("devices")
-        .select("device_id")
-        .eq("id", device_uuid)
-        .limit(1)
-        .execute()
-    )
-    rows = res.data or []
-    if not rows:
+    hit, val = _cache_get("device_text", device_uuid)
+    if hit:
+        return val
+    try:
+        val = _lookup_one("devices", "device_id", "id", device_uuid)
+    except Exception:  # noqa: BLE001
+        logger.exception("devices 조회 실패 (uuid=%s)", device_uuid)
         return None
-    return rows[0]["device_id"]
+    _cache_put("device_text", device_uuid, val)
+    return val
 
 
-@lru_cache(maxsize=1000)
 def _cached_camera_uuid(camera_id_text: str) -> str | None:
     """cameras.camera_id (TEXT, "p4cam-..." 등) → cameras.id (UUID). 미존재면 None."""
-    sb = get_supabase_client()
-    res = (
-        sb.table("cameras")
-        .select("id")
-        .eq("camera_id", camera_id_text)
-        .limit(1)
-        .execute()
-    )
-    rows = res.data or []
-    if not rows:
+    hit, val = _cache_get("camera_uuid", camera_id_text)
+    if hit:
+        return val
+    try:
+        val = _lookup_one("cameras", "id", "camera_id", camera_id_text)
+    except Exception:  # noqa: BLE001
+        logger.exception("cameras 조회 실패 (camera_id=%s)", camera_id_text)
         return None
-    return rows[0]["id"]
+    _cache_put("camera_uuid", camera_id_text, val)
+    return val
+
+
+def device_meta(device_uuid: str) -> dict[str, Any] | None:
+    """devices 행의 알림용 메타 (owner_id / name / enclosure_id). 미존재·실패면 None.
+
+    푸시 이벤트가 device_name·enclosure_id 를 싣는데 commands 행에는 없어서 필요하다.
+    TTL 캐시라 이름을 바꾸면 최대 ENTITY_TTL_SEC 만큼 옛 이름이 나갈 수 있다.
+    """
+    hit, val = _cache_get("device_meta", device_uuid)
+    if hit:
+        return val
+    sb = get_supabase_client()
+    try:
+        res = (
+            sb.table("devices")
+            .select("owner_id, name, enclosure_id")
+            .eq("id", device_uuid)
+            .limit(1)
+            .execute()
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("devices 메타 조회 실패 (uuid=%s)", device_uuid)
+        return None
+    rows = res.data or []
+    val = rows[0] if rows else None
+    _cache_put("device_meta", device_uuid, val)
+    return val
 
 
 def _resolve_entity(device_id_text: str) -> tuple[str | None, str | None]:
@@ -137,9 +200,8 @@ def _resolve_entity(device_id_text: str) -> tuple[str | None, str | None]:
 
 def reset_device_cache() -> None:
     """테스트/디바이스 삭제 시 호출. devices/cameras 양쪽 캐시 모두 비움."""
-    _cached_device_uuid.cache_clear()
-    _cached_device_text.cache_clear()
-    _cached_camera_uuid.cache_clear()
+    with _entity_lock:
+        _entity_cache.clear()
     with _camera_state_lock:
         _camera_state_cache.clear()
         _rotation_resend_at.clear()

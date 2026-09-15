@@ -82,6 +82,75 @@ def test_device_cache_miss_returns_none(fake_sb: MagicMock) -> None:
     assert handlers._cached_device_uuid("unknown-xyz") is None
 
 
+def test_device_cache_expires_after_ttl(
+    fake_sb: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TTL 지나면 다시 조회한다 — 브리지가 삭제된 기기의 옛 UUID 를 영원히 쓰던 문제."""
+    _setup_device_lookup(fake_sb)
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(handlers.time, "monotonic", lambda: clock["t"])
+
+    assert handlers._cached_device_uuid(DEVICE_TEXT) == DEVICE_UUID
+    assert fake_sb.table.call_count == 1
+
+    clock["t"] += handlers.ENTITY_TTL_SEC - 1       # 아직 유효
+    assert handlers._cached_device_uuid(DEVICE_TEXT) == DEVICE_UUID
+    assert fake_sb.table.call_count == 1
+
+    clock["t"] += 2                                  # 만료
+    assert handlers._cached_device_uuid(DEVICE_TEXT) == DEVICE_UUID
+    assert fake_sb.table.call_count == 2
+
+
+def test_device_cache_negative_uses_short_ttl(
+    fake_sb: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """미페어링(None)은 짧게만 캐싱 — 페어링 직후 기기가 오래 무시되면 안 된다."""
+    _setup_device_lookup(fake_sb, uuid=None)
+    clock = {"t": 500.0}
+    monkeypatch.setattr(handlers.time, "monotonic", lambda: clock["t"])
+
+    assert handlers._cached_device_uuid("terra-new") is None
+    assert fake_sb.table.call_count == 1
+
+    clock["t"] += handlers.ENTITY_NEG_TTL_SEC + 1
+    _setup_device_lookup(fake_sb)                    # 그 사이 페어링됨
+    assert handlers._cached_device_uuid("terra-new") == DEVICE_UUID
+
+
+def test_device_lookup_failure_not_cached(
+    fake_sb: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """DB 장애를 '미페어링' 으로 굳히면 안 된다 — 복구 후 바로 다시 조회돼야."""
+    fake_sb.table.side_effect = RuntimeError("supabase down")
+    assert handlers._cached_device_uuid(DEVICE_TEXT) is None
+
+    fake_sb.table.side_effect = None
+    _setup_device_lookup(fake_sb)
+    assert handlers._cached_device_uuid(DEVICE_TEXT) == DEVICE_UUID
+
+
+def test_device_meta_returns_owner_name_enclosure(fake_sb: MagicMock) -> None:
+    """푸시 이벤트가 쓰는 메타 조회 (commands 행에 없는 device_name/enclosure_id)."""
+    meta = {"owner_id": "owner-1", "name": "거실 사육장", "enclosure_id": "enc-1"}
+    chain = (
+        fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value
+    )
+    chain.execute.return_value.data = [meta]
+
+    assert handlers.device_meta(DEVICE_UUID) == meta
+    assert handlers.device_meta(DEVICE_UUID) == meta   # 두 번째는 캐시
+    assert fake_sb.table.call_count == 1
+
+
+def test_device_meta_missing_returns_none(fake_sb: MagicMock) -> None:
+    chain = (
+        fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value
+    )
+    chain.execute.return_value.data = []
+    assert handlers.device_meta("gone-uuid") is None
+
+
 # ---------- handle_telemetry ----------
 
 
