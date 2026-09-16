@@ -40,7 +40,8 @@ Content-Type: application/json
 | `GET` | `/devices` | JWT | 본인 디바이스 목록 |
 | `GET` | `/devices/{id}` | JWT | 디바이스 단건 조회 |
 | `PATCH` | `/devices/{id}` | JWT | 디바이스 이름/종 수정 |
-| `DELETE` | `/devices/{id}` | JWT | 디바이스 삭제 |
+| `POST` | `/devices/{id}/unlink` | JWT | **디바이스 등록 해제 (소프트, 기록 보존)** — 앱의 "삭제" 는 이것 |
+| `DELETE` | `/devices/{id}` | JWT | 디바이스 hard delete (운영·탈퇴용, 앱 미사용) |
 | `POST` | `/enclosures` | JWT | 사육장 생성 |
 | `GET` | `/enclosures` | JWT | 본인 사육장 목록 |
 | `GET` | `/enclosures/{id}` | JWT | 사육장 단건 |
@@ -50,7 +51,8 @@ Content-Type: application/json
 | `GET` | `/cameras` | JWT | 본인 카메라 목록 |
 | `GET` | `/cameras/{id}` | JWT | 카메라 단건 |
 | `PATCH` | `/cameras/{id}` | JWT | 카메라 수정 (name/resolution/fps/clip_sec/enclosure_id/**rotate_180**) |
-| `DELETE` | `/cameras/{id}` | JWT | 카메라 삭제 |
+| `POST` | `/cameras/{id}/unlink` | JWT | **카메라 등록 해제 (소프트, 클립·R2 보존)** |
+| `DELETE` | `/cameras/{id}` | JWT | 카메라 hard delete (운영·탈퇴용, 앱 미사용) |
 | `POST` | `/cameras/{id}/clips/upload-url` | **Camera Token** | R2 presigned PUT URL 발급 |
 | `POST` | `/cameras/{id}/clips` | **Camera Token** | 업로드 완료 후 모션 클립 메타 등록 |
 | `GET` | `/enclosures/{id}/clips` | JWT | 사육장의 모션 클립 목록 (cursor pagination) |
@@ -199,15 +201,46 @@ Authorization: Bearer <jwt>
 
 ---
 
-### 3.6 `DELETE /devices/{device_uuid}`
+### 3.6 `POST /devices/{device_uuid}/unlink` — 등록 해제 (소프트) (2026-09-16)
 
-디바이스 삭제. **hard delete 이며 cascade 범위가 넓습니다.**
+앱의 **"기기 삭제" 버튼은 이 엔드포인트**를 씁니다. 행을 지우지 않고 `unlinked_at` 만 찍습니다.
 
-cascade 동반 삭제: `device_settings`, `telemetry`, `telemetry_1m`, **`telemetry_30m`**(장기 통계), `commands`, `alerts`, **`schedules`**.
+```http
+POST /devices/{uuid}/unlink
+Authorization: Bearer <JWT>
+Content-Type: application/json
 
-> ⚠️ 이 엔드포인트는 "등록 해제"가 아니라 **과거 기록 전체 삭제**입니다. 앱의 기기 관리 화면에서
-> 기록 보존이 필요한 해제 동작으로 쓰면 안 됩니다 (소프트 해제는 미구현 —
-> [BACKEND_HANDOFF_REPLY_REDESIGN_2026-09-15.md](BACKEND_HANDOFF_REPLY_REDESIGN_2026-09-15.md) §2).
+{ "request_id": "<앱 생성 UUID>" }
+```
+
+**응답** (200)
+```json
+{ "id": "<uuid>", "unlinked_at": "2026-09-16T03:00:00+00:00" }
+```
+
+| 상황 | 응답 |
+|---|---|
+| 정상 | 200 |
+| 같은 `request_id` 재시도 | 200, 최초 응답 그대로 (멱등) |
+| 이미 해제된 기기 + 다른 `request_id` | 200, 기존 `unlinked_at` 그대로 (재해제 무해) |
+| 미존재·타인 소유 | 404 |
+| `request_id` 가 UUID 아님 | 422 |
+
+서버가 하는 일: `unlinked_at = now()`, `enclosure_id = NULL`, 해당 기기 `schedules.enabled = false`,
+Mosquitto 계정 회수. **보존**: 행, `telemetry*`, `commands`, `alerts`, `schedules`(비활성), `motion_clips`, R2.
+
+해제 후: `GET /devices` 목록에서 제외, `GET`/`PATCH /devices/{id}` 와 settings·lcd·mist·schedules 는 **404**.
+앱의 Supabase 직결 SELECT 는 `unlinked_at` 을 보고 앱이 거릅니다 (RLS 변경 없음).
+카메라도 동일 (`POST /cameras/{uuid}/unlink`).
+
+구현: `backend/unlink_service.py`. 계약 원문: [APP_DELIVERY_2026-09-16.md](APP_DELIVERY_2026-09-16.md) §1.3.
+
+---
+
+### 3.6-b `DELETE /devices/{device_uuid}` — hard delete (운영·탈퇴용)
+
+**앱은 호출하지 않습니다.** cascade 동반 삭제: `device_settings`, `telemetry`, `telemetry_1m`,
+**`telemetry_30m`**(장기 통계), `commands`, `alerts`, **`schedules`**.
 
 **응답** (204 No Content)
 

@@ -77,6 +77,7 @@
 
 - `rotate_180` (2026-09-08+): 카메라의 현재 NVS 값. 서버가 `cameras.rotate_180`(진실)과 비교해
   다르면 `set_rotation` 재발행. 구 펌웨어는 키 없음 → 동기화 비활성.
+- `clips` (2026-09-16+): 클립 파이프라인 카운터(부팅 후 누적). `rec` 녹화 완료, `skip` 슬롯 없음 스킵(PSRAM 폴백 업로드 중), `skip_lock` H.264 락 핸드오버 실패, `up_ok`/`up_fail` 즉시 업로드, `sd_ok`/`sd_fail` SD 재업로드, `sd_backlog` SD 대기 건수, `last_rec_s` 마지막 녹화 후 초(-1 없음), `up_busy_s` 진행 중 업로드 초(-1 없음). 서버는 `cameras.clip_stats` 에 저장하고 스킵·실패 증가 / 업로드 300초 이상 진행 시 경고 로그.
 - `capabilities` (2026-09-08+): 펌웨어 능력 플래그. 서버가 `cameras.capabilities` 에 저장
   (값이 같으면 UPDATE 생략 — 앱이 cameras Realtime 구독 중). MQTT 연결 직후 1회만 실어도 되고
   매번 실어도 된다. 앱은 `capabilities.rotate_180 == true` 일 때만 회전 토글을 노출.
@@ -99,7 +100,9 @@
   - `fan_on` / `fan_off` / `fan_toggle` — 팬 (`*_on` 은 `duration_ms` 옵션: one-shot 자동 OFF, 최대 2h)
   - `fan2_on` / `fan2_off` / `fan2_toggle` — 냉각팬 (동작은 fan 과 동일)
   - `heater_on` / `heater_off` / `heater_toggle` / `heater_clear_lock`
-    — ⛔ **현재 펌웨어 미구현**(핸들 NULL) → 항상 `unknown_action`. 향후 하드웨어용으로 목록만 유지
+    — ⛔ **펌웨어 미구현**(핸들 NULL). 2026-09-16 부터 **서버가 발행 전에 거절**한다:
+      예약은 `POST /schedules` 400, 즉시 명령은 dispatcher 가 `rejected` / `result=unsupported_action`.
+      히터 보드가 생기면 `capabilities.heater` 플래그로 다시 연다
   - `led_on` (payload `brightness` 0~100 옵션, MOSFET 조광) / `led_off` / `led_toggle`
     — ⚠️ **`duration_ms` 미지원.** 보내면 **무시하고 켠 뒤 `ok` 응답**(자동 OFF 없음, 실패 감지 불가)
     — ⚠️ `brightness: 0` 은 `led_on` 이어도 실제로 꺼지고 `state: "OFF"` 응답
@@ -233,5 +236,7 @@ topic read  esp32/picam-b2c3d4e5/command
 | 2026-05-27 | 0.4.0 | 메인 카메라 워커 ESP32-P4 로 변경, Stage G(라이브 스트리밍) action 추가 |
 | 2026-09-07 | 0.4.1 | telemetry `fan2`(냉각팬) 추가, IoT action 목록 현행화 (`fan2_*`, on/off 계열, mist/lcd) |
 | 2026-09-08 | 0.5.0 | 카메라 `set_rotation` action, 카메라 telemetry `rotate_180`/`capabilities` (앱 핸드오프 rotate180) |
+| 2026-09-16 | 0.6.0 | 카메라 telemetry `clips` 카운터 → `cameras.clip_stats` (조용한 정지 감시) |
 | 2026-09-08 | 0.5.1 | **ACL 버그 수정**: 카메라 계정에 `telemetry` 쓰기 권한 추가 (누락으로 카메라 heartbeat 가 브로커에서 버려지던 문제). 기존 카메라는 `scripts/regen_acl.py` 로 재생성 |
 | 2026-09-16 | 0.5.2 | 펌웨어 실측 반영: `led_on` 의 `duration_ms` 미지원·`heater_*` 미구현 명시, payload 예약 키 보호 |
+| 2026-09-16 | 0.5.3 | `heater_*` 서버 거절(400 / `unsupported_action`), 소프트 해제된 기기의 메시지는 브리지가 미페어링 취급 |
