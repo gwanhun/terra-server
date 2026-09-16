@@ -54,7 +54,10 @@ CREATE OR REPLACE FUNCTION public.redesign_touch_assignments()
 RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public AS $$
 DECLARE owner uuid;
 BEGIN
-  owner := CASE TG_TABLE_NAME WHEN 'pets' THEN NEW.user_id ELSE NEW.owner_id END;
+  -- NEW.user_id / NEW.owner_id 를 한 식에 같이 쓰면 안 된다 — PL/pgSQL 은 식을 실행하기 전에
+  -- 참조된 레코드 필드를 전부 파라미터로 바인딩하므로, cameras 행(user_id 없음)에서는
+  -- CASE 분기와 무관하게 `record "new" has no field "user_id"` 로 죽는다 (앱 팀 격리 검증에서 발견).
+  owner := (to_jsonb(NEW) ->> CASE TG_TABLE_NAME WHEN 'pets' THEN 'user_id' ELSE 'owner_id' END)::uuid;
   IF owner IS NOT NULL THEN
     PERFORM public.redesign_reconcile_assignments(owner, clock_timestamp());
   END IF;
@@ -173,3 +176,40 @@ terra-server 의 `DELETE /cameras/{id}` (운영·탈퇴용 hard delete)가 이�
 3. **B4**: `unlinked_at` 필터 반영본 브랜치 push
 4. **§1 트리거** 를 번들에 포함하는 데 이견 없으신지
 5. 운영 적용 주체·순서(§5) 동의 여부
+
+
+---
+
+## 추가 (2026-09-16 저녁) — 앱 회신 `reply-3-sql-drafts` 반영
+
+### 트리거 버그 — 확인, 수정안 채택
+
+지적하신 대로입니다. 제가 드린 한 줄이 틀렸습니다.
+
+```
+ERROR:  record "new" has no field "user_id"
+```
+
+PL/pgSQL 은 식(expression)을 SQL 로 넘기기 전에 **식에 등장하는 레코드 필드를 전부 파라미터로 먼저 평가**합니다. 그래서 `CASE … THEN NEW.user_id ELSE NEW.owner_id END` 는 어느 분기를 타든 `NEW.user_id` 와 `NEW.owner_id` 를 둘 다 읽고, `cameras` 행에서는 `user_id` 가 없어 실패합니다. 보내주신 수정안이 맞습니다.
+
+```sql
+owner := (to_jsonb(NEW) ->> CASE TG_TABLE_NAME WHEN 'pets' THEN 'user_id' ELSE 'owner_id' END)::uuid;
+```
+
+같은 효과를 내는 다른 형태로 `IF TG_TABLE_NAME = 'pets' THEN owner := NEW.user_id; ELSE owner := NEW.owner_id; END IF;` 도 있습니다(문장이 분리돼 실행되는 분기의 필드만 평가). 어느 쪽이든 동작은 같으니 **이미 검증 통과한 `to_jsonb` 판 그대로** 가시죠. 위 §1 스니펫도 그렇게 고쳤습니다.
+
+### 답 5건 — 전부 확인
+
+| # | 항목 | 반영 |
+|:---:|---|---|
+| 1 | B2 `camera_id` FK `ON DELETE CASCADE` | ✅ 서버 변경 없음. hard delete 가 이력까지 지우는 게 의미상 맞습니다 |
+| 2 | B3 새 테이블 3개 + 기존 `pets.user_id` CASCADE | ✅ 탈퇴 경로 막힘 해소 |
+| 3 | B4 `unlinked_at` 필터 (`owned_member_group` · `rename_item`) | ✅ |
+| 4 | §1 트리거 번들 포함 (`20260916_relationship_triggers.sql`) | ✅ + 버그 수정 |
+| 5 | 적용 주체·순서 | ✅ 앱 팀 번들 확정 → 저희가 SQL Editor 순서 적용 → `MIGRATIONS_APPLIED.md` 기록 |
+
+N1·N3·N4·N5 동의, N2 스텁 제거 — 확인했습니다. B5 스냅샷 갱신과 신규 assertion(해제 카메라 `42501`, RPC 없이 UPDATE 만으로 이력 열림/닫힘, 해제·툼스톤으로 종료)도 정확히 원하던 검증입니다.
+
+### 다음
+
+**반영본 번들(7개 파일 + assertion 3개)이 브랜치에 올라오면** 그 커밋 기준으로 다시 읽고, `BEGIN … ROLLBACK` 을 벗겨 §5 순서대로 운영에 적용한 뒤, 함수명·오류코드가 초안과 같은지 한 줄로 회신하겠습니다. 브랜치 push 알려주세요.
