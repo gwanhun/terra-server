@@ -123,7 +123,7 @@ def test_payload_cannot_override_reserved_keys(
         "led_on",
         {
             "brightness": 60,
-            "action": "heater_on",       # 공격/버그: 다른 명령으로 바꿔치기
+            "action": "relay_on",        # 공격/버그: 다른 명령으로 바꿔치기
             "msg_id": "forged",
             "ttl_sec": 99999,
             "issued_at": 0,
@@ -148,7 +148,7 @@ def test_pending_command_publishes_and_updates_sent(
     cmd = {
         "id": "cmd-1",
         "device_id": DEVICE_UUID,
-        "action": "heater_toggle",
+        "action": "fan_toggle",
         "payload": None,
         "issued_at": _now_iso(),
         "ttl_sec": 30,
@@ -185,7 +185,7 @@ def test_pending_command_publishes_and_updates_sent(
     assert pub_args.args[0] == DEVICE_TEXT  # device text
     payload = pub_args.args[1]
     assert payload["msg_id"] == "cmd-1"
-    assert payload["action"] == "heater_toggle"
+    assert payload["action"] == "fan_toggle"
     assert payload["ttl_sec"] == 30
     assert "issued_at" in payload
 
@@ -479,3 +479,32 @@ def test_sweep_query_failure_returns_zero(monkeypatch: pytest.MonkeyPatch) -> No
     sb.table.side_effect = RuntimeError("db down")
     monkeypatch.setattr(dispatcher, "get_supabase_client", lambda: sb)
     assert dispatcher.sweep_unacked() == 0
+
+
+def test_unsupported_action_rejected_before_publish(
+    fake_sb: MagicMock, fake_bridge: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """히터는 펌웨어 미구현 → 발행하지 않고 rejected/unsupported_action (앱 요청 2026-09-16 §3)."""
+    cmd = {
+        "id": "cmd-1", "device_id": DEVICE_UUID, "action": "heater_on", "payload": None,
+        "issued_at": _now_iso(), "ttl_sec": 30, "issued_by": "o", "source": "manual", "source_id": None,
+    }
+    updates: list[dict] = []
+
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        if name == "commands":
+            t.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = [cmd]
+            def _cap(patch: dict) -> MagicMock:
+                updates.append(patch)
+                c = MagicMock(); c.eq.return_value.execute.return_value.data = [{"id": "cmd-1"}]
+                return c
+            t.update.side_effect = _cap
+        return t
+
+    fake_sb.table.side_effect = _table
+    monkeypatch.setattr(dispatcher, "_enqueue_failure", lambda *a: None)
+
+    assert dispatcher.poll_and_dispatch(fake_bridge) == 1
+    fake_bridge.publish_command.assert_not_called()
+    assert {"status": "rejected", "result": "unsupported_action"} in updates

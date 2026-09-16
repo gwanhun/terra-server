@@ -116,9 +116,10 @@ def test_create_mist_bad_duration_400(app_client: TestClient, fake_sb: MagicMock
 
 
 def test_create_onoff_actions_allowed(app_client: TestClient, fake_sb: MagicMock) -> None:
-    """요청 1: heater_on/off, fan_on/off(냉각팬 fan2 포함), relay_on/off 가 예약 허용 액션이어야."""
-    for action in ("heater_on", "heater_off", "fan_on", "fan_off",
-                   "fan2_on", "fan2_off", "relay_on", "relay_off"):
+    """요청 1: fan_on/off(냉각팬 fan2 포함), relay_on/off, led_on/off 가 예약 허용 액션이어야.
+    heater_on/off 는 2026-09-16 앱 요청으로 제외 (아래 test_create_heater_rejected_400)."""
+    for action in ("fan_on", "fan_off", "fan2_on", "fan2_off",
+                   "relay_on", "relay_off", "led_on", "led_off"):
         dev = _device_mock()
         sch = MagicMock()
         sch.insert.return_value.execute.return_value.data = [_schedule_row(action=action)]
@@ -308,7 +309,7 @@ def test_create_off_with_guard_400(app_client: TestClient, fake_sb: MagicMock) -
 
     res = app_client.post(
         f"/devices/{DEVICE_UUID}/schedules",
-        json={"action": "heater_off", "kind": "daily", "time_of_day": "08:00",
+        json={"action": "fan_off", "kind": "daily", "time_of_day": "08:00",
               "guard": {"type": "skip_when_temp_above", "value": 35}},
     )
     assert res.status_code == 400, res.text
@@ -321,13 +322,13 @@ def test_create_on_with_guard_ok(app_client: TestClient, fake_sb: MagicMock) -> 
     sch = MagicMock()
     guard = {"type": "skip_when_temp_above", "value": 35}
     sch.insert.return_value.execute.return_value.data = [
-        _schedule_row(action="heater_on", guard=guard)
+        _schedule_row(action="fan_on", guard=guard)
     ]
     fake_sb.table.side_effect = lambda name: {"devices": dev, "schedules": sch}[name]
 
     res = app_client.post(
         f"/devices/{DEVICE_UUID}/schedules",
-        json={"action": "heater_on", "kind": "daily", "time_of_day": "08:00", "guard": guard},
+        json={"action": "fan_on", "kind": "daily", "time_of_day": "08:00", "guard": guard},
     )
     assert res.status_code == 201, res.text
 
@@ -370,13 +371,13 @@ def test_create_with_pair_id_stored(app_client: TestClient, fake_sb: MagicMock) 
     dev = _device_mock()
     sch = MagicMock()
     sch.insert.return_value.execute.return_value.data = [
-        _schedule_row(action="heater_on", pair_id="pair-1")
+        _schedule_row(action="fan_on", pair_id="pair-1")
     ]
     fake_sb.table.side_effect = lambda name: {"devices": dev, "schedules": sch}[name]
 
     res = app_client.post(
         f"/devices/{DEVICE_UUID}/schedules",
-        json={"action": "heater_on", "kind": "daily", "time_of_day": "20:00",
+        json={"action": "fan_on", "kind": "daily", "time_of_day": "20:00",
               "pair_id": "pair-1"},
     )
     assert res.status_code == 201, res.text
@@ -424,3 +425,17 @@ def test_delete_missing_404(app_client: TestClient, fake_sb: MagicMock) -> None:
 
     res = app_client.delete("/schedules/nope")
     assert res.status_code == 404, res.text
+
+
+def test_create_heater_rejected_400(app_client: TestClient, fake_sb: MagicMock) -> None:
+    """앱 요청 2026-09-16 §3: 히터는 두 보드 모두 펌웨어 미구현(항상 unknown_action) → 서버 400."""
+    for action in ("heater_on", "heater_off"):
+        dev = _device_mock()
+        sch = MagicMock()
+        fake_sb.table.side_effect = lambda name: {"devices": dev, "schedules": sch}[name]
+        res = app_client.post(
+            f"/devices/{DEVICE_UUID}/schedules",
+            json={"action": action, "kind": "daily", "time_of_day": "20:00"},
+        )
+        assert res.status_code == 400, f"{action}: {res.text}"
+        sch.insert.assert_not_called()

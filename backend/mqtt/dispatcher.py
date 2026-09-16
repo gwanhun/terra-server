@@ -51,6 +51,13 @@ NO_ACK_THRESHOLD_SEC = 30.0
 # 무응답 스윕 주기 — 1초 폴링마다 돌릴 필요는 없다.
 NO_ACK_SWEEP_INTERVAL_SEC = 10.0
 
+# 펌웨어가 구현하지 않은 action — 발행해도 unknown_action 만 돌아온다. 발행 전에 거절해
+# 앱이 즉시 결과를 보게 한다 (앱 요청 2026-09-16 §3). 히터 보드가 생기면 capabilities
+# 플래그로 다시 연다. schedules 화이트리스트에서도 제외돼 있다.
+UNSUPPORTED_ACTIONS: frozenset[str] = frozenset({
+    "heater_on", "heater_off", "heater_toggle", "heater_clear_lock",
+})
+
 # MQTT 명령 프로토콜이 쓰는 필드 — payload 로 덮어쓸 수 없다 (docs/MQTT.md §2).
 _RESERVED_PAYLOAD_KEYS: frozenset[str] = frozenset({
     "msg_id", "issued_at", "ttl_sec", "action",
@@ -177,6 +184,15 @@ def _dispatch_one(bridge: "MqttBridge", row: dict[str, Any]) -> None:
         _enqueue_failure(row, device_uuid, "expired")
         return
 
+    # 1.5) 펌웨어 미구현 action — 발행 전 거절
+    if action in UNSUPPORTED_ACTIONS:
+        sb.table("commands").update(
+            {"status": "rejected", "result": "unsupported_action"}
+        ).eq("id", cmd_id).execute()
+        logger.warning("command %s: 미지원 action %s → rejected", cmd_id, action)
+        _enqueue_failure(row, device_uuid, "unsupported_action")
+        return
+
     # 2) device UUID → device_id (TEXT) 캐시 해상
     device_text = handlers._cached_device_text(device_uuid)
     if not device_text:
@@ -275,6 +291,7 @@ __all__ = [
     "DEFAULT_INTERVAL_SEC",
     "DEFAULT_TTL_SEC",
     "NO_ACK_THRESHOLD_SEC",
+    "UNSUPPORTED_ACTIONS",
     "poll_and_dispatch",
     "sweep_unacked",
 ]
