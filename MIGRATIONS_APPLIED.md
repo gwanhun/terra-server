@@ -23,6 +23,12 @@ Supabase 에 적용한 마이그레이션 기록(SOT). `migrations/*.sql` 을 SQ
 | ✅ | `2026-09-16_enclosures_name_unique.sql` | 2026-09-16 | 그룹 이름 중복 금지 UNIQUE 인덱스 (앱 §1-1: btrim, 대소문자 구분). 생성 성공 = 기존 중복 없음 |
 | ✅ | `2026-09-16_soft_unlink.sql` | 2026-09-16 | devices/cameras `unlinked_at` + `unlink_request_id` + 활성 부분 인덱스 (소프트 해제, 앱 §1) |
 | ✅ | `2026-09-16_cameras_clip_stats.sql` | 2026-09-16 | `cameras.clip_stats` JSONB + `clip_stats_at` (펌웨어 텔레메트리 `clips` 카운터) |
+| ⬜ | `2026-09-16_app_redesign_01_assignment_history.sql` | — | 앱 재설계 번들 (tera-ai-flutter@bb430fa). pets.deleted_at · pet_camera_assignments 이력 테이블 · reconcile 헬퍼 · pets_user_id_fkey CASCADE 교체. **순서대로 적용** |
+| ⬜ | `2026-09-16_app_redesign_02_redesign_groups.sql` | — | 앱 재설계 번들 (tera-ai-flutter@bb430fa). 그룹 RPC(save/remove/rename) · 이름 검증 · 멱등 요청·카운터 테이블 · enclosures.group_number. **순서대로 적용** |
+| ⬜ | `2026-09-16_app_redesign_03_relationship_triggers.sql` | — | 앱 재설계 번들 (tera-ai-flutter@bb430fa). cameras/pets AFTER UPDATE 트리거 → reconcile (서버·웹·REST 경로 이력 커버). **순서대로 적용** |
+| ⬜ | `2026-09-16_app_redesign_04_redesign_pets.sql` | — | 앱 재설계 번들 (tera-ai-flutter@bb430fa). 개체 저장/툼스톤 RPC · 활성 개체 RESTRICTIVE SELECT 정책. **순서대로 적용** |
+| ⬜ | `2026-09-16_app_redesign_05_redesign_delete_group.sql` | — | 앱 재설계 번들 (tera-ai-flutter@bb430fa). 그룹 원자 삭제 RPC (구성원·영상·이력 보존). **순서대로 적용** |
+| ⬜ | `2026-09-16_app_redesign_06_clip_visibility.sql` | — | 앱 재설계 번들 (tera-ai-flutter@bb430fa). user_hidden_clips (앱 전용 영상 숨김). **순서대로 적용** |
 
 ## 규칙
 - 새 마이그레이션은 `migrations/YYYY-MM-DD_설명.sql` 로 추가하고, 적용 후 이 표에 행 추가.
