@@ -131,6 +131,79 @@ def test_create_onoff_actions_allowed(app_client: TestClient, fake_sb: MagicMock
         assert res.status_code == 201, f"{action}: {res.text}"
 
 
+def test_schedule_payload_brightness_stored(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """앱 2026-09-16 §2: LED 예약의 payload.brightness 가 그대로 저장돼야 한다."""
+    dev = _device_mock()
+    sch = MagicMock()
+    sch.insert.return_value.execute.return_value.data = [
+        _schedule_row(action="led_on", payload={"brightness": 70})
+    ]
+    fake_sb.table.side_effect = lambda name: {"devices": dev, "schedules": sch}[name]
+
+    res = app_client.post(
+        f"/devices/{DEVICE_UUID}/schedules",
+        json={
+            "action": "led_on",
+            "kind": "daily",
+            "time_of_day": "20:00",
+            "payload": {"brightness": 70},
+        },
+    )
+    assert res.status_code == 201, res.text
+    assert sch.insert.call_args.args[0]["payload"] == {"brightness": 70}
+    assert res.json()["payload"] == {"brightness": 70}      # GET/응답으로 되돌아옴
+
+
+def test_schedule_payload_duration_ms_stored_for_fan(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """앱 2026-09-16 §3: 냉각팬 예약의 payload.duration_ms 가 그대로 저장돼야 한다."""
+    dev = _device_mock()
+    sch = MagicMock()
+    sch.insert.return_value.execute.return_value.data = [
+        _schedule_row(action="fan2_on", payload={"duration_ms": 1_800_000})
+    ]
+    fake_sb.table.side_effect = lambda name: {"devices": dev, "schedules": sch}[name]
+
+    res = app_client.post(
+        f"/devices/{DEVICE_UUID}/schedules",
+        json={
+            "action": "fan2_on",
+            "kind": "weekly",
+            "time_of_day": "12:00",
+            "days_of_week": [6, 7],
+            "payload": {"duration_ms": 1_800_000},
+        },
+    )
+    assert res.status_code == 201, res.text
+    assert sch.insert.call_args.args[0]["payload"] == {"duration_ms": 1_800_000}
+
+
+def test_schedule_payload_not_validated_for_non_mist(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """mist 외 action 의 payload 는 서버가 검증하지 않고 통과시킨다(펌웨어 소관)."""
+    dev = _device_mock()
+    sch = MagicMock()
+    sch.insert.return_value.execute.return_value.data = [
+        _schedule_row(action="led_on", payload={"brightness": 999, "duration_ms": 1})
+    ]
+    fake_sb.table.side_effect = lambda name: {"devices": dev, "schedules": sch}[name]
+
+    res = app_client.post(
+        f"/devices/{DEVICE_UUID}/schedules",
+        json={
+            "action": "led_on",
+            "kind": "daily",
+            "time_of_day": "20:00",
+            "payload": {"brightness": 999, "duration_ms": 1},
+        },
+    )
+    assert res.status_code == 201, res.text
+
+
 def test_create_disallowed_action_400(app_client: TestClient, fake_sb: MagicMock) -> None:
     dev = _device_mock()
     sch = MagicMock()

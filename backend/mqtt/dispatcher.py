@@ -43,6 +43,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# MQTT 명령 프로토콜이 쓰는 필드 — payload 로 덮어쓸 수 없다 (docs/MQTT.md §2).
+_RESERVED_PAYLOAD_KEYS: frozenset[str] = frozenset({
+    "msg_id", "issued_at", "ttl_sec", "action",
+})
+
 DEFAULT_INTERVAL_SEC = 1.0
 DEFAULT_BATCH = 50
 DEFAULT_TTL_SEC = 10  # commands.ttl_sec 가 NULL/0 일 때 fallback
@@ -116,7 +121,17 @@ def _dispatch_one(bridge: "MqttBridge", row: dict[str, Any]) -> None:
     }
     extra = row.get("payload") or {}
     if isinstance(extra, dict):
-        publish_payload.update(extra)
+        # commands.payload 는 앱이 직접 INSERT 하는 값이라(RLS 허용) 예약어를 덮어쓸 수
+        # 있었다. 예: led_on 예약의 payload 에 {"action": "heater_on"} 이 있으면 엉뚱한
+        # 명령이 나간다. 프로토콜 필드는 서버가 정한 값만 쓰고, 나머지 인자
+        # (brightness / duration_ms / new_token …)만 병합한다.
+        safe = {k: v for k, v in extra.items() if k not in _RESERVED_PAYLOAD_KEYS}
+        dropped = set(extra) - set(safe)
+        if dropped:
+            logger.warning(
+                "command %s payload 의 예약 키 무시: %s", cmd_id, sorted(dropped)
+            )
+        publish_payload.update(safe)
 
     # 4) MQTT publish
     success = bridge.publish_command(device_text, publish_payload)

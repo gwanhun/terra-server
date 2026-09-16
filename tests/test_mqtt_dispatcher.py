@@ -72,6 +72,76 @@ def test_no_pending_commands(fake_sb: MagicMock, fake_bridge: MagicMock) -> None
 # ---------- 정상 흐름 ----------
 
 
+def _dispatch_with_payload(
+    fake_sb: MagicMock, fake_bridge: MagicMock, action: str, payload: dict | None
+) -> dict:
+    """payload 를 실은 pending 명령 1건을 발행하고 publish 된 MQTT payload 를 돌려준다."""
+    cmd = {
+        "id": "cmd-1",
+        "device_id": DEVICE_UUID,
+        "action": action,
+        "payload": payload,
+        "issued_at": _now_iso(),
+        "ttl_sec": 30,
+    }
+
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        if name == "commands":
+            t.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = [cmd]
+            chain = MagicMock()
+            chain.eq.return_value.execute.return_value.data = [{"id": "cmd-1"}]
+            t.update.return_value = chain
+        elif name == "devices":
+            t.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+                {"device_id": DEVICE_TEXT}
+            ]
+        return t
+
+    fake_sb.table.side_effect = _table
+    assert dispatcher.poll_and_dispatch(fake_bridge) == 1
+    return fake_bridge.publish_command.call_args.args[1]
+
+
+def test_payload_args_are_merged(fake_sb: MagicMock, fake_bridge: MagicMock) -> None:
+    """LED 밝기·자동 시간 같은 action 인자는 그대로 실려 나간다 (앱 2026-09-16 §1·§2)."""
+    out = _dispatch_with_payload(
+        fake_sb, fake_bridge, "led_on", {"brightness": 60, "duration_ms": 3_600_000}
+    )
+    assert out["action"] == "led_on"
+    assert out["brightness"] == 60
+    assert out["duration_ms"] == 3_600_000
+
+
+def test_payload_cannot_override_reserved_keys(
+    fake_sb: MagicMock, fake_bridge: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """payload 가 프로토콜 필드를 덮어쓰면 안 된다 — 엉뚱한 action 이 발행될 수 있었음."""
+    out = _dispatch_with_payload(
+        fake_sb,
+        fake_bridge,
+        "led_on",
+        {
+            "brightness": 60,
+            "action": "heater_on",       # 공격/버그: 다른 명령으로 바꿔치기
+            "msg_id": "forged",
+            "ttl_sec": 99999,
+            "issued_at": 0,
+        },
+    )
+    assert out["action"] == "led_on"     # 원래 action 유지
+    assert out["msg_id"] == "cmd-1"
+    assert out["ttl_sec"] == 30
+    assert out["issued_at"] != 0
+    assert out["brightness"] == 60       # 정상 인자는 통과
+
+
+def test_non_dict_payload_ignored(fake_sb: MagicMock, fake_bridge: MagicMock) -> None:
+    out = _dispatch_with_payload(fake_sb, fake_bridge, "led_on", None)
+    assert out["action"] == "led_on"
+    assert "brightness" not in out
+
+
 def test_pending_command_publishes_and_updates_sent(
     fake_sb: MagicMock, fake_bridge: MagicMock
 ) -> None:

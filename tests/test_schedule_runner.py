@@ -94,6 +94,49 @@ def test_due_schedule_advances_and_inserts_command(fake_sb: MagicMock) -> None:
     assert cmd["source_id"] == "sch-1"
 
 
+def _fire_and_capture(fake_sb: MagicMock, row: dict) -> list[dict]:
+    """예약 1건을 발화시키고 commands INSERT payload 목록을 돌려준다."""
+    inserts: list[dict] = []
+
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        if name == "schedules":
+            t.select.return_value.eq.return_value.lte.return_value.order.return_value.limit.return_value.execute.return_value.data = [row]
+            chain = MagicMock()
+            chain.eq.return_value.execute.return_value.data = [{"id": "sch-1"}]
+            t.update.return_value = chain
+        elif name == "commands":
+            def _ins(payload: dict) -> MagicMock:
+                inserts.append(payload)
+                c = MagicMock()
+                c.execute.return_value.data = [{"id": "cmd-1"}]
+                return c
+            t.insert.side_effect = _ins
+        return t
+
+    fake_sb.table.side_effect = _table
+    assert schedule_runner.run_once() == 1
+    return inserts
+
+
+def test_led_schedule_carries_brightness(fake_sb: MagicMock) -> None:
+    """앱 2026-09-16 §2: 예약 실행 시 commands.payload 에 brightness 가 그대로 실린다."""
+    inserts = _fire_and_capture(
+        fake_sb, _due_row(action="led_on", payload={"brightness": 70})
+    )
+    assert inserts[0]["action"] == "led_on"
+    assert inserts[0]["payload"] == {"brightness": 70}
+
+
+def test_fan2_schedule_carries_duration_ms(fake_sb: MagicMock) -> None:
+    """앱 2026-09-16 §3: 냉각팬 단건 예약의 duration_ms 가 그대로 실린다."""
+    inserts = _fire_and_capture(
+        fake_sb, _due_row(action="fan2_on", payload={"duration_ms": 1_800_000})
+    )
+    assert inserts[0]["action"] == "fan2_on"
+    assert inserts[0]["payload"] == {"duration_ms": 1_800_000}
+
+
 def test_guard_skips_when_humidity_above(fake_sb: MagicMock) -> None:
     """skip 형 가드: 습도가 임계 초과면 발행 안 하고 skipped 감사만 남김."""
     row = _due_row(guard={"type": "skip_when_humidity_above", "value": 60, "enabled": True})
