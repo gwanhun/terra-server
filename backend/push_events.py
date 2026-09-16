@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -42,14 +43,22 @@ logger = logging.getLogger(__name__)
 SCHEMA_VERSION = 1
 
 EVENT_STARTED = "device.action.started"
+EVENT_ENDED = "device.action.ended"
 EVENT_FAILED = "device.action.failed"
 
 # 펌웨어가 성공을 알리는 유일한 값. 나머지(busy/error/unknown_action/rejected_* …)는
 # 전부 실패로 묶는다 — status 는 결과와 무관하게 항상 'acked' 라 못 쓴다(회신 §4).
 RESULT_OK = "ok"
 
-# 즉시 제어(manual)는 앱 요청대로 제외. 'timer' 는 서버에서 세팅된 적이 없다(회신 §5.2).
-DEFAULT_SOURCES = ("schedule", "guard")
+# 앱 회신 2026-09-16 §3-2·§3-5: 발행 조건은 source='schedule' 만.
+#   - manual(즉시 제어): 앱이 15초 ACK 응답으로 이미 처리 → 제외
+#   - guard(가드 스킵): 1차 제외. 2차에 device.action.skipped 타입으로 별도 설계
+#   - timer: 서버에서 세팅된 적이 없는 값 → 앱이 허용값에서 제거하기로 함
+DEFAULT_SOURCES = ("schedule",)
+
+# ACK 가 영영 오지 않는 명령을 실패로 굳히는 기준 (앱 회신 §3-6).
+# 무인 실행에서 히터·펌프가 안 켜진 경우가 사용자에게 가장 중요한 알림이다.
+NO_ACK_RESULT = "no_ack"
 
 DEFAULT_INTERVAL_SEC = 5.0
 DEFAULT_BATCH = 20
@@ -89,6 +98,66 @@ def _sources() -> tuple[str, ...]:
 # ---------- 적재 (ACK 스레드에서 호출) ----------
 
 
+# ---------- 구간 예약 판별 ----------
+#
+# 앱 회신 2026-09-16 §3-1: `ended` 는 **구간 예약(pair_id 로 묶인 on/off 쌍)의 off 명령**
+# 에서만 낸다. one-shot(duration_ms 붙은 단건)은 종료 ACK 자체가 없으므로 started 만.
+# commands 행에는 pair_id 가 없고 source_id(=schedules.id)만 있어서 한 번 조회한다.
+# _off 명령은 드물고 결과를 캐싱하므로 비용은 무시할 만하다.
+
+SPAN_TTL_SEC = 600.0
+_span_lock = threading.Lock()
+_span_cache: dict[str, tuple[float, bool]] = {}     # schedule_id → (expires, is_span)
+
+
+def _is_span_schedule(schedule_id: str) -> bool:
+    """해당 예약이 구간 예약(pair_id 보유)인가. 조회 실패면 False(=started 로 폴백)."""
+    now = time.monotonic()
+    with _span_lock:
+        hit = _span_cache.get(schedule_id)
+        if hit and hit[0] > now:
+            return hit[1]
+    sb = get_supabase_client()
+    try:
+        res = (
+            sb.table("schedules")
+            .select("pair_id")
+            .eq("id", schedule_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("schedules 조회 실패 (id=%s) — started 로 처리", schedule_id)
+        return False
+    rows = res.data or []
+    is_span = bool(rows and rows[0].get("pair_id"))
+    with _span_lock:
+        _span_cache[schedule_id] = (time.monotonic() + SPAN_TTL_SEC, is_span)
+    return is_span
+
+
+def reset_span_cache() -> None:
+    """테스트용."""
+    with _span_lock:
+        _span_cache.clear()
+
+
+def _resolve_phase(action: str | None, source_id: str | None, succeeded: bool) -> str:
+    """started | ended | failed."""
+    if not succeeded:
+        return "failed"
+    if action and action.endswith("_off") and source_id and _is_span_schedule(source_id):
+        return "ended"
+    return "started"
+
+
+_PHASE_EVENT = {
+    "started": EVENT_STARTED,
+    "ended": EVENT_ENDED,
+    "failed": EVENT_FAILED,
+}
+
+
 def build_command_event(
     command_row: dict[str, Any], device_key: str, device_meta: dict[str, Any] | None
 ) -> dict[str, Any] | None:
@@ -107,8 +176,8 @@ def build_command_event(
 
     result = command_row.get("result")
     succeeded = result == RESULT_OK
-    event_type = EVENT_STARTED if succeeded else EVENT_FAILED
-    phase = "started" if succeeded else "failed"
+    phase = _resolve_phase(command_row.get("action"), command_row.get("source_id"), succeeded)
+    event_type = _PHASE_EVENT[phase]
 
     meta = device_meta or {}
     # issued_by 는 NULL 허용이라 devices.owner_id 로 폴백 (회신 §2.2).
@@ -157,6 +226,27 @@ def enqueue(event: dict[str, Any]) -> bool:
         return False
     logger.info("push 이벤트 적재: %s", event["event_id"])
     return True
+
+
+def enqueue_command_failure(
+    command_row: dict[str, Any],
+    device_key: str,
+    device_meta: dict[str, Any] | None,
+    result: str,
+) -> bool:
+    """ACK 없이 끝난 명령을 실패 이벤트로 적재 (앱 회신 2026-09-16 §3-6, 추가확인).
+
+    대상 세 가지 — 전부 `device.action.failed` 로 나간다.
+      - `expired`       : TTL 초과로 발행조차 못 함
+      - `unknown_device`: 미등록 기기
+      - `no_ack`        : 발행했는데 응답이 영영 안 옴 (무인 실행에서 가장 중요한 알림)
+    """
+    row = dict(command_row)
+    row["result"] = result          # 어느 경우든 ok 가 아니므로 failed 로 귀결
+    event = build_command_event(row, device_key, device_meta)
+    if event is None:
+        return False
+    return enqueue(event)
 
 
 # ---------- 전송 (워커 스레드) ----------
@@ -303,10 +393,14 @@ class PushOutboxWorker:
 
 
 __all__ = [
+    "EVENT_ENDED",
     "EVENT_FAILED",
     "EVENT_STARTED",
+    "NO_ACK_RESULT",
     "PushOutboxWorker",
     "build_command_event",
     "enqueue",
+    "enqueue_command_failure",
+    "reset_span_cache",
     "send_pending",
 ]

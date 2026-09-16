@@ -31,10 +31,12 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from backend.mqtt import handlers
+from backend.push_events import NO_ACK_RESULT
 from backend.supabase_client import get_supabase_client
 
 if TYPE_CHECKING:
@@ -42,6 +44,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+# ACK 가 이 시간 안에 안 오면 실패로 굳힌다 (앱 회신 2026-09-16 §3-6, 30초).
+# 일반 명령 TTL(10초)보다 넉넉히 잡아 펌웨어 재시도·네트워크 지연을 흡수한다.
+NO_ACK_THRESHOLD_SEC = 30.0
+# 무응답 스윕 주기 — 1초 폴링마다 돌릴 필요는 없다.
+NO_ACK_SWEEP_INTERVAL_SEC = 10.0
 
 # MQTT 명령 프로토콜이 쓰는 필드 — payload 로 덮어쓸 수 없다 (docs/MQTT.md §2).
 _RESERVED_PAYLOAD_KEYS: frozenset[str] = frozenset({
@@ -61,13 +69,76 @@ def _parse_iso(ts: str) -> datetime:
     return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
+def _enqueue_failure(row: dict[str, Any], device_uuid: str, result: str) -> None:
+    """ACK 없이 끝난 명령을 푸시 실패 이벤트로 적재. 절대 예외를 올리지 않는다.
+
+    지연 import: push_events 가 dispatcher 를 쓰지는 않지만 handlers 쪽과 관례를 맞춘다.
+    """
+    try:
+        from backend import push_events
+
+        device_key = handlers._cached_device_text(device_uuid) or ""
+        push_events.enqueue_command_failure(
+            row, device_key, handlers.device_meta(device_uuid), result
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("실패 푸시 이벤트 적재 실패 (command_id=%s)", row.get("id"))
+
+
+def sweep_unacked(threshold_sec: float = NO_ACK_THRESHOLD_SEC, batch: int = DEFAULT_BATCH) -> int:
+    """발행했는데 ACK 가 안 온 명령을 실패로 굳힌다. 처리 건수 반환.
+
+    기존에는 `sent` 인 채로 영원히 방치돼서 앱이 결과를 알 수 없었다
+    (2026-09-15 회신 §4.4 에서 제기 → 앱이 "필요하다" 회신, 2026-09-16 §3-6).
+    무인 실행(예약)에서 히터·펌프가 안 켜진 경우가 사용자에게 가장 중요한 알림이다.
+    """
+    sb = get_supabase_client()
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=threshold_sec)).isoformat()
+    try:
+        res = (
+            sb.table("commands")
+            .select("id, device_id, action, payload, issued_at, ttl_sec, issued_by, source, source_id")
+            .eq("status", "sent")
+            .lt("issued_at", cutoff)
+            .order("issued_at")
+            .limit(batch)
+            .execute()
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("무응답 명령 조회 실패")
+        return 0
+
+    rows = res.data or []
+    swept = 0
+    for row in rows:
+        cmd_id = row["id"]
+        try:
+            upd = (
+                sb.table("commands")
+                .update({"status": "no_ack", "result": NO_ACK_RESULT})
+                .eq("id", cmd_id)
+                .eq("status", "sent")          # 그 사이 ACK 가 왔으면 건드리지 않는다
+                .execute()
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("무응답 처리 실패 (command_id=%s)", cmd_id)
+            continue
+        if not upd.data:
+            continue                            # 경합 — ACK 가 먼저 들어옴
+        logger.warning("command %s 무응답(%ds 경과) → no_ack", cmd_id, int(threshold_sec))
+        _enqueue_failure(row, row["device_id"], NO_ACK_RESULT)
+        swept += 1
+    return swept
+
+
 def poll_and_dispatch(bridge: "MqttBridge", batch: int = DEFAULT_BATCH) -> int:
     """1회 polling — pending commands 처리. 처리한 row 수 반환."""
     sb = get_supabase_client()
 
     res = (
         sb.table("commands")
-        .select("id, device_id, action, payload, issued_at, ttl_sec")
+        # issued_by/source/source_id 는 실패 푸시 이벤트 구성에 쓴다 (앱 회신 2026-09-16 §3-6)
+        .select("id, device_id, action, payload, issued_at, ttl_sec, issued_by, source, source_id")
         .eq("status", "pending")
         .order("issued_at")
         .limit(batch)
@@ -99,8 +170,11 @@ def _dispatch_one(bridge: "MqttBridge", row: dict[str, Any]) -> None:
     issued_at = _parse_iso(row["issued_at"])
     age = (datetime.now(timezone.utc) - issued_at).total_seconds()
     if age > ttl:
-        sb.table("commands").update({"status": "expired"}).eq("id", cmd_id).execute()
+        sb.table("commands").update(
+            {"status": "expired", "result": "expired"}
+        ).eq("id", cmd_id).execute()
         logger.info("command %s expired (age=%.1fs, ttl=%ds)", cmd_id, age, ttl)
+        _enqueue_failure(row, device_uuid, "expired")
         return
 
     # 2) device UUID → device_id (TEXT) 캐시 해상
@@ -110,6 +184,7 @@ def _dispatch_one(bridge: "MqttBridge", row: dict[str, Any]) -> None:
             {"status": "rejected", "result": "unknown_device"}
         ).eq("id", cmd_id).execute()
         logger.warning("command %s: unknown device_uuid=%s", cmd_id, device_uuid)
+        _enqueue_failure(row, device_uuid, "unknown_device")
         return
 
     # 3) payload 구성 ([docs/MQTT.md](../../docs/MQTT.md) §2)
@@ -153,6 +228,7 @@ class CommandDispatcher:
         self._interval = interval_sec
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._next_sweep = 0.0
 
     def start(self) -> None:
         if self._thread is not None:
@@ -178,6 +254,18 @@ class CommandDispatcher:
                     logger.debug("dispatched %d commands", n)
             except Exception:  # noqa: BLE001
                 logger.exception("dispatcher poll 실패")
+
+            # 무응답 스윕은 1초마다 돌 필요가 없어 별도 주기로 (같은 스레드 = 경합 없음)
+            now = time.monotonic()
+            if now >= self._next_sweep:
+                self._next_sweep = now + NO_ACK_SWEEP_INTERVAL_SEC
+                try:
+                    swept = sweep_unacked()
+                    if swept:
+                        logger.info("무응답 명령 %d건 정리", swept)
+                except Exception:  # noqa: BLE001
+                    logger.exception("무응답 스윕 실패")
+
             self._stop.wait(self._interval)
 
 
@@ -186,5 +274,7 @@ __all__ = [
     "DEFAULT_BATCH",
     "DEFAULT_INTERVAL_SEC",
     "DEFAULT_TTL_SEC",
+    "NO_ACK_THRESHOLD_SEC",
     "poll_and_dispatch",
+    "sweep_unacked",
 ]

@@ -40,6 +40,7 @@ def _enable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PUSH_EVENT_INGEST_URL", "https://example.test/functions/v1/ingest")
     monkeypatch.setenv("PUSH_EVENT_INGEST_SECRET", "s3cr3t")
     monkeypatch.delenv("PUSH_EVENT_SOURCES", raising=False)
+    push_events.reset_span_cache()
 
 
 # ---------- build_command_event ----------
@@ -82,10 +83,17 @@ def test_manual_source_not_published() -> None:
     assert push_events.build_command_event(_cmd(source="manual"), "terra-a1", META) is None
 
 
-def test_guard_source_published() -> None:
-    ev = push_events.build_command_event(_cmd(source="guard"), "terra-a1", META)
-    assert ev is not None
-    assert ev["payload"]["execution_source"] == "guard"
+def test_guard_source_not_published() -> None:
+    """앱 회신 2026-09-16 §3-5: 가드 스킵은 1차 제외. 2차에 skipped 타입으로 별도 설계."""
+    assert push_events.build_command_event(_cmd(source="guard"), "terra-a1", META) is None
+
+
+def test_only_schedule_source_published() -> None:
+    """발행 조건은 source='schedule' 단 하나 (manual/guard/timer 전부 제외)."""
+    assert push_events.DEFAULT_SOURCES == ("schedule",)
+    for src in ("manual", "guard", "timer"):
+        assert push_events.build_command_event(_cmd(source=src), "terra-a1", META) is None
+    assert push_events.build_command_event(_cmd(source="schedule"), "terra-a1", META) is not None
 
 
 def test_sources_overridable_by_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -116,6 +124,108 @@ def test_missing_device_meta_tolerated() -> None:
 def test_event_body_has_no_secret() -> None:
     ev = push_events.build_command_event(_cmd(), "terra-a1", META)
     assert "s3cr3t" not in str(ev)
+
+
+# ---------- phase: started / ended / failed ----------
+
+
+def _sb_with_pair(pair_id: str | None) -> MagicMock:
+    sb = MagicMock()
+    (
+        sb.table.return_value.select.return_value.eq.return_value
+        .limit.return_value.execute.return_value.data
+    ) = [{"pair_id": pair_id}]
+    return sb
+
+
+def test_span_off_command_is_ended(monkeypatch: pytest.MonkeyPatch) -> None:
+    """앱 회신 2026-09-16 §3-1(A안): 구간 예약(pair_id)의 off 명령만 ended."""
+    monkeypatch.setattr(push_events, "get_supabase_client", lambda: _sb_with_pair("pair-1"))
+    ev = push_events.build_command_event(
+        _cmd(action="fan_off", result="ok"), "terra-a1", META
+    )
+    assert ev is not None
+    assert ev["type"] == push_events.EVENT_ENDED
+    assert ev["event_id"].endswith(":ended")
+    assert ev["payload"]["execution_phase"] == "ended"
+
+
+def test_standalone_off_command_is_started(monkeypatch: pytest.MonkeyPatch) -> None:
+    """짝 없는 단건 off 예약은 종료가 아니라 그 자체가 하나의 실행."""
+    monkeypatch.setattr(push_events, "get_supabase_client", lambda: _sb_with_pair(None))
+    ev = push_events.build_command_event(
+        _cmd(action="fan_off", result="ok"), "terra-a1", META
+    )
+    assert ev is not None
+    assert ev["type"] == push_events.EVENT_STARTED
+
+
+def test_on_command_never_ended(monkeypatch: pytest.MonkeyPatch) -> None:
+    """one-shot(duration_ms)은 종료 ACK 가 없으므로 started 만."""
+    monkeypatch.setattr(push_events, "get_supabase_client", lambda: _sb_with_pair("pair-1"))
+    ev = push_events.build_command_event(
+        _cmd(action="fan_on", result="ok"), "terra-a1", META
+    )
+    assert ev is not None
+    assert ev["type"] == push_events.EVENT_STARTED
+
+
+def test_failed_result_wins_over_ended(monkeypatch: pytest.MonkeyPatch) -> None:
+    """구간 off 라도 실패면 failed."""
+    monkeypatch.setattr(push_events, "get_supabase_client", lambda: _sb_with_pair("pair-1"))
+    ev = push_events.build_command_event(
+        _cmd(action="fan_off", result="busy"), "terra-a1", META
+    )
+    assert ev is not None
+    assert ev["type"] == push_events.EVENT_FAILED
+
+
+def test_span_lookup_failure_falls_back_to_started(monkeypatch: pytest.MonkeyPatch) -> None:
+    """예약 조회가 터져도 이벤트는 나가야 한다."""
+    sb = MagicMock()
+    sb.table.side_effect = RuntimeError("db down")
+    monkeypatch.setattr(push_events, "get_supabase_client", lambda: sb)
+    ev = push_events.build_command_event(
+        _cmd(action="fan_off", result="ok"), "terra-a1", META
+    )
+    assert ev is not None
+    assert ev["type"] == push_events.EVENT_STARTED
+
+
+def test_span_result_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    sb = _sb_with_pair("pair-1")
+    monkeypatch.setattr(push_events, "get_supabase_client", lambda: sb)
+    for _ in range(3):
+        push_events.build_command_event(_cmd(action="fan_off"), "terra-a1", META)
+    assert sb.table.call_count == 1
+
+
+# ---------- ACK 없이 끝난 명령 ----------
+
+
+@pytest.mark.parametrize("result", ["no_ack", "expired", "unknown_device"])
+def test_enqueue_command_failure(result: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """무응답·TTL만료·미등록기기 전부 failed 로 나간다 (앱 회신 §3-6, 추가확인)."""
+    inserts: list[dict] = []
+    monkeypatch.setattr(push_events, "get_supabase_client", lambda: _sb_with_insert(inserts))
+
+    ok = push_events.enqueue_command_failure(
+        _cmd(result=None), "terra-a1b2c3d4", META, result
+    )
+    assert ok is True
+    body = inserts[0]["body"]
+    assert body["type"] == push_events.EVENT_FAILED
+    assert body["payload"]["outcome"] == "failed"
+    assert body["payload"]["result"] == result
+    assert inserts[0]["event_id"].endswith(":failed")
+
+
+def test_enqueue_command_failure_skips_manual(monkeypatch: pytest.MonkeyPatch) -> None:
+    called = MagicMock()
+    monkeypatch.setattr(push_events, "get_supabase_client", called)
+    assert push_events.enqueue_command_failure(
+        _cmd(source="manual"), "terra-a1", META, "no_ack"
+    ) is False
 
 
 # ---------- enqueue ----------

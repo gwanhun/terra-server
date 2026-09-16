@@ -231,7 +231,8 @@ def test_expired_command_marked_expired_not_published(
     fake_bridge.publish_command.assert_not_called()
 
     # status='expired' UPDATE
-    assert {"status": "expired"} in updates
+    # result 도 함께 기록 — 푸시 실패 이벤트가 이 값을 쓴다 (앱 회신 2026-09-16 §3-6)
+    assert {"status": "expired", "result": "expired"} in updates
 
 
 # ---------- 미존재 디바이스 ----------
@@ -389,3 +390,92 @@ def test_null_ttl_uses_default(
 
     payload = fake_bridge.publish_command.call_args.args[1]
     assert payload["ttl_sec"] == dispatcher.DEFAULT_TTL_SEC
+
+
+# ---------- 무응답(no_ack) 스윕 ----------
+
+
+def _sb_for_sweep(rows: list[dict], updates: list[dict], upd_data: list | None = None) -> MagicMock:
+    sb = MagicMock()
+    t = MagicMock()
+    (
+        t.select.return_value.eq.return_value.lt.return_value
+        .order.return_value.limit.return_value.execute.return_value.data
+    ) = rows
+
+    def _upd(patch: dict) -> MagicMock:
+        updates.append(patch)
+        chain = MagicMock()
+        chain.eq.return_value.eq.return_value.execute.return_value.data = (
+            [{"id": "cmd-1"}] if upd_data is None else upd_data
+        )
+        return chain
+
+    t.update.side_effect = _upd
+    sb.table.return_value = t
+    return sb
+
+
+def _sent_row(**over) -> dict:
+    r = {
+        "id": "cmd-1",
+        "device_id": DEVICE_UUID,
+        "action": "fan_on",
+        "payload": None,
+        "issued_at": _now_iso(),
+        "ttl_sec": 10,
+        "issued_by": "owner-1",
+        "source": "schedule",
+        "source_id": "sch-1",
+    }
+    r.update(over)
+    return r
+
+
+def test_sweep_marks_unacked_as_no_ack(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ACK 가 안 오면 sent 로 방치되던 걸 실패로 굳힌다 (앱 회신 2026-09-16 §3-6)."""
+    updates: list[dict] = []
+    monkeypatch.setattr(
+        dispatcher, "get_supabase_client", lambda: _sb_for_sweep([_sent_row()], updates)
+    )
+    enqueued: list[tuple] = []
+    monkeypatch.setattr(
+        dispatcher, "_enqueue_failure", lambda row, uid, res: enqueued.append((row["id"], res))
+    )
+
+    assert dispatcher.sweep_unacked() == 1
+    assert updates[0] == {"status": "no_ack", "result": "no_ack"}
+    assert enqueued == [("cmd-1", "no_ack")]
+
+
+def test_sweep_skips_when_ack_won_the_race(monkeypatch: pytest.MonkeyPatch) -> None:
+    """조회 후 UPDATE 사이에 ACK 가 들어오면 건드리지 않는다 (status='sent' 조건부 UPDATE)."""
+    updates: list[dict] = []
+    monkeypatch.setattr(
+        dispatcher,
+        "get_supabase_client",
+        lambda: _sb_for_sweep([_sent_row()], updates, upd_data=[]),
+    )
+    enqueued: list[tuple] = []
+    monkeypatch.setattr(
+        dispatcher, "_enqueue_failure", lambda row, uid, res: enqueued.append((row["id"], res))
+    )
+
+    assert dispatcher.sweep_unacked() == 0
+    assert enqueued == []
+
+
+def test_sweep_empty_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    updates: list[dict] = []
+    monkeypatch.setattr(
+        dispatcher, "get_supabase_client", lambda: _sb_for_sweep([], updates)
+    )
+    assert dispatcher.sweep_unacked() == 0
+    assert updates == []
+
+
+def test_sweep_query_failure_returns_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    sb = MagicMock()
+    sb.table.side_effect = RuntimeError("db down")
+    monkeypatch.setattr(dispatcher, "get_supabase_client", lambda: sb)
+    assert dispatcher.sweep_unacked() == 0
