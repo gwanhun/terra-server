@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import logging
+from uuid import UUID
 import secrets
 from typing import Any
 
@@ -30,6 +31,7 @@ from backend.auth import get_current_user_id
 from backend.crypto import generate_token, hash_token
 from backend.mqtt import registry
 from backend.supabase_client import get_supabase_client
+from backend.unlink_service import unlink_entity
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,19 @@ class DevicePairRequest(BaseModel):
         description='보드 능력 플래그(펌웨어 보고). 예: {"board":"mosfet","led_dimmable":true}',
         examples=[{"board": "mosfet", "led_dimmable": True, "heater": True}],
     )
+
+
+# ---------- 소프트 해제 (앱 회신 2026-09-16 §1) ----------
+
+class UnlinkRequest(BaseModel):
+    request_id: UUID = Field(
+        ..., description="앱 생성 UUID. 같은 값 재시도는 동일 응답(멱등)."
+    )
+
+
+class UnlinkResponse(BaseModel):
+    id: str
+    unlinked_at: str = Field(..., description="해제 시각(ISO8601). 재호출 시 최초 값 그대로")
 
 
 class DevicePairResponse(BaseModel):
@@ -166,7 +181,7 @@ def pair_device(
 def list_devices(
     user_id: str = Depends(get_current_user_id),
 ) -> list[DeviceOut]:
-    """페어링 시각 내림차순. `token_hash` 는 응답에서 자동 제외."""
+    """페어링 시각 내림차순. 소프트 해제된 기기는 제외. `token_hash` 는 응답에서 자동 제외."""
     sb = get_supabase_client()
     res = (
         sb.table("devices")
@@ -175,6 +190,7 @@ def list_devices(
             "capabilities, created_at, last_seen_at, is_online"
         )
         .eq("owner_id", user_id)
+        .is_("unlinked_at", "null")            # 소프트 해제된 기기는 제외 (앱 §1-3)
         .order("created_at", desc=True)
         .execute()
     )
@@ -191,22 +207,23 @@ def get_device(
     device_uuid: str,
     user_id: str = Depends(get_current_user_id),
 ) -> DeviceOut:
-    """본인 디바이스가 아니면 404 (존재 여부 노출 안 함)."""
+    """본인 디바이스가 아니거나 소프트 해제됐으면 404 (존재 여부 노출 안 함)."""
     sb = get_supabase_client()
     res = (
         sb.table("devices")
         .select(
             "id, device_id, enclosure_id, name, species, firmware_ver, "
-            "capabilities, created_at, last_seen_at, is_online, owner_id"
+            "capabilities, created_at, last_seen_at, is_online, owner_id, unlinked_at"
         )
         .eq("id", device_uuid)
         .single()
         .execute()
     )
     row = res.data
-    if not row or row["owner_id"] != user_id:
+    if not row or row["owner_id"] != user_id or row.get("unlinked_at"):
         raise HTTPException(status_code=404, detail="device not found")
     row.pop("owner_id", None)
+    row.pop("unlinked_at", None)
     return DeviceOut(**row)
 
 
@@ -244,6 +261,7 @@ def update_device(
         .update(updates)
         .eq("id", device_uuid)
         .eq("owner_id", user_id)
+        .is_("unlinked_at", "null")            # 해제된 기기는 수정 불가 → 404
         .execute()
     )
     if not res.data:
@@ -252,6 +270,34 @@ def update_device(
     row.pop("owner_id", None)
     row.pop("token_hash", None)
     return DeviceOut(**row)
+
+
+@router.post(
+    "/{device_uuid}/unlink",
+    response_model=UnlinkResponse,
+    summary="디바이스 등록 해제 (소프트, 기록 보존)",
+    responses={**_AUTH_REQUIRED, **_NOT_FOUND},
+)
+def unlink_device(
+    device_uuid: str,
+    body: UnlinkRequest,
+    user_id: str = Depends(get_current_user_id),
+) -> UnlinkResponse:
+    """행을 지우지 않고 `unlinked_at` 만 찍는다. 앱의 "기기 삭제" 는 이걸 쓴다.
+
+    - 보존: 행, telemetry*, commands, alerts, schedules(비활성화), motion_clips, R2
+    - 해제 시: enclosure_id=NULL, schedules.enabled=false, MQTT 계정 회수
+    - 멱등: 같은 request_id 재시도 / 이미 해제된 기기 → 200 + 기존 unlinked_at
+    - 이후 GET/PATCH 는 404, 목록에서 제외. hard delete(DELETE) 는 운영용으로 별도.
+
+    계약: docs/APP_DELIVERY_2026-09-16.md §1.3 · backend/unlink_service.py
+    """
+    sb = get_supabase_client()
+    out = unlink_entity(
+        sb, table="devices", entity_uuid=device_uuid,
+        user_id=user_id, request_id=str(body.request_id),
+    )
+    return UnlinkResponse(**out)
 
 
 @router.delete(
@@ -264,7 +310,7 @@ def delete_device(
     device_uuid: str,
     user_id: str = Depends(get_current_user_id),
 ) -> None:
-    """**hard delete.** cascade 범위가 넓으니 "등록 해제" 용도로 쓰면 안 된다.
+    """**hard delete (운영·탈퇴용).** 앱의 "등록 해제" 는 `POST /devices/{id}/unlink` 를 쓴다.
 
     동반 삭제: `device_settings`, `telemetry`, `telemetry_1m`, `telemetry_30m`(장기 통계),
     `commands`, `alerts`, `schedules`.

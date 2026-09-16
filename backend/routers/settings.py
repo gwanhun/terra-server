@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from backend.alerts import reset_settings_cache
 from backend.auth import get_current_user_id
+from backend.device_access import require_active_device
 from backend.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
@@ -67,14 +68,6 @@ class SettingsOut(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
-def _load_device_for_owner(sb: Any, device_uuid: str, user_id: str) -> None:
-    """디바이스가 본인 소유인지 확인. 아니면 404 (존재 여부 노출 안 함)."""
-    res = (
-        sb.table("devices").select("id, owner_id").eq("id", device_uuid).limit(1).execute()
-    )
-    row = (res.data or [None])[0]
-    if not row or row["owner_id"] != user_id:
-        raise HTTPException(status_code=404, detail="device not found")
 
 
 def _in_range(name: str, val: float | None, lo: float, hi: float) -> None:
@@ -125,7 +118,7 @@ def get_settings(
 ) -> SettingsOut:
     """미설정이면 값이 모두 null 인 빈 설정을 반환 (404 아님)."""
     sb = get_supabase_client()
-    _load_device_for_owner(sb, device_uuid, user_id)
+    require_active_device(sb, device_uuid, user_id)
     row = _fetch_settings(sb, device_uuid)
     if not row:
         return SettingsOut(device_id=device_uuid)
@@ -145,7 +138,7 @@ def update_settings(
 ) -> SettingsOut:
     """전송된 필드만 부분 수정. 행 없으면 생성(upsert)."""
     sb = get_supabase_client()
-    _load_device_for_owner(sb, device_uuid, user_id)
+    require_active_device(sb, device_uuid, user_id)
 
     updates = body.model_dump(exclude_unset=True)
     if not updates:

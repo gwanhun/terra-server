@@ -111,13 +111,33 @@ def _lookup_one(table: str, column: str, where_col: str, where_val: str) -> Any:
     return rows[0][column]
 
 
+def _lookup_active_uuid(table: str, key_col: str, key: str) -> str | None:
+    """활성(unlinked_at IS NULL) 행의 id. 해제된 기기는 미페어링과 같이 None.
+
+    소프트 해제 후 MQTT 계정은 회수되지만 이미 붙어 있는 세션은 남을 수 있어,
+    브리지가 그 기기의 메시지를 계속 받아쓰면 안 된다 (앱 2026-09-16 §1-2-5).
+    """
+    sb = get_supabase_client()
+    res = (
+        sb.table(table)
+        .select("id, unlinked_at")
+        .eq(key_col, key)
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    if not rows or rows[0].get("unlinked_at"):
+        return None
+    return rows[0]["id"]
+
+
 def _cached_device_uuid(device_id_text: str) -> str | None:
-    """devices.device_id (TEXT) → devices.id (UUID). 미존재면 None."""
+    """devices.device_id (TEXT) → devices.id (UUID). 미존재·해제됨이면 None."""
     hit, val = _cache_get("device_uuid", device_id_text)
     if hit:
         return val
     try:
-        val = _lookup_one("devices", "id", "device_id", device_id_text)
+        val = _lookup_active_uuid("devices", "device_id", device_id_text)
     except Exception:  # noqa: BLE001 — DB 장애를 "미페어링" 으로 굳히지 않는다
         logger.exception("devices 조회 실패 (device_id=%s)", device_id_text)
         return None
@@ -148,7 +168,7 @@ def _cached_camera_uuid(camera_id_text: str) -> str | None:
     if hit:
         return val
     try:
-        val = _lookup_one("cameras", "id", "camera_id", camera_id_text)
+        val = _lookup_active_uuid("cameras", "camera_id", camera_id_text)
     except Exception:  # noqa: BLE001
         logger.exception("cameras 조회 실패 (camera_id=%s)", camera_id_text)
         return None
@@ -248,6 +268,27 @@ def _camera_state(sb: Client, camera_uuid: str) -> dict[str, Any] | None:
     with _camera_state_lock:
         _camera_state_cache[camera_uuid] = (now + CAMERA_STATE_TTL_SEC, row)
     return row
+
+
+# 직전 clip_stats(프로세스 메모리) — 델타로 스킵/실패 증가를 감지. 재시작 시 초기화되어도 무해.
+_clip_prev: dict[str, dict[str, Any]] = {}
+CLIP_UPLOAD_STUCK_SEC = 300
+
+
+def _warn_clip_regression(camera_id_text: str, camera_uuid: str, clips: dict[str, Any]) -> None:
+    prev = _clip_prev.get(camera_uuid)
+    _clip_prev[camera_uuid] = clips
+    up_busy = clips.get("up_busy_s")
+    if isinstance(up_busy, (int, float)) and up_busy >= CLIP_UPLOAD_STUCK_SEC:
+        logger.warning("camera %s: 업로드 %ss 째 진행 중(정체 의심) clips=%s",
+                       camera_id_text, up_busy, clips)
+    if not prev:
+        return
+    for key, label in (("skip", "슬롯 없음 스킵"), ("skip_lock", "H.264 락 스킵"),
+                       ("up_fail", "업로드 실패"), ("sd_fail", "SD 재업로드 실패")):
+        cur, old = clips.get(key), prev.get(key)
+        if isinstance(cur, (int, float)) and isinstance(old, (int, float)) and cur > old:
+            logger.warning("camera %s: %s +%d (누적 %d)", camera_id_text, label, cur - old, cur)
 
 
 def _camera_state_patch(camera_uuid: str, **fields: Any) -> None:
@@ -386,6 +427,14 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
             state = _camera_state(sb, entity_uuid)
             if state is None or state.get("capabilities") != caps:
                 update["capabilities"] = caps
+
+        # 클립 파이프라인 카운터(2026-09-16): 매 heartbeat 저장. 스킵/업로드 실패가 늘거나
+        # 업로드가 오래 진행 중이면 경고 로그 — "heartbeat 는 정상인데 녹화가 멈춘" 상태 감시.
+        clips = payload.get("clips")
+        if isinstance(clips, dict):
+            update["clip_stats"] = clips
+            update["clip_stats_at"] = _now_iso()
+            _warn_clip_regression(device_id_text, entity_uuid, clips)
 
         try:
             sb.table("cameras").update(update).eq("id", entity_uuid).execute()

@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.auth import get_current_user_id
+from backend.device_access import require_active_device
 from backend.command_service import ALLOWED_MIST_MS, MIST_ACTION
 from backend.scheduling import compute_next_run, parse_time_of_day
 from backend.supabase_client import get_supabase_client
@@ -50,7 +51,9 @@ SCHEDULABLE_ACTIONS: frozenset[str] = frozenset({
     "relay_on", "relay_off",
     "fan_on", "fan_off",
     "fan2_on", "fan2_off",   # 냉각팬 — 펌웨어 동작은 fan 과 동일
-    "heater_on", "heater_off",
+    # heater_on/off 는 제외 — 두 보드 모두 펌웨어에 히터가 미구현(핸들 NULL)이라 항상
+    # unknown_action. 앱 요청(2026-09-16 §3)으로 서버가 400 으로 막는다. 히터 보드가
+    # 생기면 capabilities.heater 플래그로 다시 연다.
     "led_on", "led_off",
 })
 
@@ -182,13 +185,6 @@ def _compute_next(kind: str, time_of_day: str, days: list[int] | None) -> str:
     return compute_next_run(_now(), kind, tod, days).isoformat()
 
 
-def _load_device_for_owner(sb: Any, device_uuid: str, user_id: str) -> None:
-    res = (
-        sb.table("devices").select("id, owner_id").eq("id", device_uuid).limit(1).execute()
-    )
-    row = (res.data or [None])[0]
-    if not row or row["owner_id"] != user_id:
-        raise HTTPException(status_code=404, detail="device not found")
 
 
 def _load_schedule_for_owner(sb: Any, schedule_id: str, user_id: str) -> dict[str, Any]:
@@ -217,7 +213,7 @@ def create_schedule(
 ) -> ScheduleOut:
     """예약 등록. next_run_at(UTC) 을 서버가 계산해 저장한다 (KST 벽시계 → UTC)."""
     sb = get_supabase_client()
-    _load_device_for_owner(sb, device_uuid, user_id)
+    require_active_device(sb, device_uuid, user_id)
     _validate_action_payload(body.action, body.payload)
     _validate_days(body.kind, body.days_of_week)
     _validate_guard(body.guard, body.action)
@@ -253,7 +249,7 @@ def list_schedules(
     user_id: str = Depends(get_current_user_id),
 ) -> list[ScheduleOut]:
     sb = get_supabase_client()
-    _load_device_for_owner(sb, device_uuid, user_id)
+    require_active_device(sb, device_uuid, user_id)
     res = (
         sb.table("schedules")
         .select("*")

@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from backend.auth import get_current_user_id
+from backend.device_access import require_active_device
 from backend.command_service import (
     MIST_ACTION,
     InvalidCommand,
@@ -52,22 +53,6 @@ class CommandOut(BaseModel):
     status: str
 
 
-def _load_device_for_owner(sb: Any, device_uuid: str, user_id: str) -> dict[str, Any]:
-    """본인 소유 device row 반환. 미존재/타 유저는 404 (존재 여부 비노출).
-
-    service_role 은 RLS 바이패스 → owner_id 명시 검증 필수 (CLAUDE.md 규칙).
-    """
-    res = (
-        sb.table("devices")
-        .select("id, owner_id")
-        .eq("id", device_uuid)
-        .limit(1)
-        .execute()
-    )
-    row = (res.data or [None])[0]
-    if not row or row["owner_id"] != user_id:
-        raise HTTPException(status_code=404, detail="device not found")
-    return row
 
 
 @router.post(
@@ -88,7 +73,7 @@ def mist(
     firmware 가 흡수하므로 앱은 duration_ms 만 보내면 된다.
     """
     sb = get_supabase_client()
-    _load_device_for_owner(sb, device_uuid, user_id)
+    require_active_device(sb, device_uuid, user_id)
 
     try:
         duration = validate_mist_duration(body.duration_ms)

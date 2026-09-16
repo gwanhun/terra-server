@@ -22,6 +22,7 @@ devices/pair 와 동일 패턴. 차이: enclosure_id 옵션, model/resolution/fp
 from __future__ import annotations
 
 import logging
+from uuid import UUID
 import os
 import secrets
 from typing import Any
@@ -34,6 +35,7 @@ from backend.crypto import generate_token, hash_token
 from backend.mqtt import registry
 from backend.mqtt.camera_commands import rotation_command
 from backend.supabase_client import get_supabase_client
+from backend.unlink_service import unlink_entity
 from backend.webrtc_signaling import MqttWebRTCSignaling
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,19 @@ router = APIRouter(prefix="/cameras", tags=["cameras"])
 
 _ALLOWED_MODELS = {"esp32-p4", "rpi-zero-2-w", "rpi-4", "ip-camera"}
 _ALLOWED_RESOLUTIONS = {"VGA", "HD", "FHD"}
+
+
+# ---------- 소프트 해제 (앱 회신 2026-09-16 §1) ----------
+
+class UnlinkRequest(BaseModel):
+    request_id: UUID = Field(
+        ..., description="앱 생성 UUID. 같은 값 재시도는 동일 응답(멱등)."
+    )
+
+
+class UnlinkResponse(BaseModel):
+    id: str
+    unlinked_at: str = Field(..., description="해제 시각(ISO8601). 재호출 시 최초 값 그대로")
 
 
 class CameraPairRequest(BaseModel):
@@ -109,6 +124,15 @@ class CameraOut(BaseModel):
         None,
         description='펌웨어 보고 능력 플래그. 예 {"rotate_180": true}. null = 구 펌웨어(미보고)',
     )
+    clip_stats: dict[str, Any] | None = Field(
+        None,
+        description=(
+            "클립 파이프라인 카운터(부팅 후 누적, 15초 텔레메트리). rec/skip/skip_lock/up_ok/"
+            "up_fail/sd_ok/sd_fail/sd_backlog, last_rec_s(마지막 녹화 후 초, -1=없음), "
+            "up_busy_s(진행 중 업로드 초, -1=없음). null = 구 펌웨어"
+        ),
+    )
+    clip_stats_at: str | None = None
     created_at: str
     updated_at: str
     last_seen_at: str | None
@@ -250,6 +274,7 @@ def list_cameras(
             "created_at, updated_at, last_seen_at, is_online"
         )
         .eq("owner_id", user_id)
+        .is_("unlinked_at", "null")            # 소프트 해제된 카메라는 제외 (앱 §1-3)
         .order("created_at", desc=True)
         .execute()
     )
@@ -273,14 +298,14 @@ def get_camera(
         .select(
             "id, owner_id, camera_id, enclosure_id, name, model, firmware_ver, "
             "resolution, fps, clip_sec, stream_mode, stream_until, "
-            "created_at, updated_at, last_seen_at, is_online"
+            "created_at, updated_at, last_seen_at, is_online, unlinked_at"
         )
         .eq("id", camera_uuid)
         .single()
         .execute()
     )
     row = res.data
-    if not row or row["owner_id"] != user_id:
+    if not row or row["owner_id"] != user_id or row.get("unlinked_at"):
         raise HTTPException(status_code=404, detail="camera not found")
     return CameraOut.model_validate(row)
 
@@ -312,6 +337,7 @@ def update_camera(
         .update(updates)
         .eq("id", camera_uuid)
         .eq("owner_id", user_id)
+        .is_("unlinked_at", "null")            # 해제된 카메라는 수정 불가 → 404
         .execute()
     )
     if not res.data:
@@ -342,6 +368,30 @@ def _publish_rotation(camera_id_text: str, rotate_180: bool) -> None:
             "set_rotation 발행 실패 camera=%s (텔레메트리 동기화로 수렴)",
             camera_id_text, exc_info=True,
         )
+
+
+@router.post(
+    "/{camera_uuid}/unlink",
+    response_model=UnlinkResponse,
+    summary="카메라 등록 해제 (소프트, 기록 보존)",
+    responses={**_AUTH_REQUIRED, **_NOT_FOUND},
+)
+def unlink_camera(
+    camera_uuid: str,
+    body: UnlinkRequest,
+    user_id: str = Depends(get_current_user_id),
+) -> UnlinkResponse:
+    """행을 지우지 않고 `unlinked_at` 만 찍는다. `motion_clips` 와 R2 원본은 보존.
+
+    클립 소유자는 촬영 시점 값이라 재등록한 새 소유자에게 과거 영상이 보이지 않는다.
+    멱등·404 규칙은 devices 와 동일. 계약: docs/APP_DELIVERY_2026-09-16.md §1.3
+    """
+    sb = get_supabase_client()
+    out = unlink_entity(
+        sb, table="cameras", entity_uuid=camera_uuid,
+        user_id=user_id, request_id=str(body.request_id),
+    )
+    return UnlinkResponse(**out)
 
 
 @router.delete(

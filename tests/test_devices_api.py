@@ -99,7 +99,7 @@ def test_list_devices_exposes_capabilities(
 ) -> None:
     """§2: 목록 응답에 capabilities 가 노출된다 (앱 밝기 슬라이더 판단용)."""
     caps = {"board": "relay", "led_dimmable": False}
-    fake_sb.table.return_value.select.return_value.eq.return_value.order.return_value.execute.return_value.data = [
+    fake_sb.table.return_value.select.return_value.eq.return_value.is_.return_value.order.return_value.execute.return_value.data = [
         {
             "id": "dev-1",
             "device_id": "terra-abcd",
@@ -128,7 +128,7 @@ def test_update_device_assign_enclosure_ok(
         "owner_id": TEST_USER_ID
     }
     dev_mock = MagicMock()
-    dev_mock.update.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+    dev_mock.update.return_value.eq.return_value.eq.return_value.is_.return_value.execute.return_value.data = [
         {
             "id": "dev-1",
             "device_id": "terra-abcd",
@@ -172,7 +172,7 @@ def test_update_device_unassign_enclosure_ok(
     app_client: TestClient, fake_sb: MagicMock
 ) -> None:
     """enclosure_id=null 로 사육장에서 분리 (None 은 소유권 검증 스킵)."""
-    fake_sb.table.return_value.update.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+    fake_sb.table.return_value.update.return_value.eq.return_value.eq.return_value.is_.return_value.execute.return_value.data = [
         {
             "id": "dev-1",
             "device_id": "terra-abcd",

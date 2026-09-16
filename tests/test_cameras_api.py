@@ -111,7 +111,7 @@ def test_pair_camera_rpi_model_prefix(
 
 
 def test_list_cameras(app_client: TestClient, fake_sb: MagicMock) -> None:
-    chain = fake_sb.table.return_value.select.return_value.eq.return_value.order.return_value
+    chain = fake_sb.table.return_value.select.return_value.eq.return_value.is_.return_value.order.return_value
     chain.execute.return_value.data = [_camera_row()]
 
     res = app_client.get("/cameras")
@@ -139,7 +139,7 @@ def test_get_camera_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
 
 
 def test_update_camera_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
-    chain = fake_sb.table.return_value.update.return_value.eq.return_value.eq.return_value
+    chain = fake_sb.table.return_value.update.return_value.eq.return_value.eq.return_value.is_.return_value
     chain.execute.return_value.data = [_camera_row(name="새이름")]
 
     res = app_client.patch("/cameras/cam-uuid", json={"name": "새이름"})
@@ -186,7 +186,7 @@ def test_update_camera_rotate_180_publishes_set_rotation(
 ) -> None:
     calls: list[tuple[str, dict]] = []
     _install_fake_signaling(monkeypatch, calls)
-    chain = fake_sb.table.return_value.update.return_value.eq.return_value.eq.return_value
+    chain = fake_sb.table.return_value.update.return_value.eq.return_value.eq.return_value.is_.return_value
     chain.execute.return_value.data = [_camera_row(rotate_180=True)]
 
     res = app_client.patch("/cameras/cam-uuid", json={"rotate_180": True})
@@ -212,7 +212,7 @@ def test_update_camera_without_rotate_does_not_publish(
 ) -> None:
     calls: list[tuple[str, dict]] = []
     _install_fake_signaling(monkeypatch, calls)
-    chain = fake_sb.table.return_value.update.return_value.eq.return_value.eq.return_value
+    chain = fake_sb.table.return_value.update.return_value.eq.return_value.eq.return_value.is_.return_value
     chain.execute.return_value.data = [_camera_row(name="새이름")]
 
     res = app_client.patch("/cameras/cam-uuid", json={"name": "새이름"})
@@ -226,7 +226,7 @@ def test_update_camera_rotate_publish_failure_is_best_effort(
     """MQTT 발행 실패(env 누락 등)해도 DB 는 갱신됐으므로 200. 텔레메트리 동기화가 수렴."""
     calls: list[tuple[str, dict]] = []
     _install_fake_signaling(monkeypatch, calls, raise_exc=True)
-    chain = fake_sb.table.return_value.update.return_value.eq.return_value.eq.return_value
+    chain = fake_sb.table.return_value.update.return_value.eq.return_value.eq.return_value.is_.return_value
     chain.execute.return_value.data = [_camera_row(rotate_180=False)]
 
     res = app_client.patch("/cameras/cam-uuid", json={"rotate_180": False})
@@ -250,3 +250,13 @@ def test_get_camera_capabilities_null_and_dict(app_client: TestClient, fake_sb: 
     res = app_client.get("/cameras/cam-uuid")
     assert res.json()["capabilities"] == {"rotate_180": True}
     assert res.json()["rotate_180"] is True
+
+
+def test_get_camera_clip_stats_serialized(app_client: TestClient, fake_sb: MagicMock) -> None:
+    chain = fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value
+    stats = {"rec": 5, "skip": 1, "up_fail": 0, "sd_backlog": 2, "last_rec_s": 90, "up_busy_s": -1}
+    chain.execute.return_value.data = _camera_row(clip_stats=stats, clip_stats_at="2026-09-16T01:00:00Z")
+    res = app_client.get("/cameras/cam-uuid")
+    assert res.status_code == 200
+    assert res.json()["clip_stats"] == stats
+    assert res.json()["clip_stats_at"] == "2026-09-16T01:00:00Z"

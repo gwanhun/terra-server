@@ -335,7 +335,7 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
     </div>
     <div id="cam-token" class="hidden"></div>
     <table id="cam-table">
-      <thead><tr><th>camera_id</th><th>이름</th><th>model</th><th>사육장</th><th>online</th><th title="rotate_180 설정(진실). capabilities.rotate_180 보고 전엔 비활성">회전 180°</th><th></th></tr></thead>
+      <thead><tr><th>camera_id</th><th>이름</th><th>model</th><th>사육장</th><th>online</th><th title="rotate_180 설정(진실). capabilities.rotate_180 보고 전엔 비활성">회전 180°</th><th title="클립 파이프라인: 녹화/스킵/업로드실패/SD백로그 · 마지막 녹화 경과">클립</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -766,7 +766,8 @@ async function loadDevices() {
         ${quickCmdButtons(r.id, r.is_online)}
         &nbsp;${mistButtons(r.id, r.is_online)}
         &nbsp;${ledSlider(r)}
-        <button class="danger" onclick="deleteDevice('${r.id}')" style="font-size:11px;padding:2px 8px;margin-left:8px">삭제</button>
+        <button onclick="unlinkDevice('devices','${r.id}')" title="소프트 해제 — 기록 보존, 앱의 '삭제'와 동일" style="font-size:11px;padding:2px 8px;margin-left:8px">해제</button>
+        <button class="danger" onclick="deleteDevice('${r.id}')" title="hard delete — 기록까지 삭제(운영용)" style="font-size:11px;padding:2px 8px;margin-left:4px">삭제</button>
       </td>`;
     tbody.appendChild(tr);
   });
@@ -1102,8 +1103,21 @@ async function pairDevice() {
   }
 }
 
+// 소프트 해제 — POST /devices|cameras/{id}/unlink. 앱의 "기기 삭제"가 부르는 경로와 동일.
+// 행·기록은 보존되고 목록에서만 사라진다. request_id 는 앱처럼 호출측이 생성(멱등 키).
+async function unlinkDevice(kind, id) {
+  if (!confirm('등록 해제? (기록은 보존, 목록에서만 사라짐)')) return;
+  const r = await api('/' + kind + '/' + id + '/unlink', {
+    method: 'POST',
+    body: JSON.stringify({ request_id: crypto.randomUUID() }),
+  });
+  if (r) toast(`해제됨 · ${r.unlinked_at}`, 'good');
+  loadEnclosures();
+  if (kind === 'cameras') loadCameras();
+}
+
 async function deleteDevice(id) {
-  if (!confirm('삭제?')) return;
+  if (!confirm('hard delete? 센서 기록·예약·알림까지 전부 삭제됨 (앱의 삭제와 다름)')) return;
   const r = await fetch(CONFIG.apiBase + '/devices/' + id, { method: 'DELETE', headers: { Authorization: 'Bearer ' + session.access_token } });
   log({ DELETE: '/devices/' + id, status: r.status });
   loadEnclosures();  // 사육장 개수 뱃지 + 디바이스 목록 갱신
@@ -1331,6 +1345,15 @@ function rotateCellHtml(r) {
     <small class="muted">${caps ? 'caps✓' : 'caps—'}</small></label>`;
 }
 
+function clipCellHtml(r) {
+  const c = r.clip_stats;
+  if (!c) return '<small class="muted">—</small>';
+  const bad = (c.skip > 0 || c.skip_lock > 0 || c.up_fail > 0 || c.sd_fail > 0 || (c.up_busy_s ?? -1) >= 300);
+  const age = c.last_rec_s >= 0 ? (c.last_rec_s < 3600 ? Math.round(c.last_rec_s/60)+'m' : Math.round(c.last_rec_s/3600)+'h') : '없음';
+  const stuck = (c.up_busy_s ?? -1) >= 300 ? ` <span class="bad">up ${Math.round(c.up_busy_s/60)}m!</span>` : '';
+  return `<small class="${bad ? 'bad' : 'muted'}" title="${esc(JSON.stringify(c))}">rec ${c.rec} · skip ${(c.skip||0)+(c.skip_lock||0)} · fail ${(c.up_fail||0)+(c.sd_fail||0)} · sd ${c.sd_backlog||0} · ${age}${stuck}</small>`;
+}
+
 function onlineCellHtml(r) {
   return r.is_online ? '<span class="good">●</span>' : '<span class="muted">○</span>';
 }
@@ -1344,7 +1367,7 @@ async function loadCameras() {
     CAM_LAST[r.id] = r;
     const tr = document.createElement('tr');
     tr.dataset.id = r.id;
-    tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td><select onchange="assignEnclosure('cameras','${r.id}',this.value)" style="max-width:130px">${enclosureOptions(r.enclosure_id)}</select></td><td class="cam-online">${onlineCellHtml(r)}</td><td class="cam-rotate">${rotateCellHtml(r)}</td><td style="white-space:nowrap"><button onclick="openLive('${r.id}', '${esc(r.camera_id)}')">라이브</button> <button class="danger" onclick="deleteCamera('${r.id}')">삭제</button></td>`;
+    tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td><select onchange="assignEnclosure('cameras','${r.id}',this.value)" style="max-width:130px">${enclosureOptions(r.enclosure_id)}</select></td><td class="cam-online">${onlineCellHtml(r)}</td><td class="cam-rotate">${rotateCellHtml(r)}</td><td class="cam-clips">${clipCellHtml(r)}</td><td style="white-space:nowrap"><button onclick="openLive('${r.id}', '${esc(r.camera_id)}')">라이브</button> <button onclick="unlinkDevice('cameras','${r.id}')" title="소프트 해제 — 클립·R2 보존">해제</button> <button class="danger" onclick="deleteCamera('${r.id}')" title="hard delete — 클립 메타까지 삭제(운영용)">삭제</button></td>`;
     tbody.appendChild(tr);
   });
 }
@@ -1370,6 +1393,7 @@ function updateCameraRow(r) {
   if (!tr) { loadCameras(); return; }
   const on = tr.querySelector('.cam-online'); if (on) on.innerHTML = onlineCellHtml(r);
   const rc = tr.querySelector('.cam-rotate'); if (rc) rc.innerHTML = rotateCellHtml(r);
+  const cc = tr.querySelector('.cam-clips'); if (cc) cc.innerHTML = clipCellHtml(r);
 }
 
 async function pairCamera() {

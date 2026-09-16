@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from backend.auth import get_current_user_id
+from backend.device_access import require_active_device
 from backend.command_service import insert_pending_command
 from backend.lcd_render import MAX_TEXT_LEN, build_lcd_payload
 from backend.supabase_client import get_supabase_client
@@ -49,13 +50,6 @@ class CommandOut(BaseModel):
     status: str
 
 
-def _load_device_for_owner(sb: Any, device_uuid: str, user_id: str) -> None:
-    res = (
-        sb.table("devices").select("id, owner_id").eq("id", device_uuid).limit(1).execute()
-    )
-    row = (res.data or [None])[0]
-    if not row or row["owner_id"] != user_id:
-        raise HTTPException(status_code=404, detail="device not found")
 
 
 @router.post(
@@ -72,7 +66,7 @@ def set_lcd_text(
 ) -> CommandOut:
     """텍스트를 서버에서 비트맵으로 렌더 → 디바이스 상단 밴드에 표시. 빈 문자열이면 clear 처리."""
     sb = get_supabase_client()
-    _load_device_for_owner(sb, device_uuid, user_id)
+    require_active_device(sb, device_uuid, user_id)
 
     if not body.text.strip():
         # 빈 텍스트 → 기본값 복귀
@@ -94,7 +88,7 @@ def clear_lcd_text(
     user_id: str = Depends(get_current_user_id),
 ) -> CommandOut:
     sb = get_supabase_client()
-    _load_device_for_owner(sb, device_uuid, user_id)
+    require_active_device(sb, device_uuid, user_id)
     return _insert(sb, device_uuid, user_id, "lcd_clear", None)
 
 

@@ -122,7 +122,12 @@ def _scan_cameras_offline(sb, now: datetime) -> int:
     카메라용 alert 파이프라인은 없으므로 여기선 **is_online=False 플립만** 한다.
     재연결 시 handle_telemetry/handle_ack 가 다시 True 로 복원한다.
     """
-    res = sb.table("cameras").select("id, last_seen_at, is_online").execute()
+    res = (
+        sb.table("cameras")
+        .select("id, last_seen_at, is_online")
+        .is_("unlinked_at", "null")
+        .execute()
+    )
     flipped = 0
     for row in res.data or []:
         last_seen_raw = row.get("last_seen_at")
@@ -145,6 +150,7 @@ def scan_once() -> dict[str, int]:
     res = (
         sb.table("devices")
         .select("id, last_seen_at, is_online")
+        .is_("unlinked_at", "null")            # 해제된 기기는 offline alert 대상 아님
         .execute()
     )
     rows = res.data or []
