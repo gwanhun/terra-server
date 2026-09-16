@@ -145,7 +145,9 @@ def create_enclosure(
     sb = get_supabase_client()
     payload: dict[str, Any] = {
         "owner_id": user_id,
-        "name": body.name,
+        # 앞뒤 공백 제거 — 앱 RPC(redesign_validate_name)가 trim 후 저장하므로 REST 도 맞춘다.
+        # UNIQUE 인덱스가 btrim(name) 기준이라 저장값도 trim 돼 있어야 표시가 일관된다.
+        "name": body.name.strip(),
         "species": body.species,
         "note": body.note,
     }
@@ -278,6 +280,10 @@ def update_enclosure(
     updates = body.model_dump(exclude_unset=True)
     if not updates:
         raise HTTPException(status_code=400, detail="변경 필드 없음")
+    if isinstance(updates.get("name"), str):
+        updates["name"] = updates["name"].strip()
+        if not updates["name"]:
+            raise HTTPException(status_code=400, detail="이름이 비어 있음")
 
     try:
         res = (

@@ -261,3 +261,35 @@ def test_other_db_error_is_not_swallowed_as_409(
 
     with pytest.raises(RuntimeError):
         app_client.post("/enclosures", json={"name": "사육 환경 3"})
+
+
+# ---------- 이름 trim (앱 RPC 와 저장 규칙 일치, SQL 초안 회신 N3) ----------
+
+
+def test_create_trims_name(app_client: TestClient, fake_sb: MagicMock) -> None:
+    t = MagicMock()
+    t.insert.return_value.execute.return_value.data = [{
+        "id": "enc-1", "name": "사육 환경 1", "species": None, "note": None,
+        "created_at": "2026-09-16T00:00:00+00:00", "updated_at": "2026-09-16T00:00:00+00:00",
+    }]
+    fake_sb.table.return_value = t
+    res = app_client.post("/enclosures", json={"name": "  사육 환경 1  "})
+    assert res.status_code == 201, res.text
+    assert t.insert.call_args.args[0]["name"] == "사육 환경 1"
+
+
+def test_patch_trims_name_and_rejects_blank(app_client: TestClient, fake_sb: MagicMock) -> None:
+    t = MagicMock()
+    t.update.return_value.eq.return_value.eq.return_value.execute.return_value.data = [{
+        "id": "enc-1", "name": "새 이름", "species": None, "note": None,
+        "created_at": "2026-09-16T00:00:00+00:00", "updated_at": "2026-09-16T00:00:00+00:00",
+    }]
+    t.select.return_value.eq.return_value.execute.return_value.data = []
+    fake_sb.table.return_value = t
+
+    res = app_client.patch("/enclosures/enc-1", json={"name": " 새 이름 "})
+    assert res.status_code == 200, res.text
+    assert t.update.call_args.args[0]["name"] == "새 이름"
+
+    res = app_client.patch("/enclosures/enc-1", json={"name": "   "})
+    assert res.status_code == 400
