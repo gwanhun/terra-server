@@ -99,10 +99,21 @@
   - `fan_on` / `fan_off` / `fan_toggle` — 팬 (`*_on` 은 `duration_ms` 옵션: one-shot 자동 OFF, 최대 2h)
   - `fan2_on` / `fan2_off` / `fan2_toggle` — 냉각팬 (동작은 fan 과 동일)
   - `heater_on` / `heater_off` / `heater_toggle` / `heater_clear_lock`
+    — ⛔ **현재 펌웨어 미구현**(핸들 NULL) → 항상 `unknown_action`. 향후 하드웨어용으로 목록만 유지
   - `led_on` (payload `brightness` 0~100 옵션, MOSFET 조광) / `led_off` / `led_toggle`
-  - `mist` (`duration_ms`: 1000|2000|3000) / `spray_1s` / `spray_3s` / `spray_5s`
+    — ⚠️ **`duration_ms` 미지원.** 보내면 **무시하고 켠 뒤 `ok` 응답**(자동 OFF 없음, 실패 감지 불가)
+    — ⚠️ `brightness: 0` 은 `led_on` 이어도 실제로 꺼지고 `state: "OFF"` 응답
+  - `mist` (`duration_ms`: 1000|2000|3000, 펌웨어 상한 5초) / `spray_1s` / `spray_3s` / `spray_5s`
   - `lcd_bitmap` / `lcd_clear`
   - `token_rotate` (추가 필드: `new_token`)
+
+> **`duration_ms` 를 실제로 처리하는 action 은 `mist` / `fan_on` / `fan2_on` 셋뿐이다**
+> (펌웨어 실측 2026-09-16). 나머지는 조용히 무시되고 `ok` 가 돌아온다.
+> 보드 차이: 릴레이 보드(`terra-iot-nano-relay`)에는 **`fan2_*` 코드가 없고**(→ `unknown_action`),
+> `led_on` 의 `brightness` 도 파싱하지 않는다. 상세: [BACKEND_HANDOFF_REPLY_LED_TIMER_2026-09-16.md](BACKEND_HANDOFF_REPLY_LED_TIMER_2026-09-16.md)
+>
+> **payload 예약 키**: `msg_id` / `issued_at` / `ttl_sec` / `action` 은 서버가 정한다.
+> `commands.payload` 에 같은 키가 있어도 서버가 무시한다(명령 바꿔치기 차단).
 - `action` (카메라 워커, ESP32-P4 / RPi):
   - `snapshot_stream` (추가: `interval_ms`, `duration_sec`) — Stage G1
   - `snapshot_stop` — Stage G1
@@ -223,3 +234,4 @@ topic read  esp32/picam-b2c3d4e5/command
 | 2026-09-07 | 0.4.1 | telemetry `fan2`(냉각팬) 추가, IoT action 목록 현행화 (`fan2_*`, on/off 계열, mist/lcd) |
 | 2026-09-08 | 0.5.0 | 카메라 `set_rotation` action, 카메라 telemetry `rotate_180`/`capabilities` (앱 핸드오프 rotate180) |
 | 2026-09-08 | 0.5.1 | **ACL 버그 수정**: 카메라 계정에 `telemetry` 쓰기 권한 추가 (누락으로 카메라 heartbeat 가 브로커에서 버려지던 문제). 기존 카메라는 `scripts/regen_acl.py` 로 재생성 |
+| 2026-09-16 | 0.5.2 | 펌웨어 실측 반영: `led_on` 의 `duration_ms` 미지원·`heater_*` 미구현 명시, payload 예약 키 보호 |
