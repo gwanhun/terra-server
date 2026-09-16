@@ -1,4 +1,36 @@
 -- 앱 팀 재설계 번들 적용 후 확인 (읽기 전용). 결과를 앱 팀 회신에 첨부한다.
+--
+-- ★ Supabase SQL Editor 는 여러 문장을 실행하면 마지막 결과만 보여준다.
+--   아래 "한 번에 보기" 한 문장만 실행하면 1~5 항목이 한 표에 나온다.
+--   기대: 1.function 13행(unlink 스텁 없음) · 2.trigger 2행 · 3.pets_fk 에 user_id 참조 1행(CASCADE)
+--         · 4.table 4행 · 5.grant 6행 전부 true
+SELECT '1.function' AS item, p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' AS detail
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE n.nspname = 'public' AND p.proname LIKE 'redesign_%'
+UNION ALL
+SELECT '2.trigger', tgname || ' ON ' || tgrelid::regclass::text
+  FROM pg_trigger WHERE tgname LIKE 'trg_%touch_assignments'
+UNION ALL
+SELECT '3.pets_fk', conname || ' : ' || pg_get_constraintdef(oid)
+  FROM pg_constraint WHERE conrelid = 'public.pets'::regclass AND contype = 'f'
+UNION ALL
+SELECT '4.table', table_name::text
+  FROM information_schema.tables WHERE table_schema = 'public'
+   AND table_name IN ('pet_camera_assignments','redesign_group_requests','redesign_group_counters','user_hidden_clips')
+UNION ALL
+SELECT '4.column', table_name::text || '.' || column_name::text
+  FROM information_schema.columns WHERE table_schema = 'public'
+   AND ((table_name = 'pets' AND column_name = 'deleted_at') OR (table_name = 'enclosures' AND column_name = 'group_number'))
+UNION ALL
+SELECT '5.grant', p.proname || ' = ' || has_function_privilege('authenticated', p.oid, 'EXECUTE')::text
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+ WHERE n.nspname = 'public' AND p.proname IN ('redesign_save_group_v1','redesign_remove_group_member_v1',
+       'redesign_rename_item_v1','redesign_delete_group_v1','redesign_save_pet_v1','redesign_delete_pet_v1')
+ORDER BY 1, 2;
+
+-- ---------------------------------------------------------------------------
+-- 아래는 항목별 개별 쿼리 (하나씩 실행할 때)
+-- ---------------------------------------------------------------------------
 -- 1) 함수명·시그니처 — 초안과 동일해야 함 (redesign_unlink_device_v1 은 없어야 함)
 SELECT p.proname, pg_get_function_identity_arguments(p.oid) AS args, p.prosecdef AS security_definer
   FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
