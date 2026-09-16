@@ -394,3 +394,54 @@ def test_worker_does_not_start_when_not_configured(
     w.start()
     assert w._thread is None
     w.stop()
+
+
+# ---------- device.action.skipped (2차, 기본 꺼짐) ----------
+
+GUARD = {"kind": "skip_when_temp_above", "metric": "temperature", "threshold": 30, "value": 33.5}
+
+
+def _skipped_row() -> dict[str, Any]:
+    return {"id": CMD_ID, "device_id": DEVICE_UUID, "issued_by": OWNER,
+            "action": "heater_on", "source": "guard", "source_id": SCHED,
+            "status": "skipped", "result": "guard_skipped"}
+
+
+def test_build_skipped_event_matches_app_contract() -> None:
+    """앱 회신 2026-09-16 §4 표 그대로."""
+    ev = push_events.build_skipped_event(_skipped_row(), "terra-a1", META, GUARD)
+    assert ev is not None
+    assert ev["type"] == push_events.EVENT_SKIPPED
+    assert ev["event_id"] == f"command:{CMD_ID}:skipped"
+    p = ev["payload"]
+    assert p["execution_source"] == "schedule"      # 건너뛴 대상이 예약이므로
+    assert p["execution_phase"] == "skipped"
+    assert p["outcome"] == "skipped"
+    assert p["result"] == "guard_skipped"
+    assert p["schedule_id"] == SCHED
+    assert p["action"] == "heater_on"
+    assert p["guard"] == GUARD
+    assert p["device_key"] == "terra-a1"
+    assert p["device_name"] == "크레이 사육장"
+
+
+def test_skipped_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """앱 수신부 준비 전엔 422 로 거절되므로 기본은 발송 안 함."""
+    monkeypatch.delenv("PUSH_EVENT_SKIPPED_ENABLED", raising=False)
+    called = MagicMock()
+    monkeypatch.setattr(push_events, "enqueue", called)
+    assert push_events.enqueue_skipped_event(_skipped_row(), "terra-a1", META, GUARD) is False
+    called.assert_not_called()
+
+
+def test_skipped_enabled_by_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PUSH_EVENT_SKIPPED_ENABLED", "true")
+    inserts: list[dict] = []
+    monkeypatch.setattr(push_events, "get_supabase_client", lambda: _sb_with_insert(inserts))
+    assert push_events.enqueue_skipped_event(_skipped_row(), "terra-a1", META, GUARD) is True
+    assert inserts[0]["event_type"] == push_events.EVENT_SKIPPED
+
+
+def test_skipped_without_user_skips() -> None:
+    row = _skipped_row(); row["issued_by"] = None
+    assert push_events.build_skipped_event(row, "terra-a1", {"name": "x"}, GUARD) is None

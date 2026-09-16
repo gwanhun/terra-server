@@ -45,6 +45,7 @@ SCHEMA_VERSION = 1
 EVENT_STARTED = "device.action.started"
 EVENT_ENDED = "device.action.ended"
 EVENT_FAILED = "device.action.failed"
+EVENT_SKIPPED = "device.action.skipped"      # 2차 — 앱 수신부 준비 전엔 발송 금지
 
 # 펌웨어가 성공을 알리는 유일한 값. 나머지(busy/error/unknown_action/rejected_* …)는
 # 전부 실패로 묶는다 — status 는 결과와 무관하게 항상 'acked' 라 못 쓴다(회신 §4).
@@ -55,6 +56,12 @@ RESULT_OK = "ok"
 #   - guard(가드 스킵): 1차 제외. 2차에 device.action.skipped 타입으로 별도 설계
 #   - timer: 서버에서 세팅된 적이 없는 값 → 앱이 허용값에서 제거하기로 함
 DEFAULT_SOURCES = ("schedule",)
+
+# 가드 스킵(device.action.skipped) 발송 스위치. 앱 회신 2026-09-16 §4:
+#   "앱 수신부가 이 타입을 아직 받지 않습니다 … 그 전에 보내시면 422 로 거절되니
+#    발송 조건에는 아직 넣지 마세요" → 기본 꺼짐. 앱이 "발송 시작해도 됩니다" 신호를
+#   주면 PUSH_EVENT_SKIPPED_ENABLED=true 로 켠다.
+SKIPPED_RESULT = "guard_skipped"
 
 # ACK 가 영영 오지 않는 명령을 실패로 굳히는 기준 (앱 회신 §3-6).
 # 무인 실행에서 히터·펌프가 안 켜진 경우가 사용자에게 가장 중요한 알림이다.
@@ -78,6 +85,10 @@ def _now() -> datetime:
 def _enabled() -> bool:
     """URL 과 secret 이 모두 있어야 켜진다. 미설정이면 조용히 no-op."""
     return bool(_ingest_url() and _ingest_secret())
+
+
+def _skipped_enabled() -> bool:
+    return (os.getenv("PUSH_EVENT_SKIPPED_ENABLED") or "").strip().lower() in ("1", "true", "yes")
 
 
 def _ingest_url() -> str:
@@ -226,6 +237,69 @@ def enqueue(event: dict[str, Any]) -> bool:
         return False
     logger.info("push 이벤트 적재: %s", event["event_id"])
     return True
+
+
+def build_skipped_event(
+    command_row: dict[str, Any],
+    device_key: str,
+    device_meta: dict[str, Any] | None,
+    guard: dict[str, Any],
+) -> dict[str, Any] | None:
+    """가드로 건너뛴 예약 → device.action.skipped (앱 회신 2026-09-16 §4 계약).
+
+    command_row 는 schedule_runner._record_skipped 가 INSERT 한 감사 행(source='guard').
+    execution_source 는 'schedule' 로 낸다 — 건너뛴 대상이 예약이므로 (앱 §4 표).
+    guard 는 {kind, threshold, value, metric} — 앱이 문구를 만드는 재료.
+    """
+    command_id = command_row.get("id")
+    if not command_id:
+        return None
+    meta = device_meta or {}
+    user_id = command_row.get("issued_by") or meta.get("owner_id")
+    if not user_id:
+        logger.warning("push: user_id 확보 실패 (skipped) command=%s — 건너뜀", command_id)
+        return None
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "event_id": f"command:{command_id}:skipped",
+        "type": EVENT_SKIPPED,
+        "occurred_at": _now().isoformat(),
+        "user_id": user_id,
+        "payload": {
+            "command_id": command_id,
+            "device_id": command_row.get("device_id"),
+            "device_key": device_key,
+            "enclosure_id": meta.get("enclosure_id"),
+            "schedule_id": command_row.get("source_id"),
+            "execution_source": "schedule",
+            "execution_phase": "skipped",
+            "action": command_row.get("action"),
+            "outcome": "skipped",
+            "result": SKIPPED_RESULT,
+            "guard": {
+                "kind": guard.get("kind"),
+                "threshold": guard.get("threshold"),
+                "value": guard.get("value"),
+                "metric": guard.get("metric"),
+            },
+            "device_name": meta.get("name"),
+        },
+    }
+
+
+def enqueue_skipped_event(
+    command_row: dict[str, Any],
+    device_key: str,
+    device_meta: dict[str, Any] | None,
+    guard: dict[str, Any],
+) -> bool:
+    """PUSH_EVENT_SKIPPED_ENABLED 가 켜져 있을 때만 적재. 기본 꺼짐(앱 §4)."""
+    if not _skipped_enabled():
+        return False
+    event = build_skipped_event(command_row, device_key, device_meta, guard)
+    if event is None:
+        return False
+    return enqueue(event)
 
 
 def enqueue_command_failure(
@@ -395,12 +469,15 @@ class PushOutboxWorker:
 __all__ = [
     "EVENT_ENDED",
     "EVENT_FAILED",
+    "EVENT_SKIPPED",
     "EVENT_STARTED",
     "NO_ACK_RESULT",
     "PushOutboxWorker",
     "build_command_event",
     "enqueue",
+    "build_skipped_event",
     "enqueue_command_failure",
+    "enqueue_skipped_event",
     "reset_span_cache",
     "send_pending",
 ]

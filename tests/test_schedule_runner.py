@@ -216,3 +216,60 @@ def test_fire_advances_before_insert_failure_isolated(fake_sb: MagicMock) -> Non
     fake_sb.table.side_effect = _table
     # 예외 없이 0 발화 (파싱 실패로 _fire_one 예외 → 잡힘)
     assert schedule_runner.run_once() == 0
+
+
+def test_guard_skip_returns_structured_info(fake_sb: MagicMock) -> None:
+    """푸시 guard 필드 재료 — kind/metric/threshold/value 가 숫자 그대로 나온다."""
+    (
+        fake_sb.table.return_value.select.return_value.eq.return_value
+        .order.return_value.limit.return_value.execute.return_value.data
+    ) = [{"t_a": 33.5, "h_a": 40.0, "ts": "2026-09-16T00:00:00+00:00"}]
+    skip = schedule_runner._evaluate_skip_guard(
+        fake_sb, DEVICE_UUID, {"type": "skip_when_temp_above", "value": 30, "enabled": True}
+    )
+    assert skip is not None
+    assert skip["kind"] == "skip_when_temp_above"
+    assert skip["metric"] == "temperature"
+    assert skip["threshold"] == 30
+    assert skip["value"] == 33.5
+    assert "온도" in skip["reason"]
+
+
+def test_guard_skip_enqueues_skipped_event_when_enabled(
+    fake_sb: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """감사 행 INSERT 후 device.action.skipped 적재 훅이 호출된다 (스위치 켠 상태)."""
+    from backend import push_events
+    from backend.mqtt import handlers
+
+    monkeypatch.setenv("PUSH_EVENT_SKIPPED_ENABLED", "true")
+    monkeypatch.setattr(handlers, "_cached_device_text", lambda u: "terra-a1")
+    monkeypatch.setattr(handlers, "device_meta", lambda u: {"owner_id": OWNER_UUID, "name": "n"})
+    captured: list[tuple] = []
+    monkeypatch.setattr(
+        push_events, "enqueue_skipped_event",
+        lambda row, key, meta, guard: captured.append((row["id"], key, guard)) or True,
+    )
+
+    row = _due_row(guard={"type": "skip_when_humidity_above", "value": 60, "enabled": True})
+
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        if name == "schedules":
+            t.select.return_value.eq.return_value.lte.return_value.order.return_value.limit.return_value.execute.return_value.data = [row]
+            t.update.return_value.eq.return_value.execute.return_value.data = [{"id": "sch-1"}]
+        elif name == "telemetry":
+            t.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = [
+                {"t_a": 25.0, "h_a": 72.0, "ts": "2026-08-12T00:00:00+00:00"}
+            ]
+        elif name == "commands":
+            c = MagicMock(); c.execute.return_value.data = [{"id": "cmd-skip", "source_id": "sch-1"}]
+            t.insert.return_value = c
+        return t
+
+    fake_sb.table.side_effect = _table
+    assert schedule_runner.run_once() == 1
+    assert captured == [("cmd-skip", "terra-a1", {
+        "reason": captured[0][2]["reason"], "kind": "skip_when_humidity_above",
+        "metric": "humidity", "threshold": 60, "value": 72.0,
+    })]

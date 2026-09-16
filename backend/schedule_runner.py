@@ -51,8 +51,13 @@ def _latest_telemetry(sb: Any, device_uuid: str) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
-def _evaluate_skip_guard(sb: Any, device_uuid: str, guard: dict[str, Any]) -> str | None:
-    """skip 형 가드 평가. 스킵해야 하면 사유 문자열, 아니면 None.
+def _evaluate_skip_guard(
+    sb: Any, device_uuid: str, guard: dict[str, Any]
+) -> dict[str, Any] | None:
+    """skip 형 가드 평가. 스킵해야 하면 {reason, kind, metric, threshold, value}, 아니면 None.
+
+    reason 은 감사 로그 문구, 나머지는 푸시 이벤트(device.action.skipped)의 guard 필드
+    재료다 — 앱이 자기 문구를 만들 수 있게 숫자를 그대로 넘긴다 (앱 회신 2026-09-16 §4).
 
     이번 단계는 **발행 직전 판단(skip_when_*)** 만 서버가 처리. stop_when_* 는 펌웨어 담당이라
     서버는 무시(None 반환 → 정상 발행). 최신 telemetry 없으면 판단 불가 → 정상 발행.
@@ -70,25 +75,32 @@ def _evaluate_skip_guard(sb: Any, device_uuid: str, guard: dict[str, Any]) -> st
         return None
 
     h_a, t_a = tel.get("h_a"), tel.get("t_a")
+
+    def _skip(reason: str, metric: str, measured: float) -> dict[str, Any]:
+        return {"reason": reason, "kind": gtype, "metric": metric,
+                "threshold": value, "value": measured}
+
     if gtype == "skip_when_humidity_above" and h_a is not None and h_a > value:
-        return f"습도 {h_a:.0f}% > {value:.0f}% → 스킵"
+        return _skip(f"습도 {h_a:.0f}% > {value:.0f}% → 스킵", "humidity", h_a)
     if gtype == "skip_when_humidity_below" and h_a is not None and h_a < value:
-        return f"습도 {h_a:.0f}% < {value:.0f}% → 스킵"
+        return _skip(f"습도 {h_a:.0f}% < {value:.0f}% → 스킵", "humidity", h_a)
     if gtype == "skip_when_temp_above" and t_a is not None and t_a > value:
-        return f"온도 {t_a:.1f}°C > {value:.1f}°C → 스킵"
+        return _skip(f"온도 {t_a:.1f}°C > {value:.1f}°C → 스킵", "temperature", t_a)
     if gtype == "skip_when_temp_below" and t_a is not None and t_a < value:
-        return f"온도 {t_a:.1f}°C < {value:.1f}°C → 스킵"
+        return _skip(f"온도 {t_a:.1f}°C < {value:.1f}°C → 스킵", "temperature", t_a)
     return None
 
 
-def _record_skipped(sb: Any, row: dict[str, Any], reason: str) -> None:
+def _record_skipped(sb: Any, row: dict[str, Any], skip: dict[str, Any]) -> None:
     """가드로 스킵된 예약을 감사 로그로 남김 — status='skipped', source='guard'.
 
     발행(publish)은 안 함 (dispatcher 는 status='pending' 만 처리). 앱 감사 로그(commands 조회)에
     "가드로 스킵됨 + 사유" 가 보이게 하기 위함 (요청 5 §4.3.8).
+    감사 행이 만들어지면 device.action.skipped 푸시를 적재한다 — 단 스위치가 꺼져 있으면 no-op
+    (앱 수신부 준비 전, push_events.enqueue_skipped_event 참고).
     """
     try:
-        sb.table("commands").insert({
+        res = sb.table("commands").insert({
             "device_id": row["device_id"],
             "action": row["action"],
             "payload": row.get("payload"),
@@ -97,10 +109,28 @@ def _record_skipped(sb: Any, row: dict[str, Any], reason: str) -> None:
             "result": "guard_skipped",
             "source": "guard",
             "source_id": row["id"],
-            "reason": reason,
+            "reason": skip["reason"],
         }).execute()
     except Exception:  # noqa: BLE001
         logger.exception("skipped 감사 기록 실패 (schedule=%s)", row.get("id"))
+        return
+
+    inserted = (res.data or [None])[0]
+    if not inserted:
+        return
+    try:
+        from backend import push_events
+        from backend.mqtt import handlers
+
+        device_uuid = row["device_id"]
+        push_events.enqueue_skipped_event(
+            inserted,
+            handlers._cached_device_text(device_uuid) or "",
+            handlers.device_meta(device_uuid),
+            skip,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("skipped 푸시 적재 실패 (schedule=%s)", row.get("id"))
 
 
 def _fire_one(sb: Any, row: dict[str, Any], now: datetime) -> None:
@@ -117,10 +147,10 @@ def _fire_one(sb: Any, row: dict[str, Any], now: datetime) -> None:
     # 2) 스마트 조건(가드) — skip 형이면 발행 안 하고 감사 기록만
     guard = row.get("guard")
     if isinstance(guard, dict) and guard.get("enabled"):
-        skip_reason = _evaluate_skip_guard(sb, row["device_id"], guard)
-        if skip_reason:
-            _record_skipped(sb, row, skip_reason)
-            logger.info("schedule %s 가드 스킵: %s", row.get("id"), skip_reason)
+        skip = _evaluate_skip_guard(sb, row["device_id"], guard)
+        if skip:
+            _record_skipped(sb, row, skip)
+            logger.info("schedule %s 가드 스킵: %s", row.get("id"), skip["reason"])
             return
 
     # 3) 명령 큐잉 — source='schedule' 로 감사 로그에서 예약 발행임을 표시
