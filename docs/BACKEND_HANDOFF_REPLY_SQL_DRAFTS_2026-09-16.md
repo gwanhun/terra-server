@@ -213,3 +213,25 @@ N1·N3·N4·N5 동의, N2 스텁 제거 — 확인했습니다. B5 스냅샷 갱
 ### 다음
 
 **반영본 번들(7개 파일 + assertion 3개)이 브랜치에 올라오면** 그 커밋 기준으로 다시 읽고, `BEGIN … ROLLBACK` 을 벗겨 §5 순서대로 운영에 적용한 뒤, 함수명·오류코드가 초안과 같은지 한 줄로 회신하겠습니다. 브랜치 push 알려주세요.
+
+
+---
+
+## 운영 적용 완료 (2026-09-16)
+
+`tera-ai-flutter@bb430fa` 번들 6개를 §5 순서대로 Supabase 운영에 적용했습니다. 적용본은 terra-server `migrations/2026-09-16_app_redesign_0[1-6]_*.sql` (원본 그대로, `BEGIN…COMMIT` 래핑), 기록은 `MIGRATIONS_APPLIED.md`.
+
+### 적용 후 확인 결과 (`migrations/2026-09-16_app_redesign_VERIFY.sql`)
+
+| 항목 | 결과 | 판정 |
+|---|---|---|
+| 함수 | 13개, 시그니처 초안과 동일. `redesign_unlink_device_v1` 없음 | ✅ |
+| 트리거 | `trg_cameras_touch_assignments ON cameras` · `trg_pets_touch_assignments ON pets` | ✅ |
+| `pets.user_id` FK | `pets_user_id_fkey … ON DELETE CASCADE` **단일** (옛 제약 잔존 없음) | ✅ |
+| 새 테이블 | `pet_camera_assignments` · `redesign_group_requests` · `redesign_group_counters` · `user_hidden_clips` | ✅ |
+| 새 컬럼 | `pets.deleted_at` · `enclosures.group_number` | ✅ |
+| `authenticated` EXECUTE | RPC 6개 전부 `true` | ✅ |
+
+**함수명·시그니처·오류 코드는 초안과 동일합니다.** SQL 을 원본 그대로 적용했으므로 오류 코드(`0A000`/`23505`/`40001`/`42501`/`22023`)도 초안 본문 그대로입니다. 앱은 변경 없이 붙이면 됩니다.
+
+terra-server 쪽 후속 없음 — 응답 모델이 새 컬럼을 무시하고(`extra="ignore"`), `unlink`·`PATCH enclosure_id`·`DELETE /enclosures` 는 트리거로 이력이 자동 갱신됩니다.
