@@ -22,6 +22,7 @@ Supabase 에 적용한 마이그레이션 기록(SOT). `migrations/*.sql` 을 SQ
 | ✅ | `2026-09-15_push_outbox.sql` | 2026-09-16 | 앱 푸시 이벤트 전송 대기열 + 정리 cron (`cleanup-push-outbox` jobid=6 신규) |
 | ✅ | `2026-09-16_enclosures_name_unique.sql` | 2026-09-16 | 그룹 이름 중복 금지 UNIQUE 인덱스 (앱 §1-1: btrim, 대소문자 구분). 생성 성공 = 기존 중복 없음 |
 | ⬜ | `2026-09-16_soft_unlink.sql` | — | devices/cameras `unlinked_at` + `unlink_request_id` + 활성 부분 인덱스 (소프트 해제, 앱 §1). **미적용 — SQL Editor 실행 필요** |
+| ⬜ | `2026-09-16_cameras_clip_stats.sql` | — | `cameras.clip_stats` JSONB + `clip_stats_at` (펌웨어 텔레메트리 `clips` 카운터). **미적용 — 브리지 배포 전 반드시 실행** (펌웨어가 `clips` 를 보내면 컬럼 없이는 cameras UPDATE 실패) |
 
 ## 규칙
 - 새 마이그레이션은 `migrations/YYYY-MM-DD_설명.sql` 로 추가하고, 적용 후 이 표에 행 추가.

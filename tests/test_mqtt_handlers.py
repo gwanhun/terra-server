@@ -728,3 +728,35 @@ def test_camera_telemetry_mismatch_without_publisher_is_noop(fake_sb: MagicMock)
 
     assert len(updates) == 1
     assert updates[0]["is_online"] is True
+
+
+# ---------- 카메라 clip_stats (2026-09-16) ----------
+
+
+def test_camera_telemetry_stores_clip_stats(fake_sb: MagicMock, published: list) -> None:
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_state_table_factory(updates)
+    clips = {"rec": 3, "skip": 0, "skip_lock": 0, "up_ok": 3, "up_fail": 0,
+             "sd_ok": 0, "sd_fail": 0, "sd_backlog": 0, "last_rec_s": 12, "up_busy_s": -1}
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "clips": clips})
+
+    assert updates[0]["clip_stats"] == clips
+    assert "clip_stats_at" in updates[0]
+    assert published == []
+
+
+def test_camera_telemetry_clip_regression_logs_warning(
+    fake_sb: MagicMock, published: list, caplog
+) -> None:
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_state_table_factory(updates)
+    base = {"rec": 3, "skip": 0, "up_fail": 0, "up_busy_s": -1}
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "clips": base})
+    with caplog.at_level("WARNING"):
+        handlers.handle_telemetry(CAMERA_TEXT, {"ts": 2, "clips": {**base, "skip": 2, "up_fail": 1}})
+        handlers.handle_telemetry(CAMERA_TEXT, {"ts": 3, "clips": {**base, "up_busy_s": 400}})
+    msgs = " ".join(r.getMessage() for r in caplog.records)
+    assert "슬롯 없음 스킵 +2" in msgs
+    assert "업로드 실패 +1" in msgs
+    assert "정체 의심" in msgs
