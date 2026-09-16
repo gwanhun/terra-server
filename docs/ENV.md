@@ -101,7 +101,7 @@ Edge Function 으로 이벤트를 보낸다. 브리지가 `push_outbox` 에 적�
 | `PUSH_EVENT_INGEST_URL` | 기능 사용 시 | 앱 Edge Function 엔드포인트 |
 | `PUSH_EVENT_INGEST_SECRET` | 기능 사용 시 | `Authorization: Bearer` 로 전송. **앱 팀에서 안전 채널로 수령** |
 | `PUSH_EVENT_SOURCES` | X | 알릴 `commands.source` 목록(쉼표). 기본 `schedule` (앱 회신 2026-09-16: guard·timer 제외) |
-| `PUSH_EVENT_SKIPPED_ENABLED` | X | `device.action.skipped`(가드 스킵) 발송. **기본 꺼짐** — 앱 수신부가 준비되기 전엔 422 로 거절되므로 앱의 "발송 시작" 신호 후 `true` |
+| `PUSH_EVENT_SKIPPED_ENABLED` | X | `device.action.skipped`(가드 스킵) 발송. **기본 켜짐** (2026-09-16 앱 수신부 준비 완료). 앱측 장애 시 `false` 로 긴급 차단 |
 
 - **둘 다 비어 있으면 워커가 시작하지 않는다.** 미설정이 기본이며 아무 것도 안 보낸다.
 - secret 은 **헤더로만** 나간다. `push_outbox.body` 나 로그에 들어가지 않는다.

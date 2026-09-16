@@ -425,21 +425,32 @@ def test_build_skipped_event_matches_app_contract() -> None:
     assert p["device_name"] == "크레이 사육장"
 
 
-def test_skipped_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """앱 수신부 준비 전엔 422 로 거절되므로 기본은 발송 안 함."""
+def test_skipped_enabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """2026-09-16 앱 수신부 준비 완료 신호 → 기본 켜짐."""
     monkeypatch.delenv("PUSH_EVENT_SKIPPED_ENABLED", raising=False)
+    inserts: list[dict] = []
+    monkeypatch.setattr(push_events, "get_supabase_client", lambda: _sb_with_insert(inserts))
+    assert push_events.enqueue_skipped_event(_skipped_row(), "terra-a1", META, GUARD) is True
+    assert inserts[0]["event_type"] == push_events.EVENT_SKIPPED
+
+
+@pytest.mark.parametrize("val", ["false", "0", "no", "FALSE"])
+def test_skipped_can_be_disabled_by_env(val: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """앱측 장애 시 긴급 차단용."""
+    monkeypatch.setenv("PUSH_EVENT_SKIPPED_ENABLED", val)
     called = MagicMock()
     monkeypatch.setattr(push_events, "enqueue", called)
     assert push_events.enqueue_skipped_event(_skipped_row(), "terra-a1", META, GUARD) is False
     called.assert_not_called()
 
 
-def test_skipped_enabled_by_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PUSH_EVENT_SKIPPED_ENABLED", "true")
-    inserts: list[dict] = []
-    monkeypatch.setattr(push_events, "get_supabase_client", lambda: _sb_with_insert(inserts))
-    assert push_events.enqueue_skipped_event(_skipped_row(), "terra-a1", META, GUARD) is True
-    assert inserts[0]["event_type"] == push_events.EVENT_SKIPPED
+def test_skipped_needs_ingest_config_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    """스위치가 켜져 있어도 URL/SECRET 없으면 나가지 않는다."""
+    monkeypatch.delenv("PUSH_EVENT_INGEST_SECRET", raising=False)
+    called = MagicMock()
+    monkeypatch.setattr(push_events, "get_supabase_client", called)
+    assert push_events.enqueue_skipped_event(_skipped_row(), "terra-a1", META, GUARD) is False
+    called.assert_not_called()
 
 
 def test_skipped_without_user_skips() -> None:

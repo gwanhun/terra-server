@@ -45,7 +45,7 @@ SCHEMA_VERSION = 1
 EVENT_STARTED = "device.action.started"
 EVENT_ENDED = "device.action.ended"
 EVENT_FAILED = "device.action.failed"
-EVENT_SKIPPED = "device.action.skipped"      # 2차 — 앱 수신부 준비 전엔 발송 금지
+EVENT_SKIPPED = "device.action.skipped"      # 2026-09-16 앱 수신부 준비 완료 → 발송
 
 # 펌웨어가 성공을 알리는 유일한 값. 나머지(busy/error/unknown_action/rejected_* …)는
 # 전부 실패로 묶는다 — status 는 결과와 무관하게 항상 'acked' 라 못 쓴다(회신 §4).
@@ -57,10 +57,10 @@ RESULT_OK = "ok"
 #   - timer: 서버에서 세팅된 적이 없는 값 → 앱이 허용값에서 제거하기로 함
 DEFAULT_SOURCES = ("schedule",)
 
-# 가드 스킵(device.action.skipped) 발송 스위치. 앱 회신 2026-09-16 §4:
-#   "앱 수신부가 이 타입을 아직 받지 않습니다 … 그 전에 보내시면 422 로 거절되니
-#    발송 조건에는 아직 넣지 마세요" → 기본 꺼짐. 앱이 "발송 시작해도 됩니다" 신호를
-#   주면 PUSH_EVENT_SKIPPED_ENABLED=true 로 켠다.
+# 가드 스킵(device.action.skipped) 발송 스위치.
+#   2026-09-16 앱이 "발송 시작해도 됩니다"(수신부 0.108.5+270) 신호 → 기본 **켜짐**.
+#   앱측 장애 등으로 잠시 끊어야 하면 PUSH_EVENT_SKIPPED_ENABLED=false.
+#   (URL/SECRET 이 없으면 어차피 enqueue 가 no-op 이라 이 스위치만으로 나가지 않는다)
 SKIPPED_RESULT = "guard_skipped"
 
 # ACK 가 영영 오지 않는 명령을 실패로 굳히는 기준 (앱 회신 §3-6).
@@ -88,7 +88,9 @@ def _enabled() -> bool:
 
 
 def _skipped_enabled() -> bool:
-    return (os.getenv("PUSH_EVENT_SKIPPED_ENABLED") or "").strip().lower() in ("1", "true", "yes")
+    """기본 켜짐. 명시적으로 false/0/no 를 줄 때만 끈다."""
+    raw = (os.getenv("PUSH_EVENT_SKIPPED_ENABLED") or "").strip().lower()
+    return raw not in ("0", "false", "no")
 
 
 def _ingest_url() -> str:
