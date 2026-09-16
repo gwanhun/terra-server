@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from tests.conftest import TEST_USER_ID
@@ -216,3 +218,46 @@ def test_delete_enclosure_not_found(
 
     res = app_client.delete("/enclosures/enc-missing")
     assert res.status_code == 404
+
+
+# ---------- 이름 중복 409 (앱 회신 2026-09-16 §1-1·§2-2) ----------
+
+
+def test_create_duplicate_name_returns_409(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """DB UNIQUE 위반이 500 이 아니라 409 로 나가야 앱이 문구를 매핑할 수 있다."""
+    t = MagicMock()
+    t.insert.return_value.execute.side_effect = RuntimeError(
+        'duplicate key value violates unique constraint "uq_enclosures_owner_name" (23505)'
+    )
+    fake_sb.table.return_value = t
+
+    res = app_client.post("/enclosures", json={"name": "사육 환경 1"})
+    assert res.status_code == 409, res.text
+    assert "이름" in res.json()["detail"]
+
+
+def test_rename_duplicate_name_returns_409(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    t = MagicMock()
+    t.update.return_value.eq.return_value.eq.return_value.execute.side_effect = (
+        RuntimeError("23505 duplicate key")
+    )
+    fake_sb.table.return_value = t
+
+    res = app_client.patch("/enclosures/enc-1", json={"name": "사육 환경 2"})
+    assert res.status_code == 409, res.text
+
+
+def test_other_db_error_is_not_swallowed_as_409(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """중복이 아닌 오류를 409 로 오인하면 안 된다."""
+    t = MagicMock()
+    t.insert.return_value.execute.side_effect = RuntimeError("connection reset")
+    fake_sb.table.return_value = t
+
+    with pytest.raises(RuntimeError):
+        app_client.post("/enclosures", json={"name": "사육 환경 3"})

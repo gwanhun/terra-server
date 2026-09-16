@@ -91,8 +91,27 @@ class EnclosureDetailOut(EnclosureOut):
     )
 
 
+_NAME_CONFLICT = {409: {"description": "같은 계정에 같은 이름의 사육장이 이미 있음"}}
 _NOT_FOUND = {404: {"description": "본인 사육장이 아니거나 미존재"}}
 _AUTH_REQUIRED = {401: {"description": "JWT 누락/검증 실패"}}
+
+
+# 이름 중복 UNIQUE 위반을 409 로 변환. 앱은 이 코드를 "이미 사용 중인 이름" 문구로 매핑한다
+# (앱 회신 2026-09-16 §2-2 에러 코드 표). 제약은
+# migrations/2026-09-16_enclosures_name_unique.sql 의 uq_enclosures_owner_name.
+_NAME_CONFLICT_MARKERS = ("23505", "duplicate key", "uq_enclosures_owner_name")
+
+
+def _is_name_conflict(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(m.lower() in msg for m in _NAME_CONFLICT_MARKERS)
+
+
+def _raise_name_conflict() -> None:
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="이미 사용 중인 사육장 이름입니다.",
+    )
 
 
 def _count_by_enclosure(sb, table: str, user_id: str) -> dict[str, int]:
@@ -116,7 +135,7 @@ def _count_by_enclosure(sb, table: str, user_id: str) -> dict[str, int]:
     response_model=EnclosureOut,
     status_code=status.HTTP_201_CREATED,
     summary="사육장 생성",
-    responses={**_AUTH_REQUIRED},
+    responses={**_AUTH_REQUIRED, **_NAME_CONFLICT},
 )
 def create_enclosure(
     body: EnclosureCreate,
@@ -130,7 +149,12 @@ def create_enclosure(
         "species": body.species,
         "note": body.note,
     }
-    res = sb.table("enclosures").insert(payload).execute()
+    try:
+        res = sb.table("enclosures").insert(payload).execute()
+    except Exception as exc:  # noqa: BLE001 — supabase-py 예외 타입 넓음
+        if _is_name_conflict(exc):
+            _raise_name_conflict()
+        raise
     if not res.data:
         raise HTTPException(status_code=500, detail="enclosure INSERT 실패")
     return EnclosureOut.model_validate(res.data[0])
@@ -240,6 +264,7 @@ def get_enclosure(
     responses={
         **_AUTH_REQUIRED,
         **_NOT_FOUND,
+        **_NAME_CONFLICT,
         400: {"description": "변경 필드 없음"},
     },
 )
@@ -254,13 +279,18 @@ def update_enclosure(
     if not updates:
         raise HTTPException(status_code=400, detail="변경 필드 없음")
 
-    res = (
-        sb.table("enclosures")
-        .update(updates)
-        .eq("id", enclosure_id)
-        .eq("owner_id", user_id)
-        .execute()
-    )
+    try:
+        res = (
+            sb.table("enclosures")
+            .update(updates)
+            .eq("id", enclosure_id)
+            .eq("owner_id", user_id)
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        if _is_name_conflict(exc):
+            _raise_name_conflict()
+        raise
     if not res.data:
         raise HTTPException(status_code=404, detail="enclosure not found")
 
