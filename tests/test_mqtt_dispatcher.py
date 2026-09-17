@@ -193,6 +193,49 @@ def test_pending_command_publishes_and_updates_sent(
     assert ("commands", {"status": "sent"}) in updates
 
 
+def test_sent_update_is_conditional_on_pending(
+    fake_sb: MagicMock, fake_bridge: MagicMock
+) -> None:
+    """publish 직후 ack 가 먼저 도착해 'acked' 가 된 행을 'sent' 로 되돌리지 않는다
+    (status='pending' 조건부 UPDATE)."""
+    cmd = {
+        "id": "cmd-1",
+        "device_id": DEVICE_UUID,
+        "action": "mist",
+        "payload": {"duration_ms": 3000},
+        "issued_at": _now_iso(),
+        "ttl_sec": 10,
+    }
+    eq_calls: list[tuple[str, str]] = []
+
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        if name == "commands":
+            t.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = [cmd]
+
+            def _update(payload: dict) -> MagicMock:
+                chain = MagicMock()
+                if payload == {"status": "sent"}:
+                    def _eq(col: str, val: str) -> MagicMock:
+                        eq_calls.append((col, val))
+                        return chain
+                    chain.eq.side_effect = _eq
+                return chain
+            t.update.side_effect = _update
+        elif name == "devices":
+            t.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+                {"device_id": DEVICE_TEXT}
+            ]
+        return t
+
+    fake_sb.table.side_effect = _table
+    fake_bridge.publish_command.return_value = True
+
+    assert dispatcher.poll_and_dispatch(fake_bridge) == 1
+    assert ("id", "cmd-1") in eq_calls
+    assert ("status", "pending") in eq_calls
+
+
 # ---------- TTL 만료 ----------
 
 

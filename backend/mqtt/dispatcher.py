@@ -231,8 +231,12 @@ def _dispatch_one(bridge: "MqttBridge", row: dict[str, Any]) -> None:
         logger.warning("command %s publish 실패 — 다음 poll 재시도", cmd_id)
         return
 
-    # 5) status='sent' UPDATE
-    sb.table("commands").update({"status": "sent"}).eq("id", cmd_id).execute()
+    # 5) status='sent' UPDATE — pending 일 때만. 디바이스가 publish 직후(수백 ms) ack 하면
+    #    handle_ack 의 'acked' 가 먼저 들어올 수 있는데, 무조건 덮어쓰면 'sent' 로 되돌아가
+    #    sweep_unacked 가 no_ack 로 오판한다 (acked_at 은 찍혀 있는데 status=no_ack 인 행).
+    sb.table("commands").update({"status": "sent"}).eq("id", cmd_id).eq(
+        "status", "pending"
+    ).execute()
     logger.info("command %s → %s (%s)", cmd_id, device_text, action)
 
 
