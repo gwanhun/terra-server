@@ -1225,7 +1225,7 @@ async function registerForAccount(email, kind, name, resultEl, btns) {
   }
 }
 
-// 계정별 등록된 기기·카메라 조회 (GET /devices, /cameras — 그 계정 JWT).
+// 계정별 등록된 기기·카메라 조회 + 항목별 삭제 (그 계정 JWT).
 async function checkAccount(email, resultEl, btns) {
   const client = getBatchClient(); if (!client) return;
   const password = document.getElementById('reg-pass').value;
@@ -1237,21 +1237,52 @@ async function checkAccount(email, resultEl, btns) {
     if (error) throw new Error(error.message);
     const hdr = { 'Authorization': 'Bearer ' + data.session.access_token };
     const [dr, cr] = await Promise.all([
-      fetch(base + '/devices', { cache: 'no-store', headers: hdr }).then(r => r.ok ? r.json() : []).catch(() => []),
-      fetch(base + '/cameras', { cache: 'no-store', headers: hdr }).then(r => r.ok ? r.json() : []).catch(() => []),
+      fetch(base + '/devices', { cache: 'no-store', headers: hdr }).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(base + '/cameras', { cache: 'no-store', headers: hdr }).then(r => r.ok ? r.json() : null).catch(() => null),
     ]);
     await client.auth.signOut();
     const devs = Array.isArray(dr) ? dr : [];
     const cams = Array.isArray(cr) ? cr : [];
+    resultEl.className = ''; resultEl.innerHTML = '';
     if (!devs.length && !cams.length) { resultEl.className = 'muted'; resultEl.textContent = '등록 없음'; return; }
-    resultEl.className = 'good';
-    const dl = devs.map(d => '📟 ' + esc(d.device_id) + ' ' + esc(d.name || '') + (d.is_online ? ' 🟢' : ' ⚪'));
-    const cl = cams.map(c => '📷 ' + esc(c.camera_id) + ' ' + esc(c.name || '') + (c.is_online ? ' 🟢' : ' ⚪'));
-    resultEl.innerHTML = dl.concat(cl).join('<br>');
+    const addLine = (icon, ident, name, online, kind, id) => {
+      const div = document.createElement('div'); div.style.marginBottom = '2px';
+      const label = document.createElement('span'); label.className = 'good';
+      label.textContent = icon + ' ' + ident + ' ' + (name || '') + (online ? ' 🟢 ' : ' ⚪ ');
+      const del = document.createElement('button');
+      del.textContent = '삭제'; del.className = 'danger';
+      del.style.fontSize = '10px'; del.style.padding = '1px 6px';
+      del.onclick = () => deleteRegistered(email, kind, id, ident, () => checkAccount(email, resultEl, btns));
+      div.appendChild(label); div.appendChild(del); resultEl.appendChild(div);
+    };
+    devs.forEach(d => addLine('📟', d.device_id, d.name, d.is_online, 'device', d.id));
+    cams.forEach(c => addLine('📷', c.camera_id, c.name, c.is_online, 'camera', c.id));
   } catch (e) {
     resultEl.className = 'bad'; resultEl.textContent = '❌ ' + (e.message || e);
   } finally {
     if (btns) btns.forEach(b => b.disabled = false);
+  }
+}
+
+// 등록된 기기·카메라 하드 삭제 (그 계정 JWT). 중복 등록 정리용.
+async function deleteRegistered(email, kind, id, ident, done) {
+  if (!confirm((kind === 'camera' ? '카메라' : '기기') + ' ' + ident + ' 삭제? (되돌릴 수 없음, mosquitto 계정도 제거)')) return;
+  const client = getBatchClient(); if (!client) return;
+  const password = document.getElementById('reg-pass').value;
+  const base = regApiBase();
+  try {
+    const { data, error } = await client.auth.signInWithPassword({ email, password });
+    if (error) throw new Error(error.message);
+    const path = (kind === 'camera' ? '/cameras/' : '/devices/') + id;
+    const res = await fetch(base + path, { method: 'DELETE', headers: { 'Authorization': 'Bearer ' + data.session.access_token } });
+    await client.auth.signOut();
+    if (res.status !== 204 && res.status !== 200) {
+      toast('삭제 실패 ' + res.status + ': ' + (await res.text()).slice(0, 80), 'bad'); return;
+    }
+    toast(ident + ' 삭제됨', 'good');
+    if (done) done();
+  } catch (e) {
+    toast('삭제 오류: ' + (e.message || e), 'bad');
   }
 }
 
