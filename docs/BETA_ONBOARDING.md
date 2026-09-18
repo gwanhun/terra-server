@@ -78,6 +78,8 @@ idf.py menuconfig     # 또는 sdkconfig 직접 편집
 idf.py build flash
 ```
 
+- **NVS 영속화**: 첫 부팅 때 Kconfig creds 를 NVS 에 저장한다(기기 provision_creds.h 와 동일). 그래서 **한번 등록한 카메라는 이후 펌웨어 업데이트 때 `CONFIG_APP_CAMERA_ID/TOKEN/UUID` 를 비워도 등록이 유지**된다(NVS 에서 읽음). 신규 등록할 때만 Kconfig 를 채우고, 이후 업데이트는 비워도 됨. 값을 채운 채로 다른 카메라를 플래시하면 그 카메라가 같은 camera_id 를 갖게 되니 주의.
+
 ## 4. 단계 C — 웹에서 확인·삭제
 
 등록 패널의 계정 행에서:
