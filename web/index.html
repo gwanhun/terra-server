@@ -1250,12 +1250,10 @@ async function checkAccount(email, resultEl, btns) {
       const label = document.createElement('span'); label.className = 'good';
       label.textContent = icon + ' ' + ident + ' ' + (name || '') + (online ? ' 🟢 ' : ' ⚪ ');
       div.appendChild(label);
-      let st = null;
       if (kind === 'device') {
         const test = document.createElement('button');
         test.textContent = '테스트'; test.style.fontSize = '10px'; test.style.padding = '1px 6px';
-        st = document.createElement('span'); st.style.fontSize = '11px'; st.style.marginLeft = '6px';
-        test.onclick = () => testDevice(email, id, ident, st, test);
+        test.onclick = () => toggleDeviceTest(email, id, ident, div, test);
         div.appendChild(test);
       }
       const del = document.createElement('button');
@@ -1263,7 +1261,6 @@ async function checkAccount(email, resultEl, btns) {
       del.style.fontSize = '10px'; del.style.padding = '1px 6px'; del.style.marginLeft = '4px';
       del.onclick = () => deleteRegistered(email, kind, id, ident, () => checkAccount(email, resultEl, btns));
       div.appendChild(del);
-      if (st) div.appendChild(st);   // 테스트 결과 표시 span
       resultEl.appendChild(div);
     };
     devs.forEach(d => addLine('📟', d.device_id, d.name, d.is_online, 'device', d.id));
@@ -1297,38 +1294,91 @@ async function deleteRegistered(email, kind, id, ident, done) {
   }
 }
 
-// 기기 테스트 — 그 계정으로 led_toggle 명령을 넣고 ack 를 폴링해 응답 확인(물 안 나감).
-// 프로덕션에서만 유효(브리지가 명령을 MQTT 로 전달). LED 상태가 바뀜(다시 테스트하면 원복).
-async function testDevice(email, deviceUuid, deviceId, statusEl, btn) {
+// 기기 전체 기능 테스트 — [테스트] 누르면 아래 줄에 제어 버튼(펌프·팬·LED·분무 등)이 펼쳐지고
+// 그 계정 JWT 로 실제 명령을 보낸다. 프로덕션에서만 실제 전달(브리지). 다시 누르면 닫힘.
+async function toggleDeviceTest(email, deviceUuid, deviceId, hostDiv, btn) {
+  const open = hostDiv.querySelector('.dev-test-panel');
+  if (open) { open.remove(); btn.textContent = '테스트'; return; }
   const client = getBatchClient(); if (!client) return;
   const password = document.getElementById('reg-pass').value;
-  if (btn) btn.disabled = true;
-  statusEl.className = 'muted'; statusEl.textContent = ' 테스트 중…';
+  btn.disabled = true;
   try {
     const { data, error } = await client.auth.signInWithPassword({ email, password });
     if (error) throw new Error(error.message);
-    const uid = data.session.user.id;
-    const ins = await client.from('commands').insert({ device_id: deviceUuid, issued_by: uid, action: 'led_toggle' }).select('id').single();
-    if (ins.error) throw new Error(ins.error.message);
-    const cmdId = ins.data.id;
-    let status = 'pending', result = null;
-    for (let i = 0; i < 8; i++) {
-      await new Promise(r => setTimeout(r, 1000));
-      const q = await client.from('commands').select('status,result').eq('id', cmdId).single();
-      if (q.data) { status = q.data.status; result = q.data.result; if (['acked', 'no_ack', 'rejected'].includes(status)) break; }
-    }
-    await client.auth.signOut();
-    if (status === 'acked') { statusEl.className = 'good'; statusEl.textContent = ' ✅ 응답 OK (LED 토글, result=' + (result || 'ok') + ')'; }
-    else if (status === 'no_ack') { statusEl.className = 'bad'; statusEl.textContent = ' ⏳ 무응답 — 기기 오프라인/미연결'; }
-    else { statusEl.className = 'muted'; statusEl.textContent = ' 상태: ' + status; }
+    const token = data.session.access_token, uid = data.session.user.id;
+    await client.auth.signOut();  // JWT 는 서명 검증이라 로그아웃 후에도 만료 전까지 유효
+    const panel = document.createElement('div');
+    panel.className = 'dev-test-panel';
+    panel.style.cssText = 'margin:4px 0 8px 16px;padding:6px 8px;border-left:2px solid #888';
+    const status = document.createElement('span'); status.style.cssText = 'font-size:11px;margin-left:6px';
+    const mk = (txt, conf, fn) => {
+      const b = document.createElement('button'); b.textContent = txt;
+      b.style.cssText = 'font-size:11px;margin:0 3px 3px 0';
+      b.onclick = () => { if (conf && !confirm(txt + ' 실행?')) return; fn(); };
+      return b;
+    };
+    [['💧펌프','relay_toggle',false],['🌀팬','fan_toggle',false],['❄️냉각팬','fan2_toggle',false],
+     ['💡LED','led_toggle',false],['🔥히터','heater_toggle',true],['⚠래치해제','heater_clear',true]]
+      .forEach(([t,a,c]) => panel.appendChild(mk(t, c, () => sendTestCmd(token, uid, deviceUuid, a, null, status))));
+    [1000,2000,3000].forEach(ms => panel.appendChild(mk('💦'+(ms/1000)+'초', false, () => sendTestMist(token, deviceUuid, ms, status))));
+    panel.appendChild(status);
+    hostDiv.appendChild(panel);
+    btn.textContent = '닫기';
   } catch (e) {
-    statusEl.className = 'bad'; statusEl.textContent = ' ❌ ' + (e.message || e);
-  } finally {
-    if (btn) btn.disabled = false;
-  }
+    toast('테스트 열기 실패: ' + (e.message || e), 'bad');
+  } finally { btn.disabled = false; }
 }
 
-// 전체 계정 순차 확인. 로그인 rate limit(약 30회/5분)에 걸릴 수 있어 순차 처리.
+// 명령 ack 폴링 (PostgREST 로 commands.status 조회, 최대 8초).
+async function pollAck(token, cmdId, statusEl) {
+  for (let i = 0; i < 8; i++) {
+    await new Promise(r => setTimeout(r, 1000));
+    const res = await fetch(CONFIG.supabaseUrl + '/rest/v1/commands?select=status,result&id=eq.' + cmdId,
+      { cache: 'no-store', headers: { apikey: CONFIG.supabasePublishable, Authorization: 'Bearer ' + token } });
+    const rows = await res.json().catch(() => []);
+    const st = rows[0] && rows[0].status;
+    if (['acked','no_ack','rejected'].includes(st)) {
+      if (st === 'acked') { statusEl.className='good'; statusEl.textContent=' ✅ '+(rows[0].result||'ok'); }
+      else if (st === 'no_ack') { statusEl.className='bad'; statusEl.textContent=' ⏳ 무응답(오프라인?)'; }
+      else { statusEl.className='bad'; statusEl.textContent=' ✖ '+st+' '+(rows[0].result||''); }
+      return;
+    }
+  }
+  statusEl.className='muted'; statusEl.textContent=' … 응답 지연';
+}
+
+// 토글류 명령 — commands 테이블에 INSERT (그 계정 JWT, RLS: issued_by=본인).
+async function sendTestCmd(token, uid, deviceUuid, action, payload, statusEl) {
+  statusEl.className='muted'; statusEl.textContent=' '+action+' 전송…';
+  try {
+    const body = { device_id: deviceUuid, issued_by: uid, action };
+    if (payload) body.payload = payload;
+    const res = await fetch(CONFIG.supabaseUrl + '/rest/v1/commands', {
+      method:'POST',
+      headers:{ apikey:CONFIG.supabasePublishable, Authorization:'Bearer '+token, 'Content-Type':'application/json', Prefer:'return=representation' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) { statusEl.className='bad'; statusEl.textContent=' 실패 '+res.status+': '+(await res.text()).slice(0,80); return; }
+    const rows = await res.json();
+    await pollAck(token, rows[0].id, statusEl);
+  } catch (e) { statusEl.className='bad'; statusEl.textContent=' ❌ '+(e.message||e); }
+}
+
+// 분무 — REST POST /devices/{id}/mist (서버 duration 검증).
+async function sendTestMist(token, deviceUuid, ms, statusEl) {
+  statusEl.className='muted'; statusEl.textContent=' 분무 '+(ms/1000)+'초 전송…';
+  try {
+    const res = await fetch(regApiBase() + '/devices/' + deviceUuid + '/mist', {
+      method:'POST',
+      headers:{ Authorization:'Bearer '+token, 'Content-Type':'application/json' },
+      body: JSON.stringify({ duration_ms: ms }),
+    });
+    if (res.status !== 201) { statusEl.className='bad'; statusEl.textContent=' 실패 '+res.status+': '+(await res.text()).slice(0,80); return; }
+    const r = await res.json();
+    await pollAck(token, r.id, statusEl);
+  } catch (e) { statusEl.className='bad'; statusEl.textContent=' ❌ '+(e.message||e); }
+}
+
 async function checkAllAccounts() {
   const rows = document.querySelectorAll('#reg-table tbody tr');
   for (const tr of rows) {
