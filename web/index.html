@@ -1213,7 +1213,7 @@ async function registerForAccount(email, kind, name, resultEl, btns) {
     }
     resultEl.className = 'good';
     if (kind === 'camera') {
-      resultEl.innerHTML = 'camera_id: <b>' + esc(r.camera_id) + '</b><br>camera_token: ' + esc(r.camera_token);
+      resultEl.innerHTML = 'camera_id: <b>' + esc(r.camera_id) + '</b><br>camera_token: ' + esc(r.camera_token) + '<br>camera_uuid: ' + esc(r.id) + '  (CONFIG_APP_CAMERA_UUID)';
     } else {
       resultEl.innerHTML = 'device_id: <b>' + esc(r.device_id) + '</b><br>mqtt_token: ' + esc(r.mqtt_token);
     }
