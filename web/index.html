@@ -189,6 +189,56 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
     </table>
   </div>
 
+  <!-- 베타 기기/카메라 등록 (계정별, nRF 불필요) -->
+  <div class="panel">
+    <h2>🎫 베타 기기·카메라 등록 (계정별 · nRF 불필요)</h2>
+    <small class="muted">계정마다 로그인/로그아웃 없이 웹에서 바로 등록한다. [기기]/[카메라] 를 누르면
+      그 계정으로 <code>pair</code> 를 호출해 <b>device_id + mqtt_token</b>(카메라는 camera_id + camera_token)을 발급한다.
+      이 값을 기기 NVS 에 넣으면 그 계정 소유로 MQTT 에 붙는다. <b>메인 로그인 세션은 안 바뀐다.</b>
+      ⚠️ MQTT 브로커 계정 등록은 <b>프로덕션 API</b>(api.terra-server.uk)로 호출해야 실제로 붙는다(아래 참고).</small>
+    <div class="row" style="margin-top:8px">
+      <input id="reg-pass" type="text" value="123456" title="공통 비밀번호" style="flex:0 0 110px">
+      <label style="font-size:12px" title="pair 를 보낼 API. 실제 브로커 등록은 프로덕션이라야 됨">API:
+        <input id="reg-apibase" type="text" placeholder="(비우면 설정의 API Base)" style="width:230px"></label>
+      <button onclick="renderRegAccounts()">목록 적용</button>
+      <small class="muted" id="reg-count"></small>
+    </div>
+    <textarea id="reg-emails" rows="4" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:12px" placeholder="계정 이메일 한 줄에 하나">01044402908@test.com
+01054428636@test.com
+01036554738@test.com
+01097361840@test.com
+01047576410@test.com
+01092399175@test.com
+01042718999@test.com
+01088189632@test.com
+01093052963@test.com
+01026728314@test.com
+01046590180@test.com
+01053911601@test.com
+01024896379@test.com
+01023636275@test.com
+01093115816@test.com
+01048533907@test.com
+01026448891@test.com
+01043576098@test.com
+01037689511@test.com
+01021120001@test.com
+01057599851@test.com
+01092637727@test.com
+01072818228@test.com
+01063097159@test.com
+01040951277@test.com
+01028991691@test.com
+01094943606@test.com
+01051912607@test.com
+01072857420@test.com
+01053995774@test.com</textarea>
+    <table id="reg-table" style="margin-top:8px">
+      <thead><tr><th>계정</th><th>기기 이름</th><th>등록</th><th>결과 (device_id / token)</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
   <!-- 명령 이력 -->
   <div class="panel">
     <div class="row">
@@ -1086,6 +1136,92 @@ async function clearLcdText() {
   if (r) { toast('🖥 LCD 초기화', 'good'); setTimeout(loadRecentCommands, 1500); }
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// 베타 기기·카메라 등록 — 계정별로 로그인/로그아웃 없이 웹에서 바로 pair 호출.
+// 메인 세션(sb)은 안 건드리도록 persistSession:false 별도 클라이언트 사용.
+// ⚠️ MQTT 브로커 계정 등록(mosquitto)은 프로덕션 서버에서만 되므로, 실제 기기용은
+//    'API' 칸을 https://api.terra-server.uk 로 두고 호출해야 한다(로컬 백엔드는 브로커 등록 안 함).
+// ─────────────────────────────────────────────────────────────────────────
+let sbBatch = null;
+function getBatchClient() {
+  if (!CONFIG.supabaseUrl) { toast('먼저 설정 저장 & 시작', 'bad'); return null; }
+  if (!sbBatch) {
+    sbBatch = window.supabase.createClient(CONFIG.supabaseUrl, CONFIG.supabasePublishable,
+      { auth: { persistSession: false, autoRefreshToken: false, storageKey: 'terra-batch-reg' } });
+  }
+  return sbBatch;
+}
+function regApiBase() {
+  return (document.getElementById('reg-apibase').value.trim().replace(/\/$/, '')) || CONFIG.apiBase;
+}
+
+function renderRegAccounts() {
+  const emails = document.getElementById('reg-emails').value.split('\n').map(e => e.trim()).filter(Boolean);
+  const tb = document.querySelector('#reg-table tbody');
+  tb.innerHTML = '';
+  emails.forEach(email => {
+    const tail = (email.split('@')[0]).slice(-4);
+    const tr = document.createElement('tr');
+    const td1 = document.createElement('td'); td1.textContent = email; td1.style.fontFamily = 'monospace';
+    const td2 = document.createElement('td');
+    const nm = document.createElement('input'); nm.type = 'text'; nm.value = '베타기기 ' + tail;
+    nm.style.width = '110px'; nm.style.fontSize = '12px'; td2.appendChild(nm);
+    const td3 = document.createElement('td');
+    const bd = document.createElement('button'); bd.textContent = '기기'; bd.style.fontSize = '11px'; bd.style.padding = '3px 8px';
+    const bc = document.createElement('button'); bc.textContent = '카메라'; bc.style.fontSize = '11px'; bc.style.padding = '3px 8px'; bc.style.marginLeft = '4px';
+    td3.appendChild(bd); td3.appendChild(bc);
+    const td4 = document.createElement('td'); td4.style.fontFamily = 'monospace'; td4.style.fontSize = '11px';
+    bd.onclick = () => registerForAccount(email, 'device', nm.value.trim(), td4, [bd, bc]);
+    bc.onclick = () => registerForAccount(email, 'camera', nm.value.trim(), td4, [bd, bc]);
+    tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3); tr.appendChild(td4);
+    tb.appendChild(tr);
+  });
+  document.getElementById('reg-count').textContent = emails.length + '개 계정';
+}
+
+async function registerForAccount(email, kind, name, resultEl, btns) {
+  const client = getBatchClient(); if (!client) return;
+  if (!name) { resultEl.textContent = '이름 입력'; resultEl.className = 'bad'; return; }
+  const password = document.getElementById('reg-pass').value;
+  const base = regApiBase();
+  btns.forEach(b => b.disabled = true);
+  resultEl.className = 'muted'; resultEl.textContent = '로그인 중…';
+  try {
+    const { data, error } = await client.auth.signInWithPassword({ email, password });
+    if (error) throw new Error(error.message);
+    const token = data.session.access_token;
+    const path = kind === 'camera' ? '/cameras/pair' : '/devices/pair';
+    const body = kind === 'camera'
+      ? { name, model: 'esp32-p4', resolution: 'HD' }
+      : { name };
+    resultEl.textContent = '등록 중…';
+    const res = await fetch(base + path, {
+      method: 'POST', cache: 'no-store',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    let r; try { r = JSON.parse(text); } catch (e) { r = text; }
+    await client.auth.signOut();  // 배치 클라이언트만 로그아웃
+    if (res.status !== 201) {
+      resultEl.className = 'bad';
+      resultEl.textContent = '실패 ' + res.status + ': ' + (typeof r === 'string' ? r : JSON.stringify(r)).slice(0, 120);
+      return;
+    }
+    resultEl.className = 'good';
+    if (kind === 'camera') {
+      resultEl.innerHTML = 'camera_id: <b>' + esc(r.camera_id) + '</b><br>camera_token: ' + esc(r.camera_token);
+    } else {
+      resultEl.innerHTML = 'device_id: <b>' + esc(r.device_id) + '</b><br>mqtt_token: ' + esc(r.mqtt_token);
+    }
+  } catch (e) {
+    resultEl.className = 'bad';
+    resultEl.textContent = '❌ ' + (e.message || e);
+  } finally {
+    btns.forEach(b => b.disabled = false);
+  }
+}
+
 async function pairDevice() {
   const name = document.getElementById('dev-name').value.trim();
   const species = document.getElementById('dev-species').value.trim() || null;
@@ -1351,7 +1487,13 @@ function clipCellHtml(r) {
   const bad = (c.skip > 0 || c.skip_lock > 0 || c.up_fail > 0 || c.sd_fail > 0 || (c.up_busy_s ?? -1) >= 300);
   const age = c.last_rec_s >= 0 ? (c.last_rec_s < 3600 ? Math.round(c.last_rec_s/60)+'m' : Math.round(c.last_rec_s/3600)+'h') : '없음';
   const stuck = (c.up_busy_s ?? -1) >= 300 ? ` <span class="bad">up ${Math.round(c.up_busy_s/60)}m!</span>` : '';
-  return `<small class="${bad ? 'bad' : 'muted'}" title="${esc(JSON.stringify(c))}">rec ${c.rec} · skip ${(c.skip||0)+(c.skip_lock||0)} · fail ${(c.up_fail||0)+(c.sd_fail||0)} · sd ${c.sd_backlog||0} · ${age}${stuck}</small>`;
+  const sy = c.sys;
+  const up = sy && sy.uptime_s >= 0 ? (sy.uptime_s < 3600 ? Math.round(sy.uptime_s/60)+'m' : (sy.uptime_s/3600).toFixed(1)+'h') : null;
+  const resetBad = sy && sy.reset && !/^(POWERON|SW:(rotate|ble_reprov|http_restart))$/.test(sy.reset);
+  const syTxt = sy ? `<br><span class="${resetBad ? 'bad' : 'muted'}" title="마지막 재부팅 사유 · 가동시간 · 남은 힙">up ${up} · reset ${esc(sy.reset || '?')}${sy.heap ? ' · heap ' + Math.round(sy.heap/1024) + 'K' : ''}</span>` : '';
+  const im = r.image_state;
+  const imTxt = im ? `<br><span class="${im.ae_frozen ? 'bad' : 'muted'}" title="${esc(JSON.stringify(im))}">exp ${im.exp} · luma ${im.luma} · ${im.night ? 'NIGHT' : 'DAY'}${im.ae_frozen ? ' · AE동결' : ''}</span>` : '';
+  return `<small class="${bad ? 'bad' : 'muted'}" title="${esc(JSON.stringify(c))}">rec ${c.rec} · skip ${(c.skip||0)+(c.skip_lock||0)} · fail ${(c.up_fail||0)+(c.sd_fail||0)} · sd ${c.sd_backlog||0} · ${age}${stuck}${syTxt}${imTxt}</small>`;
 }
 
 function onlineCellHtml(r) {
