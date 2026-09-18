@@ -1245,26 +1245,27 @@ async function checkAccount(email, resultEl, btns) {
     const cams = Array.isArray(cr) ? cr : [];
     resultEl.className = ''; resultEl.innerHTML = '';
     if (!devs.length && !cams.length) { resultEl.className = 'muted'; resultEl.textContent = '등록 없음'; return; }
-    const addLine = (icon, ident, name, online, kind, id) => {
+    const addLine = (kind, obj) => {
+      const isCam = kind === 'camera';
+      const ident = isCam ? obj.camera_id : obj.device_id;
       const div = document.createElement('div'); div.style.marginBottom = '2px';
       const label = document.createElement('span'); label.className = 'good';
-      label.textContent = icon + ' ' + ident + ' ' + (name || '') + (online ? ' 🟢 ' : ' ⚪ ');
+      label.textContent = (isCam ? '📷 ' : '📟 ') + ident + ' ' + (obj.name || '') + (obj.is_online ? ' 🟢 ' : ' ⚪ ');
       div.appendChild(label);
-      if (kind === 'device') {
-        const test = document.createElement('button');
-        test.textContent = '테스트'; test.style.fontSize = '10px'; test.style.padding = '1px 6px';
-        test.onclick = () => toggleDeviceTest(email, id, ident, div, test);
-        div.appendChild(test);
-      }
+      const test = document.createElement('button');
+      test.textContent = '테스트'; test.style.fontSize = '10px'; test.style.padding = '1px 6px';
+      test.onclick = isCam ? () => toggleCameraTest(obj, div, test)
+                           : () => toggleDeviceTest(email, obj.id, ident, div, test);
+      div.appendChild(test);
       const del = document.createElement('button');
       del.textContent = '삭제'; del.className = 'danger';
       del.style.fontSize = '10px'; del.style.padding = '1px 6px'; del.style.marginLeft = '4px';
-      del.onclick = () => deleteRegistered(email, kind, id, ident, () => checkAccount(email, resultEl, btns));
+      del.onclick = () => deleteRegistered(email, kind, obj.id, ident, () => checkAccount(email, resultEl, btns));
       div.appendChild(del);
       resultEl.appendChild(div);
     };
-    devs.forEach(d => addLine('📟', d.device_id, d.name, d.is_online, 'device', d.id));
-    cams.forEach(c => addLine('📷', c.camera_id, c.name, c.is_online, 'camera', c.id));
+    devs.forEach(d => addLine('device', d));
+    cams.forEach(c => addLine('camera', c));
   } catch (e) {
     resultEl.className = 'bad'; resultEl.textContent = '❌ ' + (e.message || e);
   } finally {
@@ -1327,6 +1328,31 @@ async function toggleDeviceTest(email, deviceUuid, deviceId, hostDiv, btn) {
   } catch (e) {
     toast('테스트 열기 실패: ' + (e.message || e), 'bad');
   } finally { btn.disabled = false; }
+}
+
+// 카메라 테스트 — 상태·클립 파이프라인 통계를 펼쳐 보여줌(녹화/업로드 확인). 다시 누르면 닫힘.
+// 라이브 영상은 메인 콘솔(그 계정 로그인) 카메라 [라이브]에서 확인.
+function toggleCameraTest(cam, hostDiv, btn) {
+  const open = hostDiv.querySelector('.dev-test-panel');
+  if (open) { open.remove(); btn.textContent = '테스트'; return; }
+  const cs = cam.clip_stats || {};
+  const val = v => (v === undefined || v === null ? '-' : v);
+  const rows = [
+    'online: ' + (cam.is_online ? '🟢 온라인' : '⚪ 오프라인'),
+    'model: ' + val(cam.model) + '  ·  ' + val(cam.resolution) + ' @ ' + val(cam.fps) + 'fps',
+    'stream: ' + (cam.stream_mode || 'idle') + '  ·  rotate180: ' + val(cam.rotate_180),
+    '클립: rec ' + val(cs.rec) + ' / skip ' + val(cs.skip) + ' / up_ok ' + val(cs.up_ok) + ' / up_fail ' + val(cs.up_fail)
+      + (cs.last_rec_s !== undefined ? ' / last_rec ' + cs.last_rec_s + 's' : ''),
+  ];
+  if (!cam.clip_stats) rows.push('(clip_stats 미보고 — 구 펌웨어이거나 아직 녹화 전)');
+  const panel = document.createElement('div');
+  panel.className = 'dev-test-panel';
+  panel.style.cssText = 'margin:4px 0 8px 16px;padding:6px 8px;border-left:2px solid #888;font-size:11px';
+  panel.innerHTML = rows.map(esc).join('<br>');
+  const note = document.createElement('div'); note.className = 'muted'; note.style.marginTop = '4px';
+  note.textContent = '라이브 영상은 메인 콘솔(그 계정 로그인) 카메라 [라이브]에서 확인.';
+  panel.appendChild(note);
+  hostDiv.appendChild(panel); btn.textContent = '닫기';
 }
 
 // 명령 ack 폴링 (PostgREST 로 commands.status 조회, 최대 8초).
