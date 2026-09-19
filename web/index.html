@@ -234,6 +234,22 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
 01051912607@test.com
 01072857420@test.com
 01053995774@test.com</textarea>
+    <div class="row" style="margin-top:6px;flex-wrap:wrap;align-items:center;gap:4px">
+      <b style="font-size:12px">선택 일괄제어:</b>
+      <button onclick="bulkControl('relay_toggle')" style="font-size:11px">💧펌프</button>
+      <button onclick="bulkControl('fan_toggle')" style="font-size:11px">🌀팬</button>
+      <button onclick="bulkControl('fan2_toggle')" style="font-size:11px">❄️냉각팬</button>
+      <button onclick="bulkControl('led_toggle')" style="font-size:11px">💡LED</button>
+      <button onclick="bulkControl(null,1000)" style="font-size:11px">💦1초</button>
+      <button onclick="bulkControl(null,2000)" style="font-size:11px">💦2초</button>
+      <button onclick="bulkControl(null,3000)" style="font-size:11px">💦3초</button>
+      <span class="muted" id="reg-bulk-count">선택 0대</span>
+      <button onclick="clearRegSelection()" style="font-size:11px">선택해제</button>
+      <label style="font-size:11px;margin-left:8px" title="켜고 버튼 누르면 그 명령을 간격마다 반복">반복<input type="checkbox" id="reg-repeat-on" style="margin-left:3px"></label>
+      <input id="reg-repeat-sec" type="number" value="30" min="5" style="width:50px;font-size:11px" title="반복 간격(초)"><span style="font-size:11px">초</span>
+      <button onclick="stopRepeat()" style="font-size:11px">정지</button>
+      <span id="reg-bulk-status" style="font-size:11px"></span>
+    </div>
     <table id="reg-table" style="margin-top:8px">
       <thead><tr><th>계정</th><th>기기 이름</th><th>등록</th><th>결과 (device_id / token)</th></tr></thead>
       <tbody></tbody>
@@ -1251,6 +1267,12 @@ async function checkAccount(email, resultEl, btns) {
       const div = document.createElement('div'); div.style.marginBottom = '2px';
       const label = document.createElement('span'); label.className = 'good';
       label.textContent = (isCam ? '📷 ' : '📟 ') + ident + ' ' + (obj.name || '') + (obj.is_online ? ' 🟢 ' : ' ⚪ ');
+      if (!isCam) {
+        const cb = document.createElement('input'); cb.type = 'checkbox';
+        cb.checked = !!regSelected[obj.id]; cb.style.marginRight = '4px'; cb.title = '일괄 제어 선택';
+        cb.onchange = () => toggleRegSelect(obj.id, email, ident, cb.checked);
+        div.appendChild(cb);
+      }
       div.appendChild(label);
       const test = document.createElement('button');
       test.textContent = '테스트'; test.style.fontSize = '10px'; test.style.padding = '1px 6px';
@@ -1411,6 +1433,106 @@ async function checkAllAccounts() {
     await checkAccount(tr.firstChild.textContent, tr.children[3], null);
   }
   toast('전체 확인 완료', 'good');
+}
+
+// ── 반복 동작 ───────────────────────────────────────────────────────────────
+let regRepeat = null, regRepeatActive = false;
+function stopRepeat() {
+  regRepeatActive = false;
+  if (regRepeat) { clearTimeout(regRepeat); regRepeat = null; }
+  const st = document.getElementById('reg-bulk-status');
+  if (st) { st.className = 'muted'; st.textContent = (st.textContent || '') + ' · 반복 정지'; }
+}
+function startRepeat(action, ms) {
+  stopRepeat(); regRepeatActive = true;
+  const sec = Math.max(5, parseInt(document.getElementById('reg-repeat-sec').value) || 30);
+  const label = ms ? ('분무' + (ms / 1000) + '초') : action;
+  const tick = async () => {
+    if (!regRepeatActive) return;
+    await runBulkOnce(action, ms, ' · 반복[' + label + '/' + sec + 's]');
+    if (regRepeatActive) regRepeat = setTimeout(tick, sec * 1000);
+  };
+  tick();
+}
+// [반복] 체크 시 그 명령을 간격마다 반복, 아니면 1회.
+async function bulkControl(action, ms) {
+  const rep = document.getElementById('reg-repeat-on');
+  if (rep && rep.checked) startRepeat(action, ms);
+  else await runBulkOnce(action, ms);
+}
+
+// ── 선택 기기 일괄 제어 ──────────────────────────────────────────────────────
+// [확인] 결과의 기기 체크박스로 선택 → 상단 버튼 하나로 전체에 동시 명령. 계정이 섞여도
+// 계정별로 묶어 로그인 1회씩 처리하고, 각 명령 ack 를 모아 요약 표시.
+const regSelected = {};  // deviceUuid -> {email, deviceId}
+function toggleRegSelect(uuid, email, deviceId, checked) {
+  if (checked) regSelected[uuid] = { email, deviceId }; else delete regSelected[uuid];
+  updateBulkCount();
+}
+function updateBulkCount() {
+  const el = document.getElementById('reg-bulk-count');
+  if (el) el.textContent = '선택 ' + Object.keys(regSelected).length + '대';
+}
+function clearRegSelection() {
+  Object.keys(regSelected).forEach(k => delete regSelected[k]);
+  document.querySelectorAll('#reg-table input[type=checkbox]').forEach(cb => cb.checked = false);
+  updateBulkCount();
+  const st = document.getElementById('reg-bulk-status'); if (st) st.textContent = '';
+}
+async function runBulkOnce(action, ms, suffix) {
+  const sel = Object.entries(regSelected);
+  if (!sel.length) { toast('선택된 기기 없음 (기기 체크박스 선택)', 'bad'); return; }
+  const client = getBatchClient(); if (!client) return;
+  const password = document.getElementById('reg-pass').value;
+  const base = regApiBase();
+  const st = document.getElementById('reg-bulk-status');
+  st.className = 'muted'; st.textContent = ' 전송 중… (' + sel.length + '대)';
+  const byEmail = {};
+  sel.forEach(([uuid, v]) => { (byEmail[v.email] = byEmail[v.email] || []).push(uuid); });
+  const cmds = []; let sendFail = 0;
+  for (const [email, uuids] of Object.entries(byEmail)) {
+    let token, uid;
+    try {
+      const { data, error } = await client.auth.signInWithPassword({ email, password });
+      if (error) throw new Error(error.message);
+      token = data.session.access_token; uid = data.session.user.id;
+      await client.auth.signOut();
+    } catch (e) { sendFail += uuids.length; continue; }
+    for (const uuid of uuids) {
+      try {
+        let cmdId;
+        if (ms) {
+          const res = await fetch(base + '/devices/' + uuid + '/mist', { method:'POST',
+            headers:{ Authorization:'Bearer '+token, 'Content-Type':'application/json' }, body: JSON.stringify({ duration_ms: ms }) });
+          if (res.status !== 201) { sendFail++; continue; }
+          cmdId = (await res.json()).id;
+        } else {
+          const res = await fetch(CONFIG.supabaseUrl + '/rest/v1/commands', { method:'POST',
+            headers:{ apikey:CONFIG.supabasePublishable, Authorization:'Bearer '+token, 'Content-Type':'application/json', Prefer:'return=representation' },
+            body: JSON.stringify({ device_id: uuid, issued_by: uid, action }) });
+          if (!res.ok) { sendFail++; continue; }
+          cmdId = (await res.json())[0].id;
+        }
+        cmds.push({ token, cmdId });
+      } catch (e) { sendFail++; }
+    }
+  }
+  st.textContent = ' 응답 대기… (' + cmds.length + '대 전송)';
+  let acked = 0, noack = 0;
+  await Promise.all(cmds.map(async c => {
+    for (let i = 0; i < 8; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      const res = await fetch(CONFIG.supabaseUrl + '/rest/v1/commands?select=status&id=eq.' + c.cmdId,
+        { cache:'no-store', headers:{ apikey:CONFIG.supabasePublishable, Authorization:'Bearer '+c.token } });
+      const rows = await res.json().catch(() => []);
+      const s2 = rows[0] && rows[0].status;
+      if (s2 === 'acked') { acked++; return; }
+      if (['no_ack','rejected'].includes(s2)) { noack++; return; }
+    }
+    noack++;
+  }));
+  st.className = (acked === cmds.length && !sendFail) ? 'good' : 'bad';
+  st.textContent = ' 완료: 전송 ' + cmds.length + ' / ✅ ' + acked + ' / ⏳ ' + noack + (sendFail ? ' / 전송실패 ' + sendFail : '') + (suffix || '');
 }
 
 async function pairDevice() {
