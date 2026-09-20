@@ -70,6 +70,7 @@
   "ts": 1757300000,
   "uptime_sec": 123,
   "free_heap": 456789,
+  "reset": "SW:net_wd",
   "rotate_180": false,
   "capabilities": { "rotate_180": true }
 }
@@ -78,6 +79,13 @@
 - `rotate_180` (2026-09-08+): 카메라의 현재 NVS 값. 서버가 `cameras.rotate_180`(진실)과 비교해
   다르면 `set_rotation` 재발행. 구 펌웨어는 키 없음 → 동기화 비활성.
 - `clips` (2026-09-16+): 클립 파이프라인 카운터(부팅 후 누적). `rec` 녹화 완료, `skip` 슬롯 없음 스킵(PSRAM 폴백 업로드 중), `skip_lock` H.264 락 핸드오버 실패, `up_ok`/`up_fail` 즉시 업로드, `sd_ok`/`sd_fail` SD 재업로드, `sd_backlog` SD 대기 건수, `last_rec_s` 마지막 녹화 후 초(-1 없음), `up_busy_s` 진행 중 업로드 초(-1 없음). 서버는 `cameras.clip_stats` 에 저장하고 스킵·실패 증가 / 업로드 300초 이상 진행 시 경고 로그.
+- `reset` (2026-09-17+): 이번 부팅의 원인. `POWERON` / `PANIC` / `INT_WDT` / `TASK_WDT` / `BROWNOUT` 등
+  `esp_reset_reason()` 값, 또는 펌웨어가 스스로 재부팅한 경우 `SW:<why>` (`net_wd` 네트워크 워치독,
+  `mqtt_stuck`, `rtc_send_stall`/`rtc_loop_stall`/`rtc_lock_stall` WebRTC 스톨, `cam_stall` 카메라
+  DQBUF 무프레임, `rotate`, `ble_reprov`, `http_restart`, `boot:<단계>`). 서버는 `uptime_sec`·`reset`·
+  `free_heap` 을 `cameras.clip_stats.sys{uptime_s,reset,heap}` 로 저장하고(별도 컬럼 없음), uptime 이
+  직전 heartbeat 보다 줄면 "재부팅 감지 reset=…" 경고 로그. 콘솔 clips 셀에 `up 12m · reset …` 표시.
+- `img` (2026-09-17+): 노출/야간 상태. `exp`(센서 AE 목표 2~235), `luma`, `chroma`(32px 표본 평균), `night`, `ae_auto`, `ae_frozen`(AE 진동 감지 동결). 서버는 `cameras.image_state` 에 저장, `ae_frozen` 이면 경고 로그.
 - `capabilities` (2026-09-08+): 펌웨어 능력 플래그. 서버가 `cameras.capabilities` 에 저장
   (값이 같으면 UPDATE 생략 — 앱이 cameras Realtime 구독 중). MQTT 연결 직후 1회만 실어도 되고
   매번 실어도 된다. 앱은 `capabilities.rotate_180 == true` 일 때만 회전 토글을 노출.
@@ -108,6 +116,9 @@
     — ⚠️ `brightness: 0` 은 `led_on` 이어도 실제로 꺼지고 `state: "OFF"` 응답
   - `mist` (`duration_ms`: 1000|2000|3000, 펌웨어 상한 5초) / `spray_1s` / `spray_3s` / `spray_5s`
   - `lcd_bitmap` / `lcd_clear`
+  - `set_temp_offset` (`offset_c`: -10.0~10.0) — 온도 보정 오프셋. 기기가 NVS(`terra/t_off`)에 저장하고
+    센서 읽기 직후 적용해 **LCD·telemetry·HTTP 가 모두 같은 보정값**을 쓴다. ack `state="CALIB"`,
+    범위 밖/숫자 아님은 `result="bad_request"`. 구 펌웨어는 `unknown_action`.
   - `token_rotate` (추가 필드: `new_token`)
 
 > **`duration_ms` 를 실제로 처리하는 action 은 `mist` / `fan_on` / `fan2_on` 셋뿐이다**
@@ -240,3 +251,4 @@ topic read  esp32/picam-b2c3d4e5/command
 | 2026-09-08 | 0.5.1 | **ACL 버그 수정**: 카메라 계정에 `telemetry` 쓰기 권한 추가 (누락으로 카메라 heartbeat 가 브로커에서 버려지던 문제). 기존 카메라는 `scripts/regen_acl.py` 로 재생성 |
 | 2026-09-16 | 0.5.2 | 펌웨어 실측 반영: `led_on` 의 `duration_ms` 미지원·`heater_*` 미구현 명시, payload 예약 키 보호 |
 | 2026-09-16 | 0.5.3 | `heater_*` 서버 거절(400 / `unsupported_action`), 소프트 해제된 기기의 메시지는 브리지가 미페어링 취급 |
+| 2026-09-20 | 0.5.4 | IoT `set_temp_offset` action 추가 (온도 보정, NVS 영속, LCD/telemetry 공통 적용) |

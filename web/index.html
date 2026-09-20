@@ -1344,6 +1344,19 @@ async function toggleDeviceTest(email, deviceUuid, deviceId, hostDiv, btn) {
      ['💡LED','led_toggle',false],['🔥히터','heater_toggle',true],['⚠래치해제','heater_clear',true]]
       .forEach(([t,a,c]) => panel.appendChild(mk(t, c, () => sendTestCmd(token, uid, deviceUuid, a, null, status))));
     [1000,2000,3000].forEach(ms => panel.appendChild(mk('💦'+(ms/1000)+'초', false, () => sendTestMist(token, deviceUuid, ms, status))));
+    // 온도 보정 — set_temp_offset 명령. 기기가 NVS 에 저장하고 LCD·telemetry 양쪽에 적용.
+    const offIn = document.createElement('input');
+    offIn.type = 'number'; offIn.step = '0.1'; offIn.placeholder = '-1.5';
+    offIn.style.cssText = 'width:58px;font-size:11px;margin-left:8px';
+    offIn.title = '온도 보정(℃) — 측정값에 더할 값. 2℃ 높게 나오면 -2 입력';
+    panel.appendChild(document.createTextNode(' 🌡보정'));
+    panel.appendChild(offIn);
+    panel.appendChild(document.createTextNode('℃ '));
+    panel.appendChild(mk('적용', false, () => {
+      const v = parseFloat(offIn.value);
+      if (isNaN(v)) { status.className = 'bad'; status.textContent = ' 보정값(숫자) 입력'; return; }
+      sendTestCmd(token, uid, deviceUuid, 'set_temp_offset', { offset_c: v }, status);
+    }));
     panel.appendChild(status);
     hostDiv.appendChild(panel);
     btn.textContent = '닫기';
