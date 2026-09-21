@@ -487,7 +487,8 @@ Content-Type: application/json
   "firmware_ver": "terra-cam-p4 0.1.0",
   "resolution": "HD",
   "fps": 24,
-  "clip_sec": 10
+  "clip_sec": 10,
+  "hw_id": "30EDA0E22E80"   // 옵션(2026-09-21 펌웨어~). 보드 불변 하드웨어 ID
 }
 ```
 
@@ -496,12 +497,38 @@ Content-Type: application/json
 {
   "id": "...",
   "camera_id": "p4cam-a1b2c3d4",
-  "camera_token": "Yc4d8E..."
+  "camera_token": "Yc4d8E...",
+  "reused": false
 }
 ```
 
 `camera_token` 으로 이후 `/cameras/{id}/clips/*`, `/snapshot`, `/webrtc/*` 호출 시 Bearer 인증.
 ESP32-P4 는 NVS 에 저장 (RPi 는 `/etc/terra-cam/config.json`).
+
+#### `hw_id` — 재페어링 중복 카메라 방지 (2026-09-21)
+
+`hw_id` 는 ESP32 efuse base MAC 12자리 hex 로, 재부팅·NVS 삭제·펌웨어 재설치에도 바뀌지
+않는 **보드의 참 식별자**다. 펌웨어가 페어링 본문과 MQTT 텔레메트리 양쪽에 싣는다.
+
+같은 소유자에게 같은 `hw_id` 카메라가 이미 있으면(해제되지 않은 행) 서버는 **새 행을 만들지
+않고 그 행을 재사용**한다. `camera_id` 는 종전 값을 유지하고 `camera_token` 만 새로 발급되며,
+응답의 `reused` 가 `true` 로 온다. WiFi 를 바꾸려고 재페어링할 때마다 유령 카메라가 쌓이던
+문제를 막는다.
+
+| 상황 | 결과 |
+| --- | --- |
+| `hw_id` 없음 (구 펌웨어) | 항상 새 행 생성 (종전 동작) |
+| 처음 보는 `hw_id` | 새 행 생성 + `hw_id` 저장 |
+| 이미 등록된 `hw_id` | 기존 행 갱신, `reused: true`, 새 토큰 발급 |
+| 해제(unlink)된 행의 `hw_id` | 새 행 생성 — 사용자가 뗀 카메라를 몰래 되살리지 않는다 |
+
+재사용 시 갱신되는 값은 기기가 보고하는 것(`name`/`model`/`firmware_ver`/`resolution`/
+`fps`/`clip_sec`)뿐이다. `enclosure_id` 는 요청에 있을 때만 바뀌고, 사용자가 서버·앱에서
+설정한 값(`rotate_180` 등)은 페어링이 덮어쓰지 않는다.
+
+**앱에 주는 함의**: 앱이 "WiFi 변경" 흐름에서 JWT 를 생략하면 페어링 자체가 일어나지 않아
+가장 깔끔하다(펌웨어가 JWT 없을 때 pair 를 호출하지 않음). `hw_id` 는 앱이 그 매핑을 잃었을
+때(재설치 등) 서버가 막아주는 **최종 방어선**이다.
 
 > **RPi 워커 페어링** (별도 흐름): BLE 가 불안정하면 QR 토큰 사용 (`POST /cameras/prepare-pair` → pair_token → `POST /cameras/pair`). 본 명세 후속 버전에서 추가.
 

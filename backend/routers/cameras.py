@@ -73,9 +73,27 @@ class CameraPairRequest(BaseModel):
     resolution: str = Field(default="HD", description="VGA | HD (720p) | FHD (1080p)")
     fps: int = Field(default=24, ge=1, le=60)
     clip_sec: int = Field(default=10, ge=1, le=60, description="모션 감지 시 캡처 길이(초)")
+    hw_id: str | None = Field(
+        None,
+        max_length=64,
+        examples=["30EDA0E22E80"],
+        description=(
+            "보드 불변 하드웨어 ID(ESP32 efuse base MAC 12자리 hex). "
+            "같은 owner 에 같은 hw_id 카메라가 이미 있으면 새 행을 만들지 않고 그 행을 "
+            "재사용해 토큰만 재발급한다(재페어링 중복 행 방지). "
+            "구 펌웨어는 보내지 않으며, 그 경우 기존대로 항상 새 행이 생긴다."
+        ),
+    )
 
 
 class CameraPairResponse(BaseModel):
+    reused: bool = Field(
+        False,
+        description=(
+            "true 면 hw_id 가 일치하는 기존 카메라 행을 재사용했다(새 행 미생성). "
+            "camera_id 는 종전 값 그대로이고 camera_token 만 새로 발급됐다."
+        ),
+    )
     id: str = Field(..., description="cameras.id (UUID)")
     camera_id: str = Field(
         ..., description="MQTT client_id 겸 username. 모델별 접두사 (p4cam-/picam-)"
@@ -133,6 +151,10 @@ class CameraOut(BaseModel):
         ),
     )
     clip_stats_at: str | None = None
+    image_state: dict[str, Any] | None = Field(
+        None,
+        description="펌웨어 노출/야간 상태(15초 텔레메트리): exp(AE 목표 2~235), luma, chroma, night, ae_auto, ae_frozen. null = 구 펌웨어",
+    )
     created_at: str
     updated_at: str
     last_seen_at: str | None
@@ -193,6 +215,29 @@ def _verify_enclosure_owner(sb, enclosure_id: str, user_id: str) -> None:
         raise HTTPException(status_code=400, detail="enclosure_id 가 본인 사육장이 아님.")
 
 
+def _find_by_hw_id(sb, user_id: str, hw_id: str | None) -> dict[str, Any] | None:
+    """같은 소유자의 같은 물리 보드 카메라 행을 찾는다. 없으면 None.
+
+    hw_id 는 efuse MAC 기반이라 재부팅·NVS 삭제·펌웨어 재설치에도 불변이다.
+    unlinked_at IS NULL 로 제한해 해제된 과거 행은 되살리지 않는다(사용자가 의도적으로
+    해제한 카메라를 페어링이 몰래 복구하면 안 된다 → 그 경우는 새 행이 맞다).
+    구 펌웨어(hw_id 없음)는 항상 None → 기존 동작 그대로 새 행 생성.
+    """
+    if not hw_id:
+        return None
+    res = (
+        sb.table("cameras")
+        .select("id, camera_id")
+        .eq("owner_id", user_id)
+        .eq("hw_id", hw_id)
+        .is_("unlinked_at", "null")
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    return rows[0] if rows else None
+
+
 @router.post(
     "/pair",
     response_model=CameraPairResponse,
@@ -219,18 +264,16 @@ def pair_camera(
     if body.enclosure_id:
         _verify_enclosure_owner(sb, body.enclosure_id, user_id)
 
-    # camera_id 접두사 — 모델별 구분 (운영 디버깅 편의)
-    prefix = "p4cam" if body.model == "esp32-p4" else "picam"
-    camera_id = f"{prefix}-{secrets.token_hex(4)}"
-
     camera_token = generate_token()
     token_hashed = hash_token(camera_token)
 
-    payload: dict[str, Any] = {
-        "owner_id": user_id,
-        "enclosure_id": body.enclosure_id,
-        "camera_id": camera_id,
-        "token_hash": token_hashed,
+    # 펌웨어가 보고한 하드웨어 ID 와 같은 보드가 이미 등록돼 있으면 새 행을 만들지 않는다.
+    # (재페어링 = WiFi 변경일 뿐인데 매번 새 카메라가 생기던 문제. 2026-09-21)
+    existing = _find_by_hw_id(sb, user_id, body.hw_id)
+
+    # 기기가 보고하는 값만 갱신한다. 사용자가 서버/앱에서 바꾼 설정(rotate_180 등)이나
+    # 미지정 enclosure_id 를 페어링이 덮어쓰지 않게 한다.
+    device_fields: dict[str, Any] = {
         "name": body.name,
         "model": body.model,
         "firmware_ver": body.firmware_ver,
@@ -239,18 +282,49 @@ def pair_camera(
         "clip_sec": body.clip_sec,
     }
 
-    res = sb.table("cameras").insert(payload).execute()
-    if not res.data:
-        raise HTTPException(status_code=500, detail="camera INSERT 실패")
-    row = res.data[0]
+    if existing:
+        patch: dict[str, Any] = {"token_hash": token_hashed, **device_fields}
+        if body.enclosure_id:          # 미지정이면 기존 사육장 연결을 유지
+            patch["enclosure_id"] = body.enclosure_id
+        res = (
+            sb.table("cameras")
+            .update(patch)
+            .eq("id", existing["id"])
+            .execute()
+        )
+        if not res.data:
+            raise HTTPException(status_code=500, detail="camera UPDATE 실패")
+        row = res.data[0]
+        logger.info(
+            "pair: hw_id=%s 기존 카메라 재사용 camera_id=%s (새 행 미생성)",
+            body.hw_id, row["camera_id"],
+        )
+    else:
+        # camera_id 접두사 — 모델별 구분 (운영 디버깅 편의)
+        prefix = "p4cam" if body.model == "esp32-p4" else "picam"
+        payload: dict[str, Any] = {
+            "owner_id": user_id,
+            "enclosure_id": body.enclosure_id,
+            "camera_id": f"{prefix}-{secrets.token_hex(4)}",
+            "token_hash": token_hashed,
+            "hw_id": body.hw_id,
+            **device_fields,
+        }
+        res = sb.table("cameras").insert(payload).execute()
+        if not res.data:
+            raise HTTPException(status_code=500, detail="camera INSERT 실패")
+        row = res.data[0]
 
-    # Mosquitto 자동 등록 (실패해도 페어링 성공 처리)
+    # Mosquitto 자동 등록 (실패해도 페어링 성공 처리).
+    # 재사용 경로에서도 반드시 호출해야 한다 — 토큰을 새로 발급했으므로 브로커의
+    # 기존 비밀번호로는 접속이 안 된다. mosquitto_passwd -b 는 같은 사용자면 덮어쓴다.
     registry.register_device(row["camera_id"], camera_token)
 
     return CameraPairResponse(
         id=row["id"],
         camera_id=row["camera_id"],
         camera_token=camera_token,
+        reused=bool(existing),
         **_mqtt_connect_info(),
     )
 

@@ -607,9 +607,10 @@ def test_resolve_entity_unknown_returns_none(fake_sb: MagicMock) -> None:
 
 
 def _camera_state_table_factory(
-    updates: list[dict], *, rotate_180: bool = False, capabilities: dict | None = None
+    updates: list[dict], *, rotate_180: bool = False, capabilities: dict | None = None,
+    hw_id: str | None = None,
 ) -> "callable":
-    """_camera_table_factory + cameras.select('rotate_180, capabilities') 응답."""
+    """_camera_table_factory + cameras.select('rotate_180, capabilities, hw_id') 응답."""
     def _table(name: str) -> MagicMock:
         t = MagicMock()
         if name == "devices":
@@ -618,7 +619,8 @@ def _camera_state_table_factory(
             def _select(cols: str = "id") -> MagicMock:
                 sel = MagicMock()
                 if "rotate_180" in cols:
-                    data = [{"rotate_180": rotate_180, "capabilities": capabilities}]
+                    data = [{"rotate_180": rotate_180, "capabilities": capabilities,
+                             "hw_id": hw_id}]
                 else:
                     data = [{"id": CAMERA_UUID}]
                 sel.eq.return_value.limit.return_value.execute.return_value.data = data
@@ -671,6 +673,43 @@ def test_camera_telemetry_stores_capabilities_when_changed(
         CAMERA_TEXT, {"ts": 2, "rotate_180": False, "capabilities": {"rotate_180": True}}
     )
     assert "capabilities" not in updates[1]
+
+
+def test_camera_telemetry_backfills_hw_id_once(
+    fake_sb: MagicMock, published: list
+) -> None:
+    """구 펌웨어로 등록돼 hw_id 가 비어 있던 행을, 새 펌웨어 하트비트가 한 번 채운다."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_state_table_factory(updates, hw_id=None)
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "hw_id": "30EDA0E22E80"})
+    assert updates[0]["hw_id"] == "30EDA0E22E80"
+
+    # 두 번째 하트비트: 캐시에 반영돼 UPDATE 에서 빠진다 (15초마다 쓰지 않는다)
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 2, "hw_id": "30EDA0E22E80"})
+    assert "hw_id" not in updates[1]
+
+
+def test_camera_telemetry_keeps_existing_hw_id(
+    fake_sb: MagicMock, published: list
+) -> None:
+    """이미 저장된 hw_id 는 다시 쓰지 않는다 (Realtime UPDATE 잡음 방지)."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_state_table_factory(updates, hw_id="30EDA0E22E80")
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "hw_id": "30EDA0E22E80"})
+    assert "hw_id" not in updates[0]
+
+
+def test_camera_telemetry_without_hw_id_does_not_write_it(
+    fake_sb: MagicMock, published: list
+) -> None:
+    """구 펌웨어(hw_id 미보고)는 기존 동작 그대로 — hw_id 를 건드리지 않는다."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_state_table_factory(updates, hw_id=None)
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1})
+    assert "hw_id" not in updates[0]
 
 
 def test_camera_telemetry_skips_capabilities_when_same_as_db(
@@ -760,3 +799,13 @@ def test_camera_telemetry_clip_regression_logs_warning(
     assert "슬롯 없음 스킵 +2" in msgs
     assert "업로드 실패 +1" in msgs
     assert "정체 의심" in msgs
+
+
+def test_camera_telemetry_stores_image_state(fake_sb: MagicMock, published: list, caplog) -> None:
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_state_table_factory(updates)
+    img = {"exp": 120, "luma": 80, "chroma": 5, "night": True, "ae_auto": True, "ae_frozen": True}
+    with caplog.at_level("WARNING"):
+        handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "img": img})
+    assert updates[0]["image_state"] == img
+    assert "AE 진동 동결" in " ".join(r.getMessage() for r in caplog.records)

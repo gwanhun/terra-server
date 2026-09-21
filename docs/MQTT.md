@@ -71,6 +71,7 @@
   "uptime_sec": 123,
   "free_heap": 456789,
   "reset": "SW:net_wd",
+  "hw_id": "30EDA0E22E80",
   "rotate_180": false,
   "capabilities": { "rotate_180": true }
 }
@@ -85,6 +86,11 @@
   DQBUF 무프레임, `rotate`, `ble_reprov`, `http_restart`, `boot:<단계>`). 서버는 `uptime_sec`·`reset`·
   `free_heap` 을 `cameras.clip_stats.sys{uptime_s,reset,heap}` 로 저장하고(별도 컬럼 없음), uptime 이
   직전 heartbeat 보다 줄면 "재부팅 감지 reset=…" 경고 로그. 콘솔 clips 셀에 `up 12m · reset …` 표시.
+- `hw_id` (2026-09-21+): 보드 불변 하드웨어 ID(efuse base MAC 12자리 hex). 페어링 때 이미
+  저장되지만, 구 펌웨어로 등록돼 `cameras.hw_id` 가 NULL 인 행은 새 펌웨어의 첫 heartbeat 에서
+  채워진다(값이 바뀌지 않으므로 1회만 UPDATE — Realtime 잡음 방지). 용도는 **이미 생겨버린
+  중복 카메라 행을 실물 보드와 대조해 정리**하는 것. 중복 생성 자체를 막는 것은
+  `POST /cameras/pair` 쪽이다(API.md 4.2 참고).
 - `img` (2026-09-17+): 노출/야간 상태. `exp`(센서 AE 목표 2~235), `luma`, `chroma`(32px 표본 평균), `night`, `ae_auto`, `ae_frozen`(AE 진동 감지 동결). 서버는 `cameras.image_state` 에 저장, `ae_frozen` 이면 경고 로그.
 - `capabilities` (2026-09-08+): 펌웨어 능력 플래그. 서버가 `cameras.capabilities` 에 저장
   (값이 같으면 UPDATE 생략 — 앱이 cameras Realtime 구독 중). MQTT 연결 직후 1회만 실어도 되고

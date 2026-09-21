@@ -60,6 +60,90 @@ def test_pair_camera_success(app_client: TestClient, fake_sb: MagicMock) -> None
     assert payload["owner_id"] == TEST_USER_ID
 
 
+def _hw_lookup(fake_sb: MagicMock):
+    """/cameras/pair 의 hw_id 조회 체인 (select→eq→eq→is_→limit→execute)."""
+    return (
+        fake_sb.table.return_value.select.return_value
+        .eq.return_value.eq.return_value.is_.return_value.limit.return_value.execute.return_value
+    )
+
+
+def test_pair_camera_new_hw_id_inserts_and_stores_it(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """처음 보는 hw_id → 기존대로 새 행 생성. hw_id 가 INSERT payload 에 들어간다."""
+    _hw_lookup(fake_sb).data = []          # 같은 보드 없음
+    fake_sb.table.return_value.insert.return_value.execute.return_value.data = [_camera_row()]
+
+    res = app_client.post(
+        "/cameras/pair",
+        json={"name": "거실 카메라", "model": "esp32-p4", "hw_id": "30EDA0E22E80"},
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["reused"] is False
+
+    payload = fake_sb.table.return_value.insert.call_args.args[0]
+    assert payload["hw_id"] == "30EDA0E22E80"
+
+
+def test_pair_camera_same_hw_id_reuses_row_instead_of_inserting(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """같은 보드 재페어링 → 새 행 없이 기존 행 갱신. 중복 카메라가 생기지 않는다."""
+    _hw_lookup(fake_sb).data = [{"id": "cam-uuid", "camera_id": "p4cam-aabbccdd"}]
+    fake_sb.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [
+        _camera_row()
+    ]
+
+    res = app_client.post(
+        "/cameras/pair",
+        json={"name": "거실 카메라", "model": "esp32-p4", "hw_id": "30EDA0E22E80"},
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["reused"] is True
+    assert body["camera_id"] == "p4cam-aabbccdd"   # camera_id 는 종전 값 유지
+    assert len(body["camera_token"]) > 20          # 토큰은 새로 발급
+
+    fake_sb.table.return_value.insert.assert_not_called()
+
+    # 새 토큰의 hash 로 갱신 — 평문이 저장되지 않는다
+    patch = fake_sb.table.return_value.update.call_args.args[0]
+    assert patch["token_hash"].startswith("$2")
+    assert patch["token_hash"] != body["camera_token"]
+
+
+def test_pair_camera_reuse_keeps_enclosure_when_not_given(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """enclosure_id 미지정 재페어링이 기존 사육장 연결을 끊지 않는다."""
+    _hw_lookup(fake_sb).data = [{"id": "cam-uuid", "camera_id": "p4cam-aabbccdd"}]
+    fake_sb.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [
+        _camera_row()
+    ]
+
+    res = app_client.post(
+        "/cameras/pair",
+        json={"name": "거실 카메라", "hw_id": "30EDA0E22E80"},
+    )
+    assert res.status_code == 201, res.text
+    patch = fake_sb.table.return_value.update.call_args.args[0]
+    assert "enclosure_id" not in patch
+
+
+def test_pair_camera_without_hw_id_never_reuses(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """구 펌웨어(hw_id 없음) → 조회 자체를 안 하고 기존 동작(항상 새 행) 유지."""
+    _hw_lookup(fake_sb).data = [{"id": "other", "camera_id": "p4cam-zzzz"}]
+    fake_sb.table.return_value.insert.return_value.execute.return_value.data = [_camera_row()]
+
+    res = app_client.post("/cameras/pair", json={"name": "거실 카메라"})
+    assert res.status_code == 201, res.text
+    assert res.json()["reused"] is False
+    fake_sb.table.return_value.insert.assert_called_once()
+
+
 def test_pair_camera_with_invalid_model(
     app_client: TestClient, fake_sb: MagicMock
 ) -> None:

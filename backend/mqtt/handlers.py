@@ -244,7 +244,7 @@ _rotation_resend_at: dict[str, float] = {}                          # uuid → l
 
 
 def _camera_state(sb: Client, camera_uuid: str) -> dict[str, Any] | None:
-    """cameras.rotate_180 / capabilities 를 TTL 캐시 경유로 조회. 실패/미존재면 None."""
+    """cameras.rotate_180 / capabilities / hw_id 를 TTL 캐시 경유로 조회. 실패/미존재면 None."""
     now = time.monotonic()
     with _camera_state_lock:
         hit = _camera_state_cache.get(camera_uuid)
@@ -253,7 +253,7 @@ def _camera_state(sb: Client, camera_uuid: str) -> dict[str, Any] | None:
     try:
         res = (
             sb.table("cameras")
-            .select("rotate_180, capabilities")
+            .select("rotate_180, capabilities, hw_id")
             .eq("id", camera_uuid)
             .limit(1)
             .execute()
@@ -264,7 +264,11 @@ def _camera_state(sb: Client, camera_uuid: str) -> dict[str, Any] | None:
     rows = res.data or []
     if not rows:
         return None
-    row = {"rotate_180": rows[0].get("rotate_180"), "capabilities": rows[0].get("capabilities")}
+    row = {
+        "rotate_180": rows[0].get("rotate_180"),
+        "capabilities": rows[0].get("capabilities"),
+        "hw_id": rows[0].get("hw_id"),
+    }
     with _camera_state_lock:
         _camera_state_cache[camera_uuid] = (now + CAMERA_STATE_TTL_SEC, row)
     return row
@@ -273,6 +277,33 @@ def _camera_state(sb: Client, camera_uuid: str) -> dict[str, Any] | None:
 # 직전 clip_stats(프로세스 메모리) — 델타로 스킵/실패 증가를 감지. 재시작 시 초기화되어도 무해.
 _clip_prev: dict[str, dict[str, Any]] = {}
 CLIP_UPLOAD_STUCK_SEC = 300
+_uptime_prev: dict[str, int] = {}   # uuid → 마지막 uptime_sec (재부팅 감지)
+
+
+def _camera_sys_state(camera_id_text: str, camera_uuid: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """heartbeat 의 uptime_sec / reset / free_heap → clip_stats.sys 로 저장할 dict.
+
+    uptime 이 직전보다 줄면 재부팅으로 보고 경고 로그(사유 = 펌웨어가 보고한 `reset`:
+    SW:<why> 는 펌웨어 자체 워치독/명령, PANIC·INT_WDT·TASK_WDT 는 크래시, BROWNOUT 은 전원).
+    "카메라가 자꾸 끊긴다" 를 시리얼 없이 콘솔/저널에서 진단하기 위한 것(2026-09-17).
+    """
+    uptime = payload.get("uptime_sec")
+    if not isinstance(uptime, (int, float)):
+        return None
+    uptime = int(uptime)
+    reset = payload.get("reset")
+    sys_state: dict[str, Any] = {"uptime_s": uptime}
+    if isinstance(reset, str):
+        sys_state["reset"] = reset[:48]
+    heap = payload.get("free_heap")
+    if isinstance(heap, (int, float)):
+        sys_state["heap"] = int(heap)
+    prev = _uptime_prev.get(camera_uuid)
+    _uptime_prev[camera_uuid] = uptime
+    if prev is not None and uptime < prev:
+        logger.warning("camera %s: 재부팅 감지 reset=%s (이전 uptime %ss → %ss)",
+                       camera_id_text, reset, prev, uptime)
+    return sys_state
 
 
 def _warn_clip_regression(camera_id_text: str, camera_uuid: str, clips: dict[str, Any]) -> None:
@@ -420,21 +451,40 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
             "is_online": True,
         }
 
-        # capabilities 보고 → 저장. 같은 값이면 UPDATE 에서 빼서 Realtime UPDATE 잡음을
-        # 줄인다 (앱이 cameras 테이블 Realtime 을 구독 중).
+        # capabilities / hw_id 는 둘 다 "DB 와 다를 때만" 쓰므로 상태를 한 번만 조회해
+        # 공유한다. 같은 값이면 UPDATE 에서 빼서 Realtime UPDATE 잡음을 줄인다
+        # (앱이 cameras 테이블 Realtime 을 구독 중).
         caps = payload.get("capabilities")
+        hw_id = payload.get("hw_id")
+        need_state = isinstance(caps, dict) or (isinstance(hw_id, str) and bool(hw_id))
+        state = _camera_state(sb, entity_uuid) if need_state else None
+
         if isinstance(caps, dict):
-            state = _camera_state(sb, entity_uuid)
             if state is None or state.get("capabilities") != caps:
                 update["capabilities"] = caps
+
+        # 하드웨어 ID(2026-09-21): 이미 생긴 중복 카메라 행을 실물 보드와 대조해 정리하기
+        # 위한 것. 페어링에서 이미 저장되지만 구 펌웨어로 등록된 행은 NULL 이라, 새 펌웨어로
+        # 올라오면 여기서 한 번 채워진다. 보드가 바뀌지 않는 한 값도 안 바뀌므로 1회만 쓴다.
+        if isinstance(hw_id, str) and hw_id and state is not None and not state.get("hw_id"):
+            update["hw_id"] = hw_id[:64]
 
         # 클립 파이프라인 카운터(2026-09-16): 매 heartbeat 저장. 스킵/업로드 실패가 늘거나
         # 업로드가 오래 진행 중이면 경고 로그 — "heartbeat 는 정상인데 녹화가 멈춘" 상태 감시.
         clips = payload.get("clips")
+        sys_state = _camera_sys_state(device_id_text, entity_uuid, payload)
         if isinstance(clips, dict):
-            update["clip_stats"] = clips
+            # sys(uptime/reset/heap) 는 별도 컬럼 없이 clip_stats 에 얹는다(마이그레이션 불필요).
+            update["clip_stats"] = {**clips, "sys": sys_state} if sys_state else clips
             update["clip_stats_at"] = _now_iso()
             _warn_clip_regression(device_id_text, entity_uuid, clips)
+
+        # 노출/야간 상태(2026-09-17): AE 동결 진입 시 경고(야간 헌팅 진단).
+        img = payload.get("img")
+        if isinstance(img, dict):
+            update["image_state"] = img
+            if img.get("ae_frozen") is True:
+                logger.warning("camera %s: AE 진동 동결 중 img=%s", device_id_text, img)
 
         try:
             sb.table("cameras").update(update).eq("id", entity_uuid).execute()
@@ -443,6 +493,8 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
         else:
             if "capabilities" in update:
                 _camera_state_patch(entity_uuid, capabilities=update["capabilities"])
+            if "hw_id" in update:
+                _camera_state_patch(entity_uuid, hw_id=update["hw_id"])
 
         reported = payload.get("rotate_180")
         if isinstance(reported, bool):
