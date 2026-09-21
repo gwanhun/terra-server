@@ -1279,9 +1279,15 @@ async function checkAccount(email, resultEl, btns) {
       test.onclick = isCam ? () => toggleCameraTest(obj, div, test)
                            : () => toggleDeviceTest(email, obj.id, ident, div, test);
       div.appendChild(test);
+      const unl = document.createElement('button');
+      unl.textContent = '해제'; unl.style.fontSize = '10px'; unl.style.padding = '1px 6px'; unl.style.marginLeft = '4px';
+      unl.title = '소프트 해제 — 목록에서만 사라지고 클립·분석 데이터는 보존. 클립이 쌓인 기기는 이걸 쓸 것';
+      unl.onclick = () => unlinkRegistered(email, kind, obj.id, ident, () => checkAccount(email, resultEl, btns));
+      div.appendChild(unl);
       const del = document.createElement('button');
       del.textContent = '삭제'; del.className = 'danger';
       del.style.fontSize = '10px'; del.style.padding = '1px 6px'; del.style.marginLeft = '4px';
+      del.title = 'hard delete — 클립이 있으면 참조 제약으로 실패할 수 있음(그땐 해제 사용)';
       del.onclick = () => deleteRegistered(email, kind, obj.id, ident, () => checkAccount(email, resultEl, btns));
       div.appendChild(del);
       resultEl.appendChild(div);
@@ -1314,6 +1320,32 @@ async function deleteRegistered(email, kind, id, ident, done) {
     if (done) done();
   } catch (e) {
     toast('삭제 오류: ' + (e.message || e), 'bad');
+  }
+}
+
+// 소프트 해제 — POST /devices|cameras/{id}/unlink. 목록에서만 사라지고 클립·라벨링 등
+// 하위 데이터는 보존된다. motion_clips 를 참조하는 분석 테이블이 많아 하드 삭제가
+// 참조 제약으로 막히는 경우가 있어, 클립이 쌓인 기기는 이쪽을 쓴다.
+async function unlinkRegistered(email, kind, id, ident, done) {
+  if (!confirm((kind === 'camera' ? '카메라' : '기기') + ' ' + ident + ' 등록 해제? (기록·클립은 보존, 목록에서만 사라짐)')) return;
+  const client = getBatchClient(); if (!client) return;
+  const password = document.getElementById('reg-pass').value;
+  const base = regApiBase();
+  try {
+    const { data, error } = await client.auth.signInWithPassword({ email, password });
+    if (error) throw new Error(error.message);
+    const path = (kind === 'camera' ? '/cameras/' : '/devices/') + id + '/unlink';
+    const res = await fetch(base + path, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + data.session.access_token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ request_id: crypto.randomUUID() }),
+    });
+    await client.auth.signOut();
+    if (!res.ok) { toast('해제 실패 ' + res.status + ': ' + (await res.text()).slice(0, 80), 'bad'); return; }
+    toast(ident + ' 해제됨', 'good');
+    if (done) done();
+  } catch (e) {
+    toast('해제 오류: ' + (e.message || e), 'bad');
   }
 }
 

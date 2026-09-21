@@ -22,6 +22,7 @@ Supabase 에 적용한 마이그레이션 기록(SOT). `migrations/*.sql` 을 SQ
 | ✅ | `2026-09-15_push_outbox.sql` | 2026-09-16 | 앱 푸시 이벤트 전송 대기열 + 정리 cron (`cleanup-push-outbox` jobid=6 신규) |
 | ✅ | `2026-09-16_enclosures_name_unique.sql` | 2026-09-16 | 그룹 이름 중복 금지 UNIQUE 인덱스 (앱 §1-1: btrim, 대소문자 구분). 생성 성공 = 기존 중복 없음 |
 | ✅ | `2026-09-16_soft_unlink.sql` | 2026-09-16 | devices/cameras `unlinked_at` + `unlink_request_id` + 활성 부분 인덱스 (소프트 해제, 앱 §1) |
+| ⬜ | `2026-09-17_cameras_image_state.sql` | — | `cameras.image_state` (노출/야간 상태 텔레메트리). **미적용** |
 | ✅ | `2026-09-16_cameras_clip_stats.sql` | 2026-09-16 | `cameras.clip_stats` JSONB + `clip_stats_at` (펌웨어 텔레메트리 `clips` 카운터) |
 | ✅ | `2026-09-16_app_redesign_01_assignment_history.sql` | 2026-09-16 | 앱 재설계 번들 (tera-ai-flutter@bb430fa). pets.deleted_at · pet_camera_assignments 이력 테이블 · reconcile 헬퍼 · pets_user_id_fkey CASCADE 교체 |
 | ✅ | `2026-09-16_app_redesign_02_redesign_groups.sql` | 2026-09-16 | 앱 재설계 번들 (tera-ai-flutter@bb430fa). 그룹 RPC(save/remove/rename) · 이름 검증 · 멱등 요청·카운터 테이블 · enclosures.group_number |
@@ -29,6 +30,7 @@ Supabase 에 적용한 마이그레이션 기록(SOT). `migrations/*.sql` 을 SQ
 | ✅ | `2026-09-16_app_redesign_04_redesign_pets.sql` | 2026-09-16 | 앱 재설계 번들 (tera-ai-flutter@bb430fa). 개체 저장/툼스톤 RPC · 활성 개체 RESTRICTIVE SELECT 정책 |
 | ✅ | `2026-09-16_app_redesign_05_redesign_delete_group.sql` | 2026-09-16 | 앱 재설계 번들 (tera-ai-flutter@bb430fa). 그룹 원자 삭제 RPC (구성원·영상·이력 보존) |
 | ✅ | `2026-09-16_app_redesign_06_clip_visibility.sql` | 2026-09-16 | 앱 재설계 번들 (tera-ai-flutter@bb430fa). user_hidden_clips (앱 전용 영상 숨김) |
+| ✅ | `2026-09-21_gme_jobs_clip_cascade.sql` | 2026-09-21 | `gme_jobs.clip_id` FK 에 ON DELETE CASCADE. 카메라 삭제 500 대응이었으나 **단독으로는 불충분** — motion_clips 참조 테이블이 45개라 클립 보유 기기는 소프트 해제 사용 |
 
 ## 규칙
 - 새 마이그레이션은 `migrations/YYYY-MM-DD_설명.sql` 로 추가하고, 적용 후 이 표에 행 추가.
