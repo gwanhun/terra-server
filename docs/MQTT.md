@@ -53,7 +53,8 @@
   "fan2":   "OFF",
   "heater": { "state": "OFF", "locked": false },
   "led":    "ON",
-  "led_brightness": 75
+  "led_brightness": 75,
+  "hw_id": "A0B7651C2908"
 }
 ```
 
@@ -62,6 +63,11 @@
 - `relay` 는 실제 워터펌프 (API 호환성 위해 이름 유지)
 - `fan2` 는 냉각팬 (두 번째 팬, 동작은 `fan` 과 동일). 구 펌웨어는 키 없음 → 서버는 NULL 저장
 - `led_brightness` 는 MOSFET 보드만 (0~100), 릴레이 보드는 키 없음
+- `hw_id` (2026-09-21+): 보드 불변 하드웨어 ID(efuse base MAC 12자리 hex). 페어링에서 이미
+  저장되지만, 구 펌웨어로 등록돼 `devices.hw_id` 가 NULL 인 행은 새 펌웨어의 첫 telemetry 에서
+  채워진다. 디바이스 telemetry 는 3초 주기라 프로세스당 1회만 UPDATE 한다. 용도는 **이미 생겨버린
+  중복 기기 행을 실물 보드와 대조해 정리**하는 것이고, 중복 생성 자체를 막는 것은
+  `POST /devices/pair` 쪽이다(API.md 3.2 참고).
 
 카메라 워커 telemetry (15초 주기, heartbeat 성격 — 서버는 `telemetry` 행을 INSERT 하지 않음):
 

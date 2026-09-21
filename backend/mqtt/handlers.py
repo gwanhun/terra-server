@@ -225,6 +225,7 @@ def reset_device_cache() -> None:
     with _camera_state_lock:
         _camera_state_cache.clear()
         _rotation_resend_at.clear()
+    _device_hw_id_done.clear()
 
 
 # ---------- 카메라 설정 상태 캐시 (rotate_180 / capabilities) ----------
@@ -278,6 +279,9 @@ def _camera_state(sb: Client, camera_uuid: str) -> dict[str, Any] | None:
 _clip_prev: dict[str, dict[str, Any]] = {}
 CLIP_UPLOAD_STUCK_SEC = 300
 _uptime_prev: dict[str, int] = {}   # uuid → 마지막 uptime_sec (재부팅 감지)
+# hw_id 를 이미 채운 디바이스 uuid. 디바이스 텔레메트리는 3초 주기라 매 건 UPDATE 하면
+# 낭비이고, hw_id 는 보드가 바뀌지 않는 한 불변이므로 프로세스당 1회만 쓴다.
+_device_hw_id_done: set[str] = set()
 
 
 def _camera_sys_state(camera_id_text: str, camera_uuid: str, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -543,13 +547,19 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
         return
 
     # last_seen_at/is_online 갱신. 실패해도 telemetry 저장은 성공이라 별도 try.
+    dev_update: dict[str, Any] = {"last_seen_at": _now_iso(), "is_online": True}
+    # 하드웨어 ID(2026-09-21): 구 펌웨어로 등록돼 devices.hw_id 가 NULL 인 행을 채운다.
+    # 이미 생긴 중복 기기 행을 실물 보드와 대조해 정리하기 위한 것.
+    hw_id = payload.get("hw_id")
+    if isinstance(hw_id, str) and hw_id and device_uuid not in _device_hw_id_done:
+        dev_update["hw_id"] = hw_id[:64]
     try:
-        sb.table("devices").update({
-            "last_seen_at": _now_iso(),
-            "is_online": True,
-        }).eq("id", device_uuid).execute()
+        sb.table("devices").update(dev_update).eq("id", device_uuid).execute()
     except Exception:  # noqa: BLE001
         logger.exception("devices UPDATE 실패 (device=%s)", device_id_text)
+    else:
+        if "hw_id" in dev_update:
+            _device_hw_id_done.add(device_uuid)
 
     # 임계값 평가 → alerts INSERT/RESOLVE (Stage D). 실패해도 telemetry 저장은 성공.
     # 임포트는 함수 안에서 — 순환참조 회피 (alerts.py 는 handlers 의존 안 함).

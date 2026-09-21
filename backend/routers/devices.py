@@ -40,6 +40,11 @@ router = APIRouter(prefix="/devices", tags=["devices"])
 
 # ---------- Pydantic 모델 ----------
 
+# 펌웨어가 보고하지 않을 때의 기본 보드 능력 (MOSFET 4채널 보드, 조명 밝기 조절 가능).
+# 릴레이 보드용 기기를 웹에서 등록하려면 body.capabilities 로 명시할 것.
+DEFAULT_CAPABILITIES: dict[str, Any] = {"board": "mosfet", "led_dimmable": True}
+
+
 class DevicePairRequest(BaseModel):
     enclosure_id: str | None = Field(
         None, description="소속 사육장 UUID. None 이면 단독 디바이스."
@@ -51,6 +56,17 @@ class DevicePairRequest(BaseModel):
         None,
         description='보드 능력 플래그(펌웨어 보고). 예: {"board":"mosfet","led_dimmable":true}',
         examples=[{"board": "mosfet", "led_dimmable": True, "heater": True}],
+    )
+    hw_id: str | None = Field(
+        None,
+        max_length=64,
+        examples=["A0B7651C2908"],
+        description=(
+            "보드 불변 하드웨어 ID(ESP32 efuse base MAC 12자리 hex). "
+            "같은 owner 에 같은 hw_id 기기가 이미 있으면 새 행을 만들지 않고 그 행을 "
+            "재사용해 토큰만 재발급한다(재페어링 중복 행 방지). "
+            "구 펌웨어는 보내지 않으며, 그 경우 기존대로 항상 새 행이 생긴다."
+        ),
     )
 
 
@@ -72,6 +88,13 @@ class DevicePairResponse(BaseModel):
     device_id: str = Field(..., description="MQTT client_id (e.g. terra-a1b2c3d4)")
     mqtt_token: str = Field(
         ..., description="**MQTT password 평문. 응답에만 1회 노출.** NVS 저장 필수."
+    )
+    reused: bool = Field(
+        False,
+        description=(
+            "true 면 hw_id 가 일치하는 기존 기기 행을 재사용했다(새 행 미생성). "
+            "device_id 는 종전 값 그대로이고 mqtt_token 만 새로 발급됐다."
+        ),
     )
 
 
@@ -116,6 +139,29 @@ def _verify_enclosure_owner(sb, enclosure_id: str, user_id: str) -> None:
         raise HTTPException(status_code=400, detail="enclosure_id 가 본인 사육장이 아님.")
 
 
+def _find_by_hw_id(sb, user_id: str, hw_id: str | None) -> dict[str, Any] | None:
+    """같은 소유자의 같은 물리 보드 기기 행을 찾는다. 없으면 None.
+
+    hw_id 는 efuse MAC 기반이라 재부팅·NVS 삭제·펌웨어 재설치에도 불변이다.
+    unlinked_at IS NULL 로 제한해 해제된 과거 행은 되살리지 않는다(사용자가 의도적으로
+    해제한 기기를 페어링이 몰래 복구하면 안 된다 → 그 경우는 새 행이 맞다).
+    구 펌웨어(hw_id 없음)는 항상 None → 기존 동작 그대로 새 행 생성.
+    """
+    if not hw_id:
+        return None
+    res = (
+        sb.table("devices")
+        .select("id, device_id")
+        .eq("owner_id", user_id)
+        .eq("hw_id", hw_id)
+        .is_("unlinked_at", "null")
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    return rows[0] if rows else None
+
+
 # ---------- 엔드포인트 ----------
 
 @router.post(
@@ -142,33 +188,68 @@ def pair_device(
     if body.enclosure_id:
         _verify_enclosure_owner(sb, body.enclosure_id, user_id)
 
-    device_id = f"terra-{secrets.token_hex(4)}"   # "terra-a1b2c3d4"
     mqtt_token = generate_token()
     token_hashed = hash_token(mqtt_token)
 
-    payload: dict[str, Any] = {
-        "owner_id": user_id,
-        "enclosure_id": body.enclosure_id,
-        "device_id": device_id,
-        "token_hash": token_hashed,
+    # 펌웨어가 보고한 하드웨어 ID 와 같은 보드가 이미 등록돼 있으면 새 행을 만들지 않는다.
+    # (재페어링 = WiFi 변경일 뿐인데 매번 새 기기가 생기던 문제. 2026-09-21, cameras 와 동일)
+    existing = _find_by_hw_id(sb, user_id, body.hw_id)
+
+    # capabilities 미지정(웹 등록 패널 등 펌웨어 보고가 없는 경로)이면 기본 보드 플래그.
+    # null 이면 앱이 밝기 슬라이더를 숨긴다 (2026-09-18 베타기기 2908 사례).
+    # 펌웨어는 pair body 로 명시 보고하므로 그 값이 우선.
+    caps = body.capabilities if body.capabilities is not None else dict(DEFAULT_CAPABILITIES)
+
+    # 기기가 보고하는 값만 갱신한다. 사용자가 서버/앱에서 바꾼 설정이나 미지정
+    # enclosure_id 를 페어링이 덮어쓰지 않게 한다.
+    device_fields: dict[str, Any] = {
         "name": body.name,
         "species": body.species,
         "firmware_ver": body.firmware_ver,
-        "capabilities": body.capabilities,
+        "capabilities": caps,
     }
 
-    res = sb.table("devices").insert(payload).execute()
-    if not res.data:
-        raise HTTPException(status_code=500, detail="device INSERT 실패")
-    row = res.data[0]
+    if existing:
+        patch: dict[str, Any] = {"token_hash": token_hashed, **device_fields}
+        if body.enclosure_id:          # 미지정이면 기존 사육장 연결을 유지
+            patch["enclosure_id"] = body.enclosure_id
+        res = (
+            sb.table("devices")
+            .update(patch)
+            .eq("id", existing["id"])
+            .execute()
+        )
+        if not res.data:
+            raise HTTPException(status_code=500, detail="device UPDATE 실패")
+        row = res.data[0]
+        logger.info(
+            "pair: hw_id=%s 기존 디바이스 재사용 device_id=%s (새 행 미생성)",
+            body.hw_id, row["device_id"],
+        )
+    else:
+        payload: dict[str, Any] = {
+            "owner_id": user_id,
+            "enclosure_id": body.enclosure_id,
+            "device_id": f"terra-{secrets.token_hex(4)}",   # "terra-a1b2c3d4"
+            "token_hash": token_hashed,
+            "hw_id": body.hw_id,
+            **device_fields,
+        }
+        res = sb.table("devices").insert(payload).execute()
+        if not res.data:
+            raise HTTPException(status_code=500, detail="device INSERT 실패")
+        row = res.data[0]
 
-    # Mosquitto 자동 등록 (실패해도 페어링 성공 처리 — 운영자가 수동 동기화 가능)
+    # Mosquitto 자동 등록 (실패해도 페어링 성공 처리 — 운영자가 수동 동기화 가능).
+    # 재사용 경로에서도 반드시 호출해야 한다 — 토큰을 새로 발급했으므로 브로커의
+    # 기존 비밀번호로는 접속이 안 된다. mosquitto_passwd -b 는 같은 사용자면 덮어쓴다.
     registry.register_device(row["device_id"], mqtt_token)
 
     return DevicePairResponse(
         id=row["id"],
         device_id=row["device_id"],
         mqtt_token=mqtt_token,   # 평문은 응답에만 1회 노출
+        reused=bool(existing),
     )
 
 

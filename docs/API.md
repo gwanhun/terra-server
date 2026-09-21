@@ -122,7 +122,8 @@ Content-Type: application/json
 {
   "name": "거실 비어디드",
   "species": "bearded_dragon",
-  "firmware_ver": "1.0.0"
+  "firmware_ver": "1.0.0",
+  "hw_id": "A0B7651C2908"
 }
 ```
 
@@ -131,19 +132,42 @@ Content-Type: application/json
 | `name` | string | ✓ | 사용자 지정 이름 (1~64자) |
 | `species` | string | | 종 (32자 이내) |
 | `firmware_ver` | string | | 펌웨어 버전 |
+| `hw_id` | string | | 보드 불변 하드웨어 ID (아래 참고, 2026-09-21 펌웨어~) |
 
 **응답** (201 Created):
 ```json
 {
   "id": "a1b2c3d4-...",
   "device_id": "terra-a1b2c3d4",
-  "mqtt_token": "Xa2b9C..."
+  "mqtt_token": "Xa2b9C...",
+  "reused": false
 }
 ```
 
 - `id`: Supabase `devices.id` (UUID)
 - `device_id`: MQTT client_id (펌웨어가 NVS 저장)
 - `mqtt_token`: MQTT password 평문 (**1회만 노출**, NVS 저장 필수)
+- `reused`: true 면 기존 행 재사용 (아래 참고)
+
+#### `hw_id` — 재페어링 중복 기기 방지 (2026-09-21)
+
+`hw_id` 는 ESP32 efuse base MAC 12자리 hex 로, 재부팅·NVS 삭제·펌웨어 재설치에도 바뀌지
+않는 **보드의 참 식별자**다. 카메라(`/cameras/pair`, 4.2)와 완전히 같은 규칙이다.
+
+같은 소유자에게 같은 `hw_id` 기기가 이미 있으면(해제되지 않은 행) 서버는 **새 행을 만들지
+않고 그 행을 재사용**한다. `device_id` 는 종전 값을 유지하고 `mqtt_token` 만 새로 발급되며,
+응답의 `reused` 가 `true` 로 온다. WiFi 만 바꾸려고 재페어링할 때마다 유령 기기가 쌓이던
+문제를 막는다.
+
+| 상황 | 결과 |
+| --- | --- |
+| `hw_id` 없음 (구 펌웨어) | 항상 새 행 생성 (종전 동작) |
+| 처음 보는 `hw_id` | 새 행 생성 + `hw_id` 저장 |
+| 이미 등록된 `hw_id` | 기존 행 갱신, `reused: true`, 새 토큰 발급 |
+| 해제(unlink)된 행의 `hw_id` | 새 행 생성 — 사용자가 뗀 기기를 몰래 되살리지 않는다 |
+
+재사용 시 갱신되는 값은 기기가 보고하는 것(`name`/`species`/`firmware_ver`/`capabilities`)뿐이다.
+`enclosure_id` 는 요청에 있을 때만 바뀌어, 미지정 재페어링이 기존 사육장 연결을 끊지 않는다.
 
 ---
 

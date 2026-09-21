@@ -40,6 +40,87 @@ def test_pair_device_with_enclosure_ok(
     assert payload["owner_id"] == TEST_USER_ID
 
 
+def _dev_mock_with_hw_lookup(existing: list[dict]) -> MagicMock:
+    """devices 테이블 목: hw_id 조회 체인 + insert/update 준비."""
+    dev = MagicMock()
+    (dev.select.return_value.eq.return_value.eq.return_value
+     .is_.return_value.limit.return_value.execute.return_value.data) = existing
+    dev.insert.return_value.execute.return_value.data = [
+        {"id": "dev-1", "device_id": "terra-abcd"}
+    ]
+    dev.update.return_value.eq.return_value.execute.return_value.data = [
+        {"id": "dev-1", "device_id": "terra-abcd"}
+    ]
+    return dev
+
+
+def test_pair_device_new_hw_id_inserts_and_stores_it(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """처음 보는 hw_id → 기존대로 새 행 생성. hw_id 가 INSERT payload 에 들어간다."""
+    dev = _dev_mock_with_hw_lookup([])
+    fake_sb.table.side_effect = lambda name: {"devices": dev}[name]
+
+    res = app_client.post(
+        "/devices/pair",
+        json={"name": "거실 컨트롤러", "hw_id": "A0B7651C2908"},
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["reused"] is False
+    assert dev.insert.call_args.args[0]["hw_id"] == "A0B7651C2908"
+
+
+def test_pair_device_same_hw_id_reuses_row_instead_of_inserting(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """같은 보드 재페어링(WiFi 변경) → 새 행 없이 기존 행 갱신."""
+    dev = _dev_mock_with_hw_lookup([{"id": "dev-1", "device_id": "terra-abcd"}])
+    fake_sb.table.side_effect = lambda name: {"devices": dev}[name]
+
+    res = app_client.post(
+        "/devices/pair",
+        json={"name": "거실 컨트롤러", "hw_id": "A0B7651C2908"},
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["reused"] is True
+    assert body["device_id"] == "terra-abcd"   # device_id 유지
+    assert len(body["mqtt_token"]) > 20        # 토큰은 새로 발급
+
+    dev.insert.assert_not_called()
+    patch = dev.update.call_args.args[0]
+    assert patch["token_hash"].startswith("$2")
+    assert patch["token_hash"] != body["mqtt_token"]
+
+
+def test_pair_device_reuse_keeps_enclosure_when_not_given(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """enclosure_id 미지정 재페어링이 기존 사육장 연결을 끊지 않는다."""
+    dev = _dev_mock_with_hw_lookup([{"id": "dev-1", "device_id": "terra-abcd"}])
+    fake_sb.table.side_effect = lambda name: {"devices": dev}[name]
+
+    res = app_client.post(
+        "/devices/pair",
+        json={"name": "거실 컨트롤러", "hw_id": "A0B7651C2908"},
+    )
+    assert res.status_code == 201, res.text
+    assert "enclosure_id" not in dev.update.call_args.args[0]
+
+
+def test_pair_device_without_hw_id_never_reuses(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """구 펌웨어(hw_id 없음) → 조회 없이 기존 동작(항상 새 행) 유지."""
+    dev = _dev_mock_with_hw_lookup([{"id": "other", "device_id": "terra-zzzz"}])
+    fake_sb.table.side_effect = lambda name: {"devices": dev}[name]
+
+    res = app_client.post("/devices/pair", json={"name": "거실 컨트롤러"})
+    assert res.status_code == 201, res.text
+    assert res.json()["reused"] is False
+    dev.insert.assert_called_once()
+
+
 def test_pair_device_with_foreign_enclosure_returns_400(
     app_client: TestClient, fake_sb: MagicMock
 ) -> None:
@@ -92,6 +173,20 @@ def test_pair_device_with_capabilities_stored(
     assert res.status_code == 201, res.text
     payload = fake_sb.table.return_value.insert.call_args.args[0]
     assert payload["capabilities"] == caps
+
+
+def test_pair_device_without_capabilities_gets_default(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """웹 등록 패널처럼 capabilities 를 안 보내면 기본 보드 플래그가 저장된다
+    (null 이면 앱이 밝기 슬라이더를 숨김 — 2026-09-18 베타기기 2908 사례)."""
+    fake_sb.table.return_value.insert.return_value.execute.return_value.data = [
+        {"id": "dev-1", "device_id": "terra-web"}
+    ]
+    res = app_client.post("/devices/pair", json={"name": "베타기기"})
+    assert res.status_code == 201, res.text
+    payload = fake_sb.table.return_value.insert.call_args.args[0]
+    assert payload["capabilities"] == {"board": "mosfet", "led_dimmable": True}
 
 
 def test_list_devices_exposes_capabilities(
