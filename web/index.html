@@ -62,6 +62,13 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
 .live-status.warn { color: #fc9; }
 .live-status.bad { color: #f99; }
 
+/* 온도 추이 차트 (telemetry_30m) — 차트 라이브러리 없이 인라인 SVG.
+ * 라인 1개 + min/max 밴드 1개뿐이라 SVG 로 충분하고, 이 페이지가 CDN 에서 받는
+ * 스크립트를 supabase-js 하나로 유지하는 편이 낫다. */
+.trend-chart { background: #0a0a0a; border-radius: 4px; padding: 4px; min-height: 130px; }
+.trend-chart svg { display: block; width: 100%; height: auto; }
+.trend-readout { font-family: monospace; font-size: 12px; color: #fc9; min-height: 1.4em; }
+
 /* 모바일 (≤600px) — 좁은 화면 보정 */
 @media (max-width: 600px) {
   body { padding: 8px; }
@@ -426,6 +433,26 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
     </div>
     <video id="live-video" class="live-video" autoplay playsinline muted></video>
     <div id="live-status" class="live-status">대기</div>
+  </div>
+</div>
+
+<!-- 온도 추이 모달 (telemetry_30m) -->
+<div id="trend-modal" class="modal-backdrop hidden" onclick="if(event.target===this)closeTrend()">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>📈 온도 추이 — <span id="trend-label"></span></h2>
+      <button class="danger" onclick="closeTrend()">닫기</button>
+    </div>
+    <div class="tabs" id="trend-ranges">
+      <button data-range="24h" class="active" onclick="setTrendRange('24h')">24시간</button>
+      <button data-range="7d" onclick="setTrendRange('7d')">7일</button>
+      <button data-range="30d" onclick="setTrendRange('30d')">30일</button>
+    </div>
+    <div id="trend-chart" class="trend-chart"></div>
+    <div id="trend-readout" class="trend-readout"></div>
+    <div id="trend-stat" class="muted"></div>
+    <small class="muted">30분 집계(<code>telemetry_30m</code>) · 파란 선 = 구간 평균, 옅은 띠 = 그 30분의 최저~최고,
+      초록 띠 = 목표 온도 범위. 선이 끊긴 곳은 데이터가 없는 구간(오프라인). 지금 값은 디바이스 표의 실시간 온도.</small>
   </div>
 </div>
 
@@ -833,7 +860,8 @@ async function loadDevices() {
         ${quickCmdButtons(r.id, r.is_online)}
         &nbsp;${mistButtons(r.id, r.is_online)}
         &nbsp;${ledSlider(r)}
-        <button onclick="unlinkDevice('devices','${r.id}')" title="소프트 해제 — 기록 보존, 앱의 '삭제'와 동일" style="font-size:11px;padding:2px 8px;margin-left:8px">해제</button>
+        &nbsp;<button onclick="openTrend('${r.id}')" title="온도 추이 — 30분 집계(telemetry_30m), 최근 30일까지" style="font-size:11px;padding:2px 8px;margin-left:8px">📈추이</button>
+        <button onclick="unlinkDevice('devices','${r.id}')" title="소프트 해제 — 기록 보존, 앱의 '삭제'와 동일" style="font-size:11px;padding:2px 8px;margin-left:4px">해제</button>
         <button class="danger" onclick="deleteDevice('${r.id}')" title="hard delete — 기록까지 삭제(운영용)" style="font-size:11px;padding:2px 8px;margin-left:4px">삭제</button>
       </td>`;
     tbody.appendChild(tr);
@@ -2086,6 +2114,237 @@ async function closeLive() {
     });
   }
   liveCameraUuid = null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 온도 추이 (telemetry_30m) — 디바이스 행 [📈추이]
+// ─────────────────────────────────────────────────────────────────────────
+// 왜 원본 telemetry 가 아니라 telemetry_30m 인가: 원본은 3초 주기라 24시간만 그려도
+// 28,800 포인트고 보관도 7일뿐이다(pg_cron 이 정리). 30분 집계는 영구 보관 +
+// 24h=48 / 30d=1440 포인트라 브라우저가 그대로 감당한다.
+// "지금 몇 도"는 여기 없다 — 그건 디바이스 표의 실시간 셀(Realtime 구독)이 담당.
+
+const TREND_RANGES = { '24h': 1, '7d': 7, '30d': 30 };
+const TREND_BUCKET_MS = 30 * 60 * 1000;
+const TREND_FULL_SAMPLES = 600;                             // 30분 ÷ 3초 = 정상 버킷 표본 수
+const TREND_VIEW = { w: 720, h: 260, l: 46, r: 12, t: 12, b: 26 };
+
+let trendDeviceUuid = null;
+let trendRange = '24h';
+let trendPoints = [];              // 크로스헤어 조회용 (시간 오름차순)
+let trendGeom = null;              // 픽셀 ↔ 값 변환 파라미터
+const TREND_BAND_CACHE = {};       // device_uuid → [min,max] | null (기간 바꿀 때 재조회 방지)
+
+function openTrend(deviceUuid) {
+  trendDeviceUuid = deviceUuid;
+  document.getElementById('trend-modal').classList.remove('hidden');
+  document.getElementById('trend-label').textContent = DEV_LABEL[deviceUuid] || deviceUuid.slice(0, 8);
+  setTrendRange(trendRange);
+}
+
+function closeTrend() {
+  document.getElementById('trend-modal').classList.add('hidden');
+  trendDeviceUuid = null;
+  trendPoints = [];
+  trendGeom = null;
+}
+
+function setTrendRange(key) {
+  trendRange = key;
+  document.querySelectorAll('#trend-ranges button').forEach(b => {
+    b.classList.toggle('active', b.dataset.range === key);
+  });
+  loadTrend();
+}
+
+async function loadTrend() {
+  const uuid = trendDeviceUuid;
+  if (!uuid || !sb) return;
+  const chart = document.getElementById('trend-chart');
+  const stat = document.getElementById('trend-stat');
+  chart.innerHTML = '';
+  document.getElementById('trend-readout').textContent = '';
+  stat.textContent = '불러오는 중…';
+
+  const from = new Date(Date.now() - TREND_RANGES[trendRange] * 864e5).toISOString();
+  // RLS 가 본인 디바이스만 통과시키므로 owner 필터는 불필요 (device_id 만 맞으면 됨).
+  const { data, error } = await sb
+    .from('telemetry_30m')
+    .select('bucket, t_a_avg, t_a_min, t_a_max, t_a_count')
+    .eq('device_id', uuid)
+    .gte('bucket', from)
+    .order('bucket', { ascending: true });
+  if (uuid !== trendDeviceUuid) return;      // 그 사이 닫혔거나 다른 기기로 바뀜
+  if (error) {
+    stat.innerHTML = '<span class="bad">조회 실패: ' + esc(error.message) + '</span>';
+    return;
+  }
+
+  // t_a_avg 가 NULL 인 버킷 = 그 30분간 A 센서가 전부 fault/무보고(2026-09-15 마이그레이션의
+  // FILTER 결과). 점을 아예 만들지 않아야 아래 gap 처리에서 선이 끊기고, 없는 데이터를
+  // 직선으로 이어버리는 착시가 안 생긴다.
+  const pts = (data || []).filter(r => r.t_a_avg != null).map(r => ({
+    ms: Date.parse(r.bucket),
+    avg: r.t_a_avg,
+    lo: r.t_a_min != null ? r.t_a_min : r.t_a_avg,
+    hi: r.t_a_max != null ? r.t_a_max : r.t_a_avg,
+    // t_a_count 는 2026-09-15 이전 버킷에서 NULL — '모름'과 0 은 다르므로 NULL 은 partial 로 안 본다
+    partial: typeof r.t_a_count === 'number' && r.t_a_count < TREND_FULL_SAMPLES / 2,
+  }));
+
+  if (!pts.length) {
+    stat.innerHTML = '<span class="muted">이 기간 데이터 없음 — 30분 집계는 pg_cron 이 매 30분 돌린다. '
+      + '방금 페어링했으면 첫 점이 생기기까지 최대 1시간.</span>';
+    return;
+  }
+
+  // 목표 온도 범위 — 가로 띠로 깔면 "정상 범위 벗어남"이 한눈에 보인다(APP_TIMESERIES_CHART §3).
+  if (!(uuid in TREND_BAND_CACHE)) {
+    const s = await api('/devices/' + uuid + '/settings');   // 미설정이어도 404 아님, 값만 null
+    if (uuid !== trendDeviceUuid) return;
+    TREND_BAND_CACHE[uuid] = (s && s.target_temp_min != null && s.target_temp_max != null)
+      ? [s.target_temp_min, s.target_temp_max] : null;
+  }
+
+  drawTrend(pts, TREND_BAND_CACHE[uuid]);
+
+  const avg = pts.reduce((a, p) => a + p.avg, 0) / pts.length;
+  const lo = Math.min.apply(null, pts.map(p => p.lo));
+  const hi = Math.max.apply(null, pts.map(p => p.hi));
+  let gaps = 0;
+  for (let i = 1; i < pts.length; i++) {
+    if (pts[i].ms - pts[i - 1].ms > TREND_BUCKET_MS * 1.5) gaps++;
+  }
+  const partials = pts.filter(p => p.partial).length;
+  stat.innerHTML = '평균 <b>' + avg.toFixed(1) + '°C</b> · 최저 ' + lo.toFixed(1)
+    + ' · 최고 ' + hi.toFixed(1) + ' · ' + pts.length + '포인트'
+    + (gaps ? ' · <span class="bad">끊긴 구간 ' + gaps + '곳</span>' : '')
+    + (partials ? ' · <span class="muted">표본 부족 버킷 ' + partials + '개</span>' : '');
+}
+
+// pts: 시간 오름차순, band: [목표min, 목표max] | null
+function drawTrend(pts, band) {
+  const V = TREND_VIEW;
+  const x0 = V.l, x1 = V.w - V.r, y0 = V.t, y1 = V.h - V.b;
+  const minMs = pts[0].ms, maxMs = pts[pts.length - 1].ms;
+  const spanMs = Math.max(maxMs - minMs, 1);
+
+  let tLo = Math.min.apply(null, pts.map(p => p.lo));
+  let tHi = Math.max.apply(null, pts.map(p => p.hi));
+  if (band) { tLo = Math.min(tLo, band[0]); tHi = Math.max(tHi, band[1]); }
+  const pad = Math.max((tHi - tLo) * 0.08, 0.5);   // 평평한 구간에서 선이 축에 붙는 것 방지
+  tLo -= pad; tHi += pad;
+  const tSpan = tHi - tLo;
+
+  const xOf = ms => x0 + (ms - minMs) / spanMs * (x1 - x0);
+  const yOf = t => y1 - (t - tLo) / tSpan * (y1 - y0);
+  const n2 = v => v.toFixed(1);
+
+  // 버킷 간격이 30분보다 크게 벌어지면 = 그 사이 데이터 없음 → 선을 끊는다
+  const segs = [[]];
+  pts.forEach((p, i) => {
+    if (i && p.ms - pts[i - 1].ms > TREND_BUCKET_MS * 1.5) segs.push([]);
+    segs[segs.length - 1].push(p);
+  });
+
+  const o = [];
+  if (band) {
+    const yTop = Math.max(y0, yOf(band[1])), yBot = Math.min(y1, yOf(band[0]));
+    o.push('<rect x="' + x0 + '" y="' + n2(yTop) + '" width="' + (x1 - x0)
+      + '" height="' + n2(Math.max(yBot - yTop, 1)) + '" fill="#2a6a3a" opacity=".22"/>');
+  }
+  for (let i = 0; i <= 4; i++) {
+    const t = tLo + tSpan * i / 4, y = yOf(t);
+    o.push('<line x1="' + x0 + '" y1="' + n2(y) + '" x2="' + x1 + '" y2="' + n2(y) + '" stroke="#333"/>');
+    o.push('<text x="' + (x0 - 6) + '" y="' + n2(y + 3) + '" fill="#888" font-size="10" text-anchor="end">'
+      + t.toFixed(1) + '</text>');
+  }
+  for (let i = 0; i <= 3; i++) {
+    const ms = minMs + spanMs * i / 3;
+    const anchor = i === 0 ? 'start' : (i === 3 ? 'end' : 'middle');
+    o.push('<text x="' + n2(xOf(ms)) + '" y="' + (y1 + 16) + '" fill="#888" font-size="10" text-anchor="'
+      + anchor + '">' + trendTimeLabel(ms) + '</text>');
+  }
+  segs.forEach(seg => {
+    if (seg.length > 1) {
+      // min~max 밴드: 위쪽(max)을 정방향, 아래쪽(min)을 역방향으로 이어 닫힌 폴리곤
+      const up = seg.map(p => n2(xOf(p.ms)) + ',' + n2(yOf(p.hi)));
+      const dn = seg.slice().reverse().map(p => n2(xOf(p.ms)) + ',' + n2(yOf(p.lo)));
+      o.push('<polygon points="' + up.concat(dn).join(' ') + '" fill="#5af" opacity=".16"/>');
+      o.push('<polyline points="' + seg.map(p => n2(xOf(p.ms)) + ',' + n2(yOf(p.avg))).join(' ')
+        + '" fill="none" stroke="#5af" stroke-width="1.6" stroke-linejoin="round"/>');
+    } else {
+      o.push('<circle cx="' + n2(xOf(seg[0].ms)) + '" cy="' + n2(yOf(seg[0].avg)) + '" r="2" fill="#5af"/>');
+    }
+  });
+  // 표본 부족 버킷 표시 — 30일 뷰(1440점)에서 원을 다 그리면 느려져서 촘촘하면 생략
+  if (pts.length <= 400) {
+    pts.filter(p => p.partial).forEach(p => {
+      o.push('<circle cx="' + n2(xOf(p.ms)) + '" cy="' + n2(yOf(p.avg))
+        + '" r="2.5" fill="none" stroke="#fc9"/>');
+    });
+  }
+  o.push('<line id="trend-cross" x1="0" y1="' + y0 + '" x2="0" y2="' + y1 + '" stroke="#fc9" opacity="0"/>');
+  o.push('<circle id="trend-dot" cx="0" cy="0" r="3" fill="#fc9" opacity="0"/>');
+
+  document.getElementById('trend-chart').innerHTML =
+    '<svg viewBox="0 0 ' + V.w + ' ' + V.h + '" xmlns="http://www.w3.org/2000/svg">' + o.join('') + '</svg>';
+
+  trendPoints = pts;
+  trendGeom = { x0, x1, y0, y1, minMs, spanMs, tLo, tSpan };
+  const svg = document.querySelector('#trend-chart svg');
+  svg.addEventListener('mousemove', onTrendHover);
+  svg.addEventListener('mouseleave', clearTrendHover);
+}
+
+function onTrendHover(ev) {
+  const g = trendGeom;
+  if (!g || !trendPoints.length) return;
+  const rect = ev.currentTarget.getBoundingClientRect();
+  const vx = (ev.clientX - rect.left) / rect.width * TREND_VIEW.w;   // 화면 px → viewBox 좌표
+  if (vx < g.x0 || vx > g.x1) return clearTrendHover();
+  const ms = g.minMs + (vx - g.x0) / (g.x1 - g.x0) * g.spanMs;
+
+  let lo = 0, hi = trendPoints.length - 1;                           // 시간순이라 이분 탐색
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (trendPoints[mid].ms < ms) lo = mid + 1; else hi = mid;
+  }
+  if (lo > 0 && Math.abs(trendPoints[lo - 1].ms - ms) < Math.abs(trendPoints[lo].ms - ms)) lo--;
+  const p = trendPoints[lo];
+
+  const px = g.x0 + (p.ms - g.minMs) / g.spanMs * (g.x1 - g.x0);
+  const py = g.y1 - (p.avg - g.tLo) / g.tSpan * (g.y1 - g.y0);
+  const cross = document.getElementById('trend-cross'), dot = document.getElementById('trend-dot');
+  cross.setAttribute('x1', px); cross.setAttribute('x2', px); cross.setAttribute('opacity', '.6');
+  dot.setAttribute('cx', px); dot.setAttribute('cy', py); dot.setAttribute('opacity', '1');
+  document.getElementById('trend-readout').innerHTML =
+    trendFullLabel(p.ms) + ' · 평균 <b>' + p.avg.toFixed(1) + '°C</b>'
+    + ' (최저 ' + p.lo.toFixed(1) + ' / 최고 ' + p.hi.toFixed(1) + ')'
+    + (p.partial ? ' <span class="bad">· 표본 부족</span>' : '');
+}
+
+function clearTrendHover() {
+  const cross = document.getElementById('trend-cross'), dot = document.getElementById('trend-dot');
+  if (cross) cross.setAttribute('opacity', '0');
+  if (dot) dot.setAttribute('opacity', '0');
+  const r = document.getElementById('trend-readout');
+  if (r) r.textContent = '';
+}
+
+const trendPad = n => String(n).padStart(2, '0');
+
+function trendTimeLabel(ms) {
+  const d = new Date(ms);
+  return trendRange === '24h'
+    ? trendPad(d.getHours()) + ':' + trendPad(d.getMinutes())
+    : (d.getMonth() + 1) + '/' + d.getDate();
+}
+
+function trendFullLabel(ms) {
+  const d = new Date(ms);
+  return (d.getMonth() + 1) + '/' + d.getDate() + ' '
+    + trendPad(d.getHours()) + ':' + trendPad(d.getMinutes());
 }
 
 // ─────────────────────────────────────────────────────────────────────────
