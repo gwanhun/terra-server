@@ -74,6 +74,68 @@ def test_webrtc_offer_relays_to_camera_and_returns_answer(
     assert captured['command']['session_id'] == 'sess-1'
 
 
+def test_webrtc_offer_reports_single_attempt(
+    app_client: TestClient,
+    fake_sb: MagicMock,
+    monkeypatch,
+) -> None:
+    """첫 시도에 answer 가 오면 offer_attempts=1 — 앱이 ICE/NAT 문제로 판별하는 근거."""
+    _setup_owned_camera(fake_sb)
+
+    class FakeSignaling:
+        def request_answer(self, camera_id, command, *, session_id, timeout_sec):
+            return {'action': 'webrtc_answer', 'session_id': session_id, 'sdp': 'answer-sdp'}
+
+    from backend.routers import webrtc as webrtc_router
+
+    monkeypatch.setattr(webrtc_router, 'MqttWebRTCSignaling', FakeSignaling)
+
+    res = app_client.post(
+        f'/cameras/{CAMERA_UUID}/webrtc/offer',
+        json={'sdp': 'offer-sdp', 'session_id': 'sess-once', 'timeout_sec': 2},
+    )
+
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body['offer_attempts'] == 1
+    assert body['answer_ms'] >= 0
+
+
+def test_webrtc_offer_reports_retry_count(
+    app_client: TestClient,
+    fake_sb: MagicMock,
+    monkeypatch,
+) -> None:
+    """첫 offer 가 무응답이고 두 번째에 붙으면 offer_attempts=2.
+
+    이 값이 앱 로그(webrtc_connect_logs)에서 '펌웨어가 첫 offer 에 답을 못 했다'를
+    가리킨다 — esp_peer_open PSRAM 경합. 앱은 이걸 스스로 알 수 없다.
+    """
+    _setup_owned_camera(fake_sb)
+    calls: list[str] = []
+
+    class FakeSignaling:
+        def request_answer(self, camera_id, command, *, session_id, timeout_sec):
+            calls.append(command['msg_id'])
+            if len(calls) == 1:
+                raise WebRTCSignalingTimeout('no answer')
+            return {'action': 'webrtc_answer', 'session_id': session_id, 'sdp': 'answer-sdp'}
+
+    from backend.routers import webrtc as webrtc_router
+
+    monkeypatch.setattr(webrtc_router, 'MqttWebRTCSignaling', FakeSignaling)
+
+    res = app_client.post(
+        f'/cameras/{CAMERA_UUID}/webrtc/offer',
+        json={'sdp': 'offer-sdp', 'session_id': 'sess-retry', 'timeout_sec': 2},
+    )
+
+    assert res.status_code == 200, res.text
+    assert res.json()['offer_attempts'] == 2
+    # 재발행마다 msg_id 가 달라야 펌웨어가 중복으로 무시하지 않는다
+    assert len(calls) == 2 and calls[0] != calls[1]
+
+
 def test_webrtc_offer_timeout_returns_504(
     app_client: TestClient,
     fake_sb: MagicMock,

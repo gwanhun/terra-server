@@ -31,8 +31,19 @@ Supabase 에 적용한 마이그레이션 기록(SOT). `migrations/*.sql` 을 SQ
 | ✅ | `2026-09-16_app_redesign_05_redesign_delete_group.sql` | 2026-09-16 | 앱 재설계 번들 (tera-ai-flutter@bb430fa). 그룹 원자 삭제 RPC (구성원·영상·이력 보존) |
 | ✅ | `2026-09-16_app_redesign_06_clip_visibility.sql` | 2026-09-16 | 앱 재설계 번들 (tera-ai-flutter@bb430fa). user_hidden_clips (앱 전용 영상 숨김) |
 | ✅ | `2026-09-21_gme_jobs_clip_cascade.sql` | 2026-09-21 | `gme_jobs.clip_id` FK 에 ON DELETE CASCADE. 카메라 삭제 500 대응이었으나 **단독으로는 불충분** — motion_clips 참조 테이블이 45개라 클립 보유 기기는 소프트 해제 사용 |
+| ✅ | `2026-09-21_cameras_hw_id.sql` | 2026-09-21 | `cameras.hw_id`(efuse MAC) + `(owner_id, hw_id)` 부분 UNIQUE. 재페어링 시 기존 행 재사용 → 중복 카메라 행 방지 |
+| ✅ | `2026-09-21_devices_hw_id.sql` | 2026-09-21 | `devices.hw_id` 동일 적용. **코드만 먼저 배포되어 20:44~20:46 페어링이 PostgREST 400 → `PAIR_FAIL 500` 으로 실패했었음** (컬럼 없는 상태에서 조회·INSERT) |
+| ⚠️ | `20260922_redesign_conflict_errcode.sql` (**앱 레포**) | 2026-09-22 | **이 레포에 파일 없음.** 앱팀이 운영 DB 에 직접 적용 — `redesign_save_group_v1`·`redesign_remove_group_member_v1`·`redesign_save_pet_v1`·`redesign_delete_pet_v1` 의 '구성 변경' 오류를 `40001` → `PT409`. 40001 은 PostgREST 가 무한 재시도해 24시간 520만 건·연결 4개 점유를 유발했음. 권위 있는 SQL = `tera-ai-flutter@main supabase/migrations/20260922_redesign_conflict_errcode.sql`. ⚠️ 위 `_02_`·`_04_` 파일은 아직 40001 이라 **재적용 시 되돌아감** (각 파일 상단 경고 참고) |
+| ✅ | `2026-09-22_webrtc_connect_logs.sql` | 2026-09-23 | `webrtc_connect_logs` (라이브 연결 시도 1건당 1행, 앱 직접 INSERT·service_role 조회). 앱 핸드오프 2026-09-22 요청 1. 보존 cron `cleanup-webrtc-connect-logs-90d` **jobid=10** 등록 확인 |
 
 ## 규칙
 - 새 마이그레이션은 `migrations/YYYY-MM-DD_설명.sql` 로 추가하고, 적용 후 이 표에 행 추가.
 - 모든 SQL 은 `IF NOT EXISTS` 등으로 **재실행 안전(idempotent)** 하게 작성.
 - 앱/펌웨어 계약과 연동되는 변경은 커밋 메시지에 `앱 §N` 표기.
+- **앱팀이 운영 DB 를 직접 고친 경우에도 이 표에 ⚠️ 행으로 남긴다.** 파일이 이 레포에 없어도
+  기록이 없으면 우리 사본을 재적용하다 조용히 되돌린다 (2026-09-22 PT409 사례).
+- **새 RPC 에서 충돌·구성 변경류 오류는 `40001`/`40P01` 대신 `PT409` 를 쓴다.**
+  PostgREST 가 40001 을 일시적 충돌로 보고 자동 재시도하는데, 구성 불일치는 재시도해도
+  조건이 안 바뀌어 무한 루프가 된다.
+- **컬럼을 쓰는 코드는 마이그레이션 적용 후에 배포한다.** 순서가 뒤집히면 PostgREST 가 400 을 돌려주고
+  기기에는 `PAIR_FAIL 500` 으로 보인다 (2026-09-21 `devices.hw_id` 사례).

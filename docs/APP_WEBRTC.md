@@ -121,7 +121,9 @@ body:
   "session_id": "<이후 ice/close 호출 시 같은 값으로>",
   "type": "answer",
   "sdp": "<펌웨어가 만든 answer SDP>",
-  "raw": { ... }   // 펌웨어 원본 ack payload 그대로
+  "raw": { ... },          // 펌웨어 원본 ack payload 그대로
+  "offer_attempts": 1,     // 서버가 offer 를 발행한 횟수 (아래 참고)
+  "answer_ms": 820         // 첫 offer 발행 → answer 수신까지 ms (재시도 대기 포함)
 }
 
 → 504 (timeout) — 펌웨어가 timeout_sec 안에 답 안 함
@@ -129,6 +131,25 @@ body:
 ```
 
 **중요**: 응답의 `session_id` 를 모듈 변수에 저장. 이후 ICE / close 호출에 모두 같이 보냄.
+
+### 4.2.1 `offer_attempts` / `answer_ms` — 실패 원인 분리용 (2026-09-22 추가)
+
+서버는 카메라가 첫 offer 에 답을 못 하면 **새 `msg_id` 로 최대 3회, 회당 7초**까지 재발행한다
+(카메라 `esp_peer_open` 이 PSRAM 경합으로 간헐 실패하기 때문). 앱 입장에서는 이게 그냥
+"느린 한 번의 호출"로만 보여서, 실패가 어디서 났는지 구분할 수가 없다. 그래서 서버가 알려준다.
+
+| 값 | 해석 |
+|---|---|
+| `offer_attempts == 1` | 카메라는 바로 답했다. 이후 연결이 실패하면 **ICE/NAT** 쪽 |
+| `offer_attempts > 1` | 카메라가 첫 offer 에 답을 못 했다 → **펌웨어**(esp_peer_open PSRAM) 쪽 |
+| `504` 응답 | 3회 모두 무응답. `offer_attempts` 는 정의상 3 |
+
+두 값을 `webrtc_connect_logs` 행에 그대로 넣어주면(§요청 1 테이블의 동명 컬럼) 실패 비율을
+앱·펌웨어·NAT 로 나눠 집계할 수 있다.
+
+> 첫 화면까지 ~18초 걸리는 증상은 이 재시도로 설명된다 (7s + 7s + ICE 2s + DTLS + IDR 대기).
+> 펌웨어는 이미 새 세션에서 IDR 을 기다렸다 보내고, GOP 15 @ 10fps 라 그 대기는 최대 1.5초다.
+> 즉 IDR 이 아니라 **첫 offer 무응답**이 시간을 먹는다.
 
 ### 4.3 ICE candidate 양방향
 

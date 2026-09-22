@@ -50,6 +50,19 @@ class WebRTCAnswerOut(BaseModel):
     type: str = 'answer'
     sdp: str
     raw: dict[str, Any]
+    # 아래 둘은 실패 원인 분리용 계측값 — 앱이 webrtc_connect_logs 에 그대로 적재한다
+    # (migrations/2026-09-22_webrtc_connect_logs.sql). 앱은 서버가 offer 를 몇 번
+    # 재발행했는지 알 수 없어 "느린 한 번의 호출"로만 보이므로, 서버가 알려줘야 한다.
+    offer_attempts: int = Field(
+        default=1,
+        description='카메라에 offer 를 발행한 횟수(1=첫 시도에 answer). '
+                    '>1 이면 카메라가 첫 offer 에 답을 못 한 것 = 펌웨어(esp_peer_open PSRAM) 쪽. '
+                    '=1 인데 앱이 연결에 실패하면 ICE/NAT 쪽으로 갈린다.',
+    )
+    answer_ms: int = Field(
+        default=0,
+        description='첫 offer 발행부터 answer 수신까지 걸린 ms(재시도 대기 포함).',
+    )
 
 
 class WebRTCIceIn(BaseModel):
@@ -239,7 +252,12 @@ def create_webrtc_offer(
     per_timeout = min(body.timeout_sec, 7.0)  # 성공 answer 는 보통 <5s. 실패는 빨리 끊고 재시도.
     answer: dict[str, Any] = {}
     last_timeout: WebRTCSignalingTimeout | None = None
+    # 계측: 504 로 끝나면 offer_attempts 는 정의상 attempts(=3) 이므로 앱이 추론할 수 있다.
+    # 여기서 재는 건 성공 경로의 값.
+    offer_started = time.monotonic()
+    used_attempts = 0
     for i in range(attempts):
+        used_attempts = i + 1
         command = _command('webrtc_offer', session_id, body.ttl_sec, sdp=offer_sdp, type=body.type)
         try:
             answer = MqttWebRTCSignaling().request_answer(
@@ -264,6 +282,10 @@ def create_webrtc_offer(
     if not sdp:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail='camera answer has no SDP')
 
+    answer_ms = int((time.monotonic() - offer_started) * 1000)
+    logger.info('webrtc answer 수신 (camera=%s attempts=%d %dms)',
+                camera['camera_id'], used_attempts, answer_ms)
+
     until = datetime.now(timezone.utc) + timedelta(minutes=5)
     sb = get_supabase_client()
     sb.table('cameras').update({
@@ -271,7 +293,13 @@ def create_webrtc_offer(
         'stream_until': until.isoformat(),
     }).eq('id', camera_uuid).eq('owner_id', user_id).execute()
 
-    return WebRTCAnswerOut(session_id=session_id, sdp=sdp, raw=answer)
+    return WebRTCAnswerOut(
+        session_id=session_id,
+        sdp=sdp,
+        raw=answer,
+        offer_attempts=used_attempts,
+        answer_ms=answer_ms,
+    )
 
 
 @router.post(
