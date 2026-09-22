@@ -89,6 +89,9 @@ GROUP BY 1, 2 ORDER BY 1, 3 DESC;
 
 **순수 추가 필드라 현재 앱(0.129.0)은 수정 없이 그대로 동작합니다.** 안 읽으면 컬럼이 NULL 로 남을 뿐입니다.
 
+> 📌 **구현 시 보실 곳**: [APP_WEBRTC.md §4.2.1](APP_WEBRTC.md#421-offer_attempts--answer_ms--실패-원인-분리용-2026-09-22-추가)
+> — 응답 예시와 해석표가 계약 정본에 들어가 있습니다. 이 회신 문서가 아니라 그쪽이 정본입니다.
+
 ### 1.4 배포 상태
 
 커밋 `f158db2`, main 반영. 운영 서버 재시작 후 유효합니다.
@@ -144,6 +147,8 @@ TURN 이 중계하기 때문입니다. 주신 완료 기준 `local_cand=relay` �
 |---|---|
 | 대역폭 | 카메라가 **고정 2.5Mbps** (`CONFIG_APP_H264_BITRATE`, 800x800@10fps). TURN 은 in/out 을 둘 다 태우므로 **시청 1시간 ≈ 2.2GB** |
 | 현재 서버 | Lightsail $7 플랜 (1GB / 2 vCPU / **2TB transfer**) — API 트래픽과 **같은 할당량** |
+| 비용 | 별도 인스턴스 = **월 +$7 내외** (같은 Lightsail 등급 기준). 기존 서버에 얹으면 추가 비용 0 이지만 2TB 를 API 와 나눠 씁니다 |
+| 한도 감각 | 2TB 를 라이브가 다 쓴다고 가정하면 **월 약 900시간 시청**. 베타 규모에선 여유가 있으나, API 트래픽이 같은 통에 있는 게 문제입니다 |
 | 권고 | **coturn 별도 인스턴스.** 라이브가 API 를 굶기는 걸 막고 요금도 분리됩니다 |
 | 추가 | `turns:…:443` 은 **별도 인증서** 필요 (api.terra-server.uk 와 다른 도메인) |
 
@@ -277,7 +282,7 @@ PostgREST 재시도는 메시지가 아니라 **SQLSTATE 만 보고** 돕니다.
 
 | 우선 | 조치 |
 |:---:|---|
-| 1 | `webrtc_connect_logs` INSERT 시작. **`offer_attempts`·`answer_ms` 를 `POST /webrtc/offer` 응답에서 받아 채워주세요** (§1.3) |
+| 1 | `webrtc_connect_logs` INSERT 시작. **`offer_attempts`·`answer_ms` 를 `POST /webrtc/offer` 응답에서 받아 채워주세요** (§1.3, 정본 [APP_WEBRTC.md §4.2.1](APP_WEBRTC.md)) |
 | 2 | `local_cand`/`remote_cand` 는 `host/srflx/prflx/relay` 만 허용 — 그 외 값은 INSERT 거부 (§1.2) |
 | 3 | `outcome` 은 제약 없음 — 어휘가 늘어도 안전 (§1.2) |
 | 4 | IDR 관련 작업 착수 전 §3 확인 |
