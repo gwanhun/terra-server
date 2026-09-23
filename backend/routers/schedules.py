@@ -27,7 +27,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from backend.auth import get_current_user_id
 from backend.device_access import require_active_device
-from backend.command_service import ALLOWED_MIST_MS, MIST_ACTION
+from backend.command_service import (
+    ALLOWED_MIST_MS, MIST_ACTION, InvalidCommand, validate_mist_duration,
+)
 from backend.scheduling import compute_next_run, parse_time_of_day
 from backend.supabase_client import get_supabase_client
 
@@ -122,8 +124,14 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _validate_action_payload(action: str, payload: dict[str, Any] | None) -> None:
-    """action 화이트리스트 + mist payload 검증. 실패 시 400."""
+def _validate_action_payload(
+    action: str, payload: dict[str, Any] | None, capabilities: Any = None
+) -> None:
+    """action 화이트리스트 + mist payload 검증. 실패 시 400.
+
+    capabilities: 기기 행의 보드 능력 플래그. mist 는 5000ms 초과를 기기 상한(mist_max_ms)과
+    대조한다 — 구 펌웨어 기기에 10초 예약을 만들면 매일 발화 때마다 거절될 뿐이므로 생성 시점에 막는다.
+    """
     if action not in SCHEDULABLE_ACTIONS:
         raise HTTPException(
             status_code=400,
@@ -131,11 +139,10 @@ def _validate_action_payload(action: str, payload: dict[str, Any] | None) -> Non
         )
     if action == MIST_ACTION:
         dur = (payload or {}).get("duration_ms")
-        if dur not in ALLOWED_MIST_MS:
-            raise HTTPException(
-                status_code=400,
-                detail=f"mist payload.duration_ms 는 {ALLOWED_MIST_MS} 중 하나여야 함",
-            )
+        try:
+            validate_mist_duration(dur, capabilities)
+        except InvalidCommand as exc:
+            raise HTTPException(status_code=400, detail=f"mist payload.{exc}") from exc
 
 
 def _validate_guard(guard: dict[str, Any] | None, action: str | None = None) -> None:
@@ -213,8 +220,8 @@ def create_schedule(
 ) -> ScheduleOut:
     """예약 등록. next_run_at(UTC) 을 서버가 계산해 저장한다 (KST 벽시계 → UTC)."""
     sb = get_supabase_client()
-    require_active_device(sb, device_uuid, user_id)
-    _validate_action_payload(body.action, body.payload)
+    device_row = require_active_device(sb, device_uuid, user_id)
+    _validate_action_payload(body.action, body.payload, device_row.get("capabilities"))
     _validate_days(body.kind, body.days_of_week)
     _validate_guard(body.guard, body.action)
     next_run = _compute_next(body.kind, body.time_of_day, body.days_of_week)
@@ -249,7 +256,7 @@ def list_schedules(
     user_id: str = Depends(get_current_user_id),
 ) -> list[ScheduleOut]:
     sb = get_supabase_client()
-    require_active_device(sb, device_uuid, user_id)
+    device_row = require_active_device(sb, device_uuid, user_id)
     res = (
         sb.table("schedules")
         .select("*")
@@ -287,7 +294,10 @@ def update_schedule(
 
     if "action" in updates or "payload" in updates:
         # action 은 수정 불가 항목으로 두되, payload 변경 시 mist 재검증
-        _validate_action_payload(existing["action"], updates.get("payload", existing.get("payload")))
+        _validate_action_payload(
+            existing["action"], updates.get("payload", existing.get("payload")),
+            device_row.get("capabilities"),
+        )
 
     if "guard" in updates:
         # action 은 수정 불가라 기존값 기준으로 off+guard 조합 검사

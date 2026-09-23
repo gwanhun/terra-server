@@ -17,7 +17,7 @@ def require_active_device(sb: Any, device_uuid: str, user_id: str) -> dict[str, 
     """본인 소유 + 활성(unlinked_at IS NULL) device 행 반환. 아니면 404."""
     res = (
         sb.table("devices")
-        .select("id, owner_id, device_id, unlinked_at")
+        .select("id, owner_id, device_id, unlinked_at, capabilities")
         .eq("id", device_uuid)
         .limit(1)
         .execute()

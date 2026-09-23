@@ -776,7 +776,7 @@ function quickCmdButtons(deviceUuid, online) {
 // firmware 가 one-shot 타이머로 자동 OFF (단일 명령 자기완결).
 function mistButtons(deviceUuid, online) {
   const disabled = online ? '' : 'opacity:.5';
-  return [1000, 2000, 3000].map(ms =>
+  return [1000, 2000, 3000, 5000, 7000, 10000].map(ms =>   // 5/7/10초는 기기 capabilities.mist_max_ms 이하만 201
     `<button onclick="mistCommand('${deviceUuid}',${ms})" title="물분무 ${ms / 1000}초" `
     + `style="font-size:11px;padding:2px 5px;background:#0a2a3a;border:1px solid #14506e;color:#8cd;${disabled}">💦${ms / 1000}s</button>`
   ).join(' ');
@@ -1433,7 +1433,7 @@ async function toggleDeviceTest(email, deviceUuid, deviceId, hostDiv, btn) {
     [['💧펌프','relay_toggle',false],['🌀팬','fan_toggle',false],['❄️냉각팬','fan2_toggle',false],
      ['💡LED','led_toggle',false],['🔥히터','heater_toggle',true],['⚠래치해제','heater_clear',true]]
       .forEach(([t,a,c]) => panel.appendChild(mk(t, c, () => sendTestCmd(token, uid, deviceUuid, a, null, status))));
-    [1000,2000,3000].forEach(ms => panel.appendChild(mk('💦'+(ms/1000)+'초', false, () => sendTestMist(token, deviceUuid, ms, status))));
+    [1000,2000,3000,5000,7000,10000].forEach(ms => panel.appendChild(mk('💦'+(ms/1000)+'초', false, () => sendTestMist(token, deviceUuid, ms, status))));
     // 온도 보정 — set_temp_offset 명령. 기기가 NVS 에 저장하고 LCD·telemetry 양쪽에 적용.
     const offIn = document.createElement('input');
     offIn.type = 'number'; offIn.step = '0.1'; offIn.placeholder = '-1.5';

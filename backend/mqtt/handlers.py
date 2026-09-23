@@ -296,6 +296,28 @@ _MISSING = object()
 _device_caps_cache: dict[str, Any] = {}
 
 
+def device_mist_max_ms(device_uuid: str) -> int:
+    """기기의 분무 상한(ms). telemetry 로 받은 capabilities 캐시 → 없으면 DB 1회 → 없으면 기본 5000.
+
+    dispatcher 가 mist 명령을 발행하기 직전에 부른다. 앱이 commands 에 직접 INSERT 하는 경로(RLS)는
+    REST 검증을 안 거치므로, 세 경로(REST·예약·직접 INSERT)가 모두 지나는 발행 시점이 최종 방어선이다.
+    """
+    from backend.command_service import mist_max_ms_of   # 지연 import — 순환 회피
+
+    caps = _device_caps_cache.get(device_uuid, _MISSING)
+    if caps is _MISSING:
+        try:
+            sb = get_supabase_client()
+            res = sb.table("devices").select("capabilities").eq("id", device_uuid).limit(1).execute()
+            rows = res.data if isinstance(res.data, list) else []
+            caps = rows[0].get("capabilities") if rows and isinstance(rows[0], dict) else None
+        except Exception:  # noqa: BLE001
+            logger.exception("devices capabilities 조회 실패 (uuid=%s)", device_uuid)
+            return mist_max_ms_of(None)
+        _device_caps_cache[device_uuid] = caps
+    return mist_max_ms_of(caps)
+
+
 def _sync_device_capabilities(sb: Client, device_uuid: str, label: str, caps: dict[str, Any]) -> None:
     """telemetry 의 capabilities 를 devices.capabilities 에 반영(다를 때만). 실패는 로그만.
 

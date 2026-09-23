@@ -42,7 +42,8 @@ _BAD_CMD = {400: {"description": "duration_ms 허용값 아님"}}
 class MistRequest(BaseModel):
     duration_ms: int = Field(
         ...,
-        description="분무 지속시간 (ms). 허용: 1000 | 2000 | 3000.",
+        description="분무 지속시간 (ms). 허용: 1000 | 2000 | 3000 | 5000 | 7000 | 10000. "
+                    "5000 초과는 기기 capabilities.mist_max_ms 이하여야 함(구 펌웨어 400).",
         examples=[2000],
     )
 
@@ -73,10 +74,10 @@ def mist(
     firmware 가 흡수하므로 앱은 duration_ms 만 보내면 된다.
     """
     sb = get_supabase_client()
-    require_active_device(sb, device_uuid, user_id)
+    device_row = require_active_device(sb, device_uuid, user_id)
 
     try:
-        duration = validate_mist_duration(body.duration_ms)
+        duration = validate_mist_duration(body.duration_ms, device_row.get("capabilities"))
     except InvalidCommand as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

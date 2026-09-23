@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from tests.conftest import TEST_USER_ID
@@ -439,3 +441,18 @@ def test_create_heater_rejected_400(app_client: TestClient, fake_sb: MagicMock) 
         )
         assert res.status_code == 400, f"{action}: {res.text}"
         sch.insert.assert_not_called()
+
+
+# ---------- 분사 시간 5/7/10초 — 예약 생성 시점 기기 상한 검증 ----------
+
+def test_validate_mist_10s_needs_device_capability() -> None:
+    from fastapi import HTTPException
+    from backend.routers.schedules import _validate_action_payload
+
+    _validate_action_payload("mist", {"duration_ms": 10000}, {"mist_max_ms": 10000})   # 통과
+    _validate_action_payload("mist", {"duration_ms": 3000}, None)                       # 옛 값은 항상 통과
+    with pytest.raises(HTTPException) as ei:
+        _validate_action_payload("mist", {"duration_ms": 10000}, None)                  # 구 펌웨어
+    assert ei.value.status_code == 400 and "mist_max_ms" in str(ei.value.detail)
+    with pytest.raises(HTTPException):
+        _validate_action_payload("mist", {"duration_ms": 9999}, {"mist_max_ms": 10000})  # 화이트리스트 밖

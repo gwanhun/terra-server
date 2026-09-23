@@ -551,3 +551,58 @@ def test_unsupported_action_rejected_before_publish(
     assert dispatcher.poll_and_dispatch(fake_bridge) == 1
     fake_bridge.publish_command.assert_not_called()
     assert {"status": "rejected", "result": "unsupported_action"} in updates
+
+
+# ---------- mist 분사 시간 게이트 (발행 직전, 앱 직접 INSERT 경로까지 커버) ----------
+
+def _mist_tables(cmd: dict, updates: list[dict], caps: dict | None):
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        if name == "commands":
+            t.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = [cmd]
+            def _cap(patch: dict) -> MagicMock:
+                updates.append(patch)
+                c = MagicMock(); c.eq.return_value.execute.return_value.data = [{"id": cmd["id"]}]
+                return c
+            t.update.side_effect = _cap
+        elif name == "devices":
+            t.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+                {"device_id": DEVICE_TEXT, "capabilities": caps}
+            ]
+        return t
+    return _table
+
+
+def _mist_cmd(ms: int) -> dict:
+    return {"id": "cmd-m", "device_id": DEVICE_UUID, "action": "mist", "payload": {"duration_ms": ms},
+            "issued_at": _now_iso(), "ttl_sec": 30, "issued_by": "o", "source": "manual", "source_id": None}
+
+
+def test_mist_over_device_max_rejected_before_publish(
+    fake_sb: MagicMock, fake_bridge: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """구 펌웨어(mist_max_ms 미보고=5000)에 10초 → 발행 안 하고 rejected/unsupported_duration.
+
+    펌웨어가 조용히 5초로 자르는 것을 막는 최종 방어선. 앱이 commands 에 직접 INSERT 해도 여기서 걸린다.
+    """
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _mist_tables(_mist_cmd(10000), updates, caps=None)
+    monkeypatch.setattr(dispatcher, "_enqueue_failure", lambda *a: None)
+
+    assert dispatcher.poll_and_dispatch(fake_bridge) == 1
+    fake_bridge.publish_command.assert_not_called()
+    assert {"status": "rejected", "result": "unsupported_duration"} in updates
+
+
+def test_mist_within_device_max_published(fake_sb: MagicMock, fake_bridge: MagicMock) -> None:
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _mist_tables(_mist_cmd(10000), updates, caps={"mist_max_ms": 10000})
+    assert dispatcher.poll_and_dispatch(fake_bridge) == 1
+    assert fake_bridge.publish_command.call_args.args[1]["duration_ms"] == 10000
+
+
+def test_mist_legacy_value_published_on_old_firmware(fake_sb: MagicMock, fake_bridge: MagicMock) -> None:
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _mist_tables(_mist_cmd(3000), updates, caps=None)
+    assert dispatcher.poll_and_dispatch(fake_bridge) == 1
+    assert fake_bridge.publish_command.call_args.args[1]["duration_ms"] == 3000

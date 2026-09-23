@@ -24,20 +24,45 @@ logger = logging.getLogger(__name__)
 # 명령 TTL 기본값 (dispatcher.DEFAULT_TTL_SEC 와 동일 의도 — 액추에이터는 짧게)
 DEFAULT_CMD_TTL_SEC = 10
 
-# 물분무 허용 지속시간 (ms). 앱 1/2/3초 버튼과 대응.
+# 물분무 허용 지속시간 (ms). 구 앱 1/2/3초 + 앱 0.131.0 의 5/7/10초 칩(기본 7초).
+# 이건 형식 검증용 화이트리스트고, 실제 상한은 기기별(capabilities.mist_max_ms) — mist_max_ms_of.
 MIST_ACTION = "mist"
-ALLOWED_MIST_MS: tuple[int, ...] = (1000, 2000, 3000)
+ALLOWED_MIST_MS: tuple[int, ...] = (1000, 2000, 3000, 5000, 7000, 10000)
+# 모든 펌웨어가 지원하는 상한. 펌웨어 MIST_MAX_MS 가 5000 이던 시절(~2026-09-23)의 값으로,
+# capabilities.mist_max_ms 를 보고하지 않는 구 펌웨어는 이 값으로 취급한다.
+MIST_BASE_MAX_MS = 5000
 
 
 class InvalidCommand(ValueError):
     """명령 검증 실패 — 라우터에서 400 으로 변환."""
 
 
-def validate_mist_duration(duration_ms: Any) -> int:
-    """물분무 지속시간 검증. 허용값 {1000,2000,3000} 외는 InvalidCommand."""
+def mist_max_ms_of(capabilities: Any) -> int:
+    """기기가 보고한 분무 상한(ms). 미보고/비정상이면 MIST_BASE_MAX_MS.
+
+    왜 기기별로 막나(2026-09-23): 펌웨어는 상한을 넘는 duration 을 **조용히 clamp** 한다.
+    구 펌웨어(5초)에 10초를 보내면 사용자는 10초 뿌렸다고 믿는데 실제론 5초라 습도 판단을
+    그르친다. 서버가 상한을 알고 거절하면 "펌웨어 먼저 배포" 순서 제약도 사라진다.
+    상한은 펌웨어가 telemetry/페어링의 capabilities.mist_max_ms 로 보고한다(handlers).
+    """
+    if isinstance(capabilities, dict):
+        v = capabilities.get("mist_max_ms")
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+            return int(v)
+    return MIST_BASE_MAX_MS
+
+
+def validate_mist_duration(duration_ms: Any, capabilities: Any = None) -> int:
+    """물분무 지속시간 검증. 화이트리스트 밖이거나 기기 상한 초과면 InvalidCommand."""
     if duration_ms not in ALLOWED_MIST_MS:
         raise InvalidCommand(
             f"duration_ms 는 {ALLOWED_MIST_MS} 중 하나여야 함 (got={duration_ms!r})"
+        )
+    cap = mist_max_ms_of(capabilities)
+    if duration_ms > cap:
+        raise InvalidCommand(
+            f"이 기기의 분무 상한은 {cap}ms (capabilities.mist_max_ms) — "
+            f"{duration_ms}ms 는 펌웨어 업데이트가 필요함"
         )
     return int(duration_ms)
 

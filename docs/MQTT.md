@@ -54,7 +54,8 @@
   "heater": { "state": "OFF", "locked": false },
   "led":    "ON",
   "led_brightness": 75,
-  "hw_id": "A0B7651C2908"
+  "hw_id": "A0B7651C2908",
+  "capabilities": { "board": "mosfet", "led_dimmable": true, "mist_max_ms": 10000 }
 }
 ```
 
@@ -63,6 +64,8 @@
 - `relay` 는 실제 워터펌프 (API 호환성 위해 이름 유지)
 - `fan2` 는 냉각팬 (두 번째 팬, 동작은 `fan` 과 동일). 구 펌웨어는 키 없음 → 서버는 NULL 저장
 - `led_brightness` 는 MOSFET 보드만 (0~100), 릴레이 보드는 키 없음
+- `capabilities` (2026-09-23+): 페어링 body 와 같은 보드 능력 플래그를 telemetry 에도 싣는다. 서버는 `devices.capabilities` 와
+  다를 때만 UPDATE(프로세스 캐시). 베타 기기는 페어링을 호출하지 않아 이 경로가 유일하다. `mist_max_ms` = 분무 1회 상한(ms)
 - `hw_id` (2026-09-21+): 보드 불변 하드웨어 ID(efuse base MAC 12자리 hex). 페어링에서 이미
   저장되지만, 구 펌웨어로 등록돼 `devices.hw_id` 가 NULL 인 행은 새 펌웨어의 첫 telemetry 에서
   채워진다. 디바이스 telemetry 는 3초 주기라 프로세스당 1회만 UPDATE 한다. 용도는 **이미 생겨버린
@@ -126,7 +129,9 @@
   - `led_on` (payload `brightness` 0~100 옵션, MOSFET 조광) / `led_off` / `led_toggle`
     — ⚠️ **`duration_ms` 미지원.** 보내면 **무시하고 켠 뒤 `ok` 응답**(자동 OFF 없음, 실패 감지 불가)
     — ⚠️ `brightness: 0` 은 `led_on` 이어도 실제로 꺼지고 `state: "OFF"` 응답
-  - `mist` (`duration_ms`: 1000|2000|3000, 펌웨어 상한 5초) / `spray_1s` / `spray_3s` / `spray_5s`
+  - `mist` (`duration_ms`: 1000|2000|3000|5000|7000|10000) / `spray_1s` / `spray_3s` / `spray_5s`
+    — 펌웨어 `MIST_MAX_MS` 로 clamp(2026-09-23 이전 5000, 이후 10000). **서버는 5000 초과를 기기
+      `capabilities.mist_max_ms` 와 대조해 발행 전에 거절**(`rejected`/`unsupported_duration`) — 조용한 clamp 방지
   - `lcd_bitmap` / `lcd_clear`
   - `set_temp_offset` (`offset_c`: -10.0~10.0) — 온도 보정 오프셋. 기기가 NVS(`terra/t_off`)에 저장하고
     센서 읽기 직후 적용해 **LCD·telemetry·HTTP 가 모두 같은 보정값**을 쓴다. ack `state="CALIB"`,
@@ -263,4 +268,5 @@ topic read  esp32/picam-b2c3d4e5/command
 | 2026-09-08 | 0.5.1 | **ACL 버그 수정**: 카메라 계정에 `telemetry` 쓰기 권한 추가 (누락으로 카메라 heartbeat 가 브로커에서 버려지던 문제). 기존 카메라는 `scripts/regen_acl.py` 로 재생성 |
 | 2026-09-16 | 0.5.2 | 펌웨어 실측 반영: `led_on` 의 `duration_ms` 미지원·`heater_*` 미구현 명시, payload 예약 키 보호 |
 | 2026-09-16 | 0.5.3 | `heater_*` 서버 거절(400 / `unsupported_action`), 소프트 해제된 기기의 메시지는 브리지가 미페어링 취급 |
+| 2026-09-23 | 0.5.4 | `mist` duration 5000/7000/10000 추가 + 기기 `capabilities.mist_max_ms` 게이트(`unsupported_duration`), 기기 telemetry `capabilities` 수신 |
 | 2026-09-20 | 0.5.4 | IoT `set_temp_offset` action 추가 (온도 보정, NVS 영속, LCD/telemetry 공통 적용) |

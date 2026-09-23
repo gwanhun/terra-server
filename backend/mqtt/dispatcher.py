@@ -35,6 +35,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
+from backend.command_service import MIST_ACTION
 from backend.mqtt import handlers
 from backend.push_events import NO_ACK_RESULT
 from backend.supabase_client import get_supabase_client
@@ -202,6 +203,22 @@ def _dispatch_one(bridge: "MqttBridge", row: dict[str, Any]) -> None:
         logger.warning("command %s: unknown device_uuid=%s", cmd_id, device_uuid)
         _enqueue_failure(row, device_uuid, "unknown_device")
         return
+
+    # 2.5) mist 분사 시간이 기기 상한을 넘으면 발행 전 거절 (2026-09-23, 앱 0.131.0 5/7/10초)
+    #      펌웨어는 상한 초과를 조용히 clamp 하므로(10초 요청 → 5초 분사) 여기서 막아야
+    #      "10초인 줄 알았는데 5초" 가 생기지 않는다. REST/예약은 400 으로 먼저 막지만,
+    #      앱이 commands 에 직접 INSERT 하는 경로는 이 지점만 지난다.
+    if action == MIST_ACTION:
+        extra0 = row.get("payload")
+        dur = extra0.get("duration_ms") if isinstance(extra0, dict) else None
+        cap = handlers.device_mist_max_ms(device_uuid)
+        if isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur > cap:
+            sb.table("commands").update(
+                {"status": "rejected", "result": "unsupported_duration"}
+            ).eq("id", cmd_id).execute()
+            logger.warning("command %s: mist %sms > 기기 상한 %sms → rejected", cmd_id, dur, cap)
+            _enqueue_failure(row, device_uuid, "unsupported_duration")
+            return
 
     # 3) payload 구성 ([docs/MQTT.md](../../docs/MQTT.md) §2)
     publish_payload: dict[str, Any] = {
