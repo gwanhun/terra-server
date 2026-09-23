@@ -113,6 +113,25 @@ def test_pair_camera_same_hw_id_reuses_row_instead_of_inserting(
     assert patch["token_hash"] != body["camera_token"]
 
 
+def test_pair_camera_reuse_keeps_user_name(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """재페어링이 name 을 덮어쓰지 않는다 (2026-09-23) — petcam 접미사·사용자 개명 보존.
+    새 행 INSERT 에는 여전히 name 이 들어간다 (별도 테스트: new_hw_id_inserts)."""
+    _hw_lookup(fake_sb).data = [{"id": "cam-uuid", "camera_id": "p4cam-aabbccdd"}]
+    fake_sb.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [
+        _camera_row()
+    ]
+    res = app_client.post(
+        "/cameras/pair",
+        json={"name": "프로비저닝 이름", "model": "esp32-p4", "hw_id": "30EDA0E22E80"},
+    )
+    assert res.status_code == 201, res.text
+    patch = fake_sb.table.return_value.update.call_args.args[0]
+    assert "name" not in patch
+    assert patch["model"] == "esp32-p4"           # 기기가 보고하는 값은 여전히 갱신
+
+
 def test_pair_camera_reuse_keeps_enclosure_when_not_given(
     app_client: TestClient, fake_sb: MagicMock
 ) -> None:

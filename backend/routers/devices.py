@@ -203,13 +203,14 @@ def pair_device(
     # 기기가 보고하는 값만 갱신한다. 사용자가 서버/앱에서 바꾼 설정이나 미지정
     # enclosure_id 를 페어링이 덮어쓰지 않게 한다.
     device_fields: dict[str, Any] = {
-        "name": body.name,
-        "species": body.species,
         "firmware_ver": body.firmware_ver,
         "capabilities": caps,
     }
 
     if existing:
+        # name/species 는 재사용 시 건드리지 않는다(2026-09-23, cameras 와 동일). 펌웨어는
+        # 프로비저닝 때 받은 이름을 매번 다시 보내므로, 사용자가 앱에서 바꾼 이름·종을
+        # WiFi 변경용 재페어링이 지워버린다. 변경은 PATCH /devices/{id} 로.
         patch: dict[str, Any] = {"token_hash": token_hashed, **device_fields}
         if body.enclosure_id:          # 미지정이면 기존 사육장 연결을 유지
             patch["enclosure_id"] = body.enclosure_id
@@ -233,6 +234,8 @@ def pair_device(
             "device_id": f"terra-{secrets.token_hex(4)}",   # "terra-a1b2c3d4"
             "token_hash": token_hashed,
             "hw_id": body.hw_id,
+            "name": body.name,          # 새 행에만 — 재사용 시엔 기존 이름·종 유지
+            "species": body.species,
             **device_fields,
         }
         res = sb.table("devices").insert(payload).execute()

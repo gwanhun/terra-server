@@ -93,6 +93,27 @@ def test_pair_device_same_hw_id_reuses_row_instead_of_inserting(
     assert patch["token_hash"] != body["mqtt_token"]
 
 
+def test_pair_device_reuse_keeps_user_name_and_species(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """재페어링이 name/species 를 덮어쓰지 않는다 (2026-09-23).
+
+    펌웨어는 프로비저닝 때 받은 이름을 매번 다시 보내므로, 사용자가 앱에서 바꾼 이름과 petcam
+    라벨링 접미사(· 8636)가 WiFi 변경용 재페어링에 지워졌다. 이름 변경은 PATCH 로만.
+    """
+    dev = _dev_mock_with_hw_lookup([{"id": "dev-1", "device_id": "terra-abcd"}])
+    fake_sb.table.side_effect = lambda name: {"devices": dev}[name]
+
+    res = app_client.post(
+        "/devices/pair",
+        json={"name": "프로비저닝 이름", "species": "crested", "hw_id": "A0B7651C2908"},
+    )
+    assert res.status_code == 201, res.text
+    patch = dev.update.call_args.args[0]
+    assert "name" not in patch and "species" not in patch
+    assert "firmware_ver" in patch                # 기기가 보고하는 값은 여전히 갱신
+
+
 def test_pair_device_reuse_keeps_enclosure_when_not_given(
     app_client: TestClient, fake_sb: MagicMock
 ) -> None:

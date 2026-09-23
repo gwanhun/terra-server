@@ -274,7 +274,6 @@ def pair_camera(
     # 기기가 보고하는 값만 갱신한다. 사용자가 서버/앱에서 바꾼 설정(rotate_180 등)이나
     # 미지정 enclosure_id 를 페어링이 덮어쓰지 않게 한다.
     device_fields: dict[str, Any] = {
-        "name": body.name,
         "model": body.model,
         "firmware_ver": body.firmware_ver,
         "resolution": body.resolution,
@@ -283,6 +282,10 @@ def pair_camera(
     }
 
     if existing:
+        # name 은 재사용 시 건드리지 않는다(2026-09-23). 사용자가 앱에서 바꾼 이름과 petcam
+        # 라벨링 트리거가 붙인 접미사(· 8636)를 WiFi 변경용 재페어링이 지워버렸다 — 펌웨어는
+        # 프로비저닝 때 받은 이름을 매번 다시 보낸다. petcam 트리거는 행 생성 30분 뒤의 이름
+        # 변경엔 접미사를 다시 붙이지 않으므로(v3) 서버가 안 쓰는 게 맞다. 이름 변경은 PATCH 로.
         patch: dict[str, Any] = {"token_hash": token_hashed, **device_fields}
         if body.enclosure_id:          # 미지정이면 기존 사육장 연결을 유지
             patch["enclosure_id"] = body.enclosure_id
@@ -308,6 +311,7 @@ def pair_camera(
             "camera_id": f"{prefix}-{secrets.token_hex(4)}",
             "token_hash": token_hashed,
             "hw_id": body.hw_id,
+            "name": body.name,          # 새 행에만 — 재사용 시엔 기존 이름 유지
             **device_fields,
         }
         res = sb.table("cameras").insert(payload).execute()
