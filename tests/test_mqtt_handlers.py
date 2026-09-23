@@ -802,6 +802,59 @@ def test_device_hw_id_conflict_does_not_break_heartbeat(
     assert "백필 충돌" in caplog.text
 
 
+def _device_table_factory(updates: list[dict], *, db_caps: dict | None) -> "callable":
+    """devices.select → id+capabilities, devices.update 캡처, telemetry.insert 성공."""
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        if name == "devices":
+            t.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+                {"id": DEVICE_UUID, "capabilities": db_caps}
+            ]
+            t._upd = MagicMock()
+            t._upd.eq.return_value.execute.return_value.data = [{"id": DEVICE_UUID}]
+            t.update.side_effect = lambda p: updates.append(p) or t._upd
+        elif name == "telemetry":
+            t.insert.return_value.execute.return_value.data = [{"device_id": DEVICE_UUID}]
+        return t
+    return _table
+
+
+def test_device_telemetry_syncs_capabilities_when_changed(fake_sb: MagicMock) -> None:
+    """펌웨어가 telemetry 로 보고한 capabilities 가 DB 와 다르면 1회 반영, 같은 값 반복은 생략.
+
+    베타 기기는 페어링을 호출하지 않아 콘솔 기본값에 묶여 있었다 — 이 경로로 mist_max_ms 가 들어간다.
+    """
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _device_table_factory(
+        updates, db_caps={"board": "mosfet", "led_dimmable": True})
+    caps = {"board": "mosfet", "led_dimmable": True, "mist_max_ms": 10000}
+
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 1, "capabilities": caps})
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 2, "capabilities": caps})
+
+    cap_writes = [u for u in updates if "capabilities" in u]
+    assert cap_writes == [{"capabilities": caps}]            # 첫 건만, 3초마다 쓰지 않는다
+    assert len([u for u in updates if "last_seen_at" in u]) == 2
+
+
+def test_device_telemetry_capabilities_same_as_db_not_written(fake_sb: MagicMock) -> None:
+    updates: list[dict] = []
+    same = {"board": "mosfet", "led_dimmable": True}
+    fake_sb.table.side_effect = _device_table_factory(updates, db_caps=same)
+
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 1, "capabilities": dict(same)})
+    assert not [u for u in updates if "capabilities" in u]
+
+
+def test_device_telemetry_without_capabilities_untouched(fake_sb: MagicMock) -> None:
+    """구 펌웨어(키 없음)는 capabilities 를 건드리지 않는다 — 콘솔 기본값이 유지된다."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _device_table_factory(updates, db_caps=None)
+
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 1})
+    assert not [u for u in updates if "capabilities" in u]
+
+
 def test_camera_telemetry_skips_capabilities_when_same_as_db(
     fake_sb: MagicMock, published: list
 ) -> None:

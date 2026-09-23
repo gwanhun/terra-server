@@ -228,6 +228,7 @@ def reset_device_cache() -> None:
         _rotation_resend_at.clear()
     _device_hw_id_done.clear()
     _hw_id_conflict.clear()
+    _device_caps_cache.clear()
 
 
 # ---------- 카메라 설정 상태 캐시 (rotate_180 / capabilities) ----------
@@ -289,6 +290,39 @@ _device_hw_id_done: set[str] = set()
 # 생긴다. 사람이 중복 행을 정리(해제/삭제)하기 전엔 재시도해도 결과가 안 바뀌므로
 # 프로세스당 1회만 경고하고 멈춘다(카메라 15초·기기 3초 주기 로그 스팸 방지).
 _hw_id_conflict: set[str] = set()
+# 기기 capabilities — 마지막으로 DB 와 일치를 확인한 값(프로세스 캐시). 3초 주기 텔레메트리마다
+# SELECT/UPDATE 하지 않기 위한 것. 첫 건만 DB 와 비교하고 이후는 값이 바뀔 때만 쓴다.
+_MISSING = object()
+_device_caps_cache: dict[str, Any] = {}
+
+
+def _sync_device_capabilities(sb: Client, device_uuid: str, label: str, caps: dict[str, Any]) -> None:
+    """telemetry 의 capabilities 를 devices.capabilities 에 반영(다를 때만). 실패는 로그만.
+
+    왜 telemetry 로도 받나(2026-09-23): capabilities 는 원래 페어링 body 로만 들어왔다. 그런데
+    베타 기기는 콘솔이 발급한 자격증명으로 MQTT 에 붙을 뿐 페어링을 호출하지 않아, 콘솔 기본값
+    {board, led_dimmable} 에 영원히 묶인다. 앱은 capabilities.mist_max_ms 로 7·10초 분무 칩의
+    노출을 결정하므로(앱 0.131.0), 펌웨어가 실제 상한을 telemetry 로 보고하면 여기서 채운다.
+    """
+    known = _device_caps_cache.get(device_uuid, _MISSING)
+    if known is _MISSING:
+        try:
+            res = sb.table("devices").select("capabilities").eq("id", device_uuid).limit(1).execute()
+            rows = res.data if isinstance(res.data, list) else []
+            known = rows[0].get("capabilities") if rows and isinstance(rows[0], dict) else None
+        except Exception:  # noqa: BLE001
+            logger.exception("devices capabilities 조회 실패 (device=%s)", label)
+            return
+    if known == caps:
+        _device_caps_cache[device_uuid] = caps
+        return
+    try:
+        sb.table("devices").update({"capabilities": caps}).eq("id", device_uuid).execute()
+    except Exception:  # noqa: BLE001
+        logger.exception("devices capabilities UPDATE 실패 (device=%s)", label)
+        return
+    _device_caps_cache[device_uuid] = caps
+    logger.info("device %s: capabilities 갱신 %s → %s", label, known, caps)
 
 
 def _hw_id_holders(sb: Client, table: str, id_col: str, entity_uuid: str, hw_id: str) -> list[str]:
@@ -626,6 +660,12 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
     if isinstance(hw_id, str) and hw_id and device_uuid not in _device_hw_id_done:
         if _backfill_hw_id(sb, "devices", "device_id", device_uuid, device_id_text, hw_id[:64]):
             _device_hw_id_done.add(device_uuid)
+
+    # 보드 능력 플래그(2026-09-23): 펌웨어가 telemetry 에 실으면 devices.capabilities 에 반영.
+    # 이유는 _sync_device_capabilities 참고. 구 펌웨어(키 없음)는 아무것도 안 한다.
+    caps = payload.get("capabilities")
+    if isinstance(caps, dict):
+        _sync_device_capabilities(sb, device_uuid, device_id_text, caps)
 
     # 임계값 평가 → alerts INSERT/RESOLVE (Stage D). 실패해도 telemetry 저장은 성공.
     # 임포트는 함수 안에서 — 순환참조 회피 (alerts.py 는 handlers 의존 안 함).
