@@ -147,9 +147,10 @@ body:
 두 값을 `webrtc_connect_logs` 행에 그대로 넣어주면(§요청 1 테이블의 동명 컬럼) 실패 비율을
 앱·펌웨어·NAT 로 나눠 집계할 수 있다.
 
-> 첫 화면까지 ~18초 걸리는 증상은 이 재시도로 설명된다 (7s + 7s + ICE 2s + DTLS + IDR 대기).
-> 펌웨어는 이미 새 세션에서 IDR 을 기다렸다 보내고, GOP 15 @ 10fps 라 그 대기는 최대 1.5초다.
-> 즉 IDR 이 아니라 **첫 offer 무응답**이 시간을 먹는다.
+> ⚠️ 첫 프레임까지의 지연과는 무관하다. `offer_attempts` 는 answer 수신 **전**의 재시도만 잰다.
+> connected 이후 첫 프레임까지는 `ms_first_frame − ms_connected` 로 따로 본다 — 기준값은
+> **2.5초** (IDR 대기 상한: GOP 15 ÷ 라이브 `CONFIG_APP_WEBRTC_FPS` 6). 과거 실측 ~18초는
+> H.264 락 starvation 버그였고 2026-08-12 펌웨어에서 수정됐다.
 
 ### 4.3 ICE candidate 양방향
 
