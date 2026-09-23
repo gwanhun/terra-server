@@ -17,6 +17,7 @@ firmware 가 `MIST_MAX_MS` 로 상한 clamp 하지만, 서버도 허용값만 �
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -24,8 +25,9 @@ logger = logging.getLogger(__name__)
 # 명령 TTL 기본값 (dispatcher.DEFAULT_TTL_SEC 와 동일 의도 — 액추에이터는 짧게)
 DEFAULT_CMD_TTL_SEC = 10
 
-# 물분무 허용 지속시간 (ms). 구 앱 1/2/3초 + 앱 0.131.0 의 5/7/10초 칩(기본 7초).
-# 이건 형식 검증용 화이트리스트고, 실제 상한은 기기별(capabilities.mist_max_ms) — mist_max_ms_of.
+# 물분무 허용 지속시간 (ms). 앱 칩은 5초·10초 (2026-09-23 결정). 나머지는 호환용 —
+# 저장된 옛 예약(1/2/3초)과 앱 0.131.0 의 7초 칩이 400 을 맞지 않게 그대로 받는다.
+# 기기 상한(capabilities.mist_max_ms, 미보고=5000)을 넘는 값은 dispatcher 가 분할 발행한다.
 MIST_ACTION = "mist"
 ALLOWED_MIST_MS: tuple[int, ...] = (1000, 2000, 3000, 5000, 7000, 10000)
 # 모든 펌웨어가 지원하는 상한. 펌웨어 MIST_MAX_MS 가 5000 이던 시절(~2026-09-23)의 값으로,
@@ -38,12 +40,12 @@ class InvalidCommand(ValueError):
 
 
 def mist_max_ms_of(capabilities: Any) -> int:
-    """기기가 보고한 분무 상한(ms). 미보고/비정상이면 MIST_BASE_MAX_MS.
+    """기기가 보고한 분무 1회 상한(ms). 미보고/비정상이면 MIST_BASE_MAX_MS.
 
-    왜 기기별로 막나(2026-09-23): 펌웨어는 상한을 넘는 duration 을 **조용히 clamp** 한다.
-    구 펌웨어(5초)에 10초를 보내면 사용자는 10초 뿌렸다고 믿는데 실제론 5초라 습도 판단을
-    그르친다. 서버가 상한을 알고 거절하면 "펌웨어 먼저 배포" 순서 제약도 사라진다.
-    상한은 펌웨어가 telemetry/페어링의 capabilities.mist_max_ms 로 보고한다(handlers).
+    쓰임(2026-09-23): 펌웨어는 상한을 넘는 duration 을 **조용히 clamp** 한다(구 펌웨어 5초).
+    그대로 보내면 10초 요청이 5초만 뿌려지고 사용자는 10초로 믿는다. 그래서 dispatcher 가
+    이 상한 단위로 **나눠 보낸다**(10초 = 5초 + 5초) — 펌웨어 플래시 없이 10초를 채우는 유일한
+    방법. 상한은 펌웨어가 telemetry/페어링의 capabilities.mist_max_ms 로 보고한다(handlers).
     """
     if isinstance(capabilities, dict):
         v = capabilities.get("mist_max_ms")
@@ -52,17 +54,14 @@ def mist_max_ms_of(capabilities: Any) -> int:
     return MIST_BASE_MAX_MS
 
 
-def validate_mist_duration(duration_ms: Any, capabilities: Any = None) -> int:
-    """물분무 지속시간 검증. 화이트리스트 밖이거나 기기 상한 초과면 InvalidCommand."""
+def validate_mist_duration(duration_ms: Any) -> int:
+    """물분무 지속시간 형식 검증. 화이트리스트 밖이면 InvalidCommand.
+
+    기기 상한 초과는 여기서 막지 않는다 — dispatcher 가 분할 발행으로 채운다.
+    """
     if duration_ms not in ALLOWED_MIST_MS:
         raise InvalidCommand(
             f"duration_ms 는 {ALLOWED_MIST_MS} 중 하나여야 함 (got={duration_ms!r})"
-        )
-    cap = mist_max_ms_of(capabilities)
-    if duration_ms > cap:
-        raise InvalidCommand(
-            f"이 기기의 분무 상한은 {cap}ms (capabilities.mist_max_ms) — "
-            f"{duration_ms}ms 는 펌웨어 업데이트가 필요함"
         )
     return int(duration_ms)
 
@@ -78,6 +77,7 @@ def insert_pending_command(
     source: str = "manual",
     source_id: str | None = None,
     reason: str | None = None,
+    issued_at: datetime | None = None,
 ) -> dict[str, Any] | None:
     """`commands` 에 status='pending' 1건 INSERT. 삽입된 row 반환 (실패 시 None).
 
@@ -86,6 +86,7 @@ def insert_pending_command(
 
     source: 'manual' | 'schedule' | 'timer' | 'guard' — 감사 로그 출처 구분 (요청 5).
     source_id: 연결된 schedules.id 등. reason: 가드 사유 등.
+    issued_at: 미래면 **예약 발행** — dispatcher 가 그 시각까지 pending 으로 둔다(mist 분할 후속).
     """
     row: dict[str, Any] = {
         "device_id": device_uuid,
@@ -98,6 +99,8 @@ def insert_pending_command(
         "source_id": source_id,
         "reason": reason,
     }
+    if issued_at is not None:
+        row["issued_at"] = issued_at.isoformat()
     res = sb.table("commands").insert(row).execute()
     data = res.data or []
     if not data:

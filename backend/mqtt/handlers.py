@@ -299,8 +299,8 @@ _device_caps_cache: dict[str, Any] = {}
 def device_mist_max_ms(device_uuid: str) -> int:
     """기기의 분무 상한(ms). telemetry 로 받은 capabilities 캐시 → 없으면 DB 1회 → 없으면 기본 5000.
 
-    dispatcher 가 mist 명령을 발행하기 직전에 부른다. 앱이 commands 에 직접 INSERT 하는 경로(RLS)는
-    REST 검증을 안 거치므로, 세 경로(REST·예약·직접 INSERT)가 모두 지나는 발행 시점이 최종 방어선이다.
+    dispatcher 가 mist 명령을 발행하기 직전에 부른다 — 이 상한을 넘는 요청은 나눠 보낸다.
+    앱이 commands 에 직접 INSERT 하는 경로(RLS)도 REST 와 똑같이 발행 시점에서 처리된다.
     """
     from backend.command_service import mist_max_ms_of   # 지연 import — 순환 회피
 

@@ -443,16 +443,14 @@ def test_create_heater_rejected_400(app_client: TestClient, fake_sb: MagicMock) 
         sch.insert.assert_not_called()
 
 
-# ---------- 분사 시간 5/7/10초 — 예약 생성 시점 기기 상한 검증 ----------
+# ---------- 분사 시간 5/10초 — 예약은 형식만 검증 (상한 초과는 발화 시 분할) ----------
 
-def test_validate_mist_10s_needs_device_capability() -> None:
+def test_validate_mist_duration_format_only() -> None:
     from fastapi import HTTPException
     from backend.routers.schedules import _validate_action_payload
 
-    _validate_action_payload("mist", {"duration_ms": 10000}, {"mist_max_ms": 10000})   # 통과
-    _validate_action_payload("mist", {"duration_ms": 3000}, None)                       # 옛 값은 항상 통과
+    for ms in (1000, 3000, 5000, 7000, 10000):
+        _validate_action_payload("mist", {"duration_ms": ms})          # 기기 상한과 무관하게 통과
     with pytest.raises(HTTPException) as ei:
-        _validate_action_payload("mist", {"duration_ms": 10000}, None)                  # 구 펌웨어
-    assert ei.value.status_code == 400 and "mist_max_ms" in str(ei.value.detail)
-    with pytest.raises(HTTPException):
-        _validate_action_payload("mist", {"duration_ms": 9999}, {"mist_max_ms": 10000})  # 화이트리스트 밖
+        _validate_action_payload("mist", {"duration_ms": 9999})        # 화이트리스트 밖
+    assert ei.value.status_code == 400

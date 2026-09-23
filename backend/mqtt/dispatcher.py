@@ -35,7 +35,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from backend.command_service import MIST_ACTION
+from backend.command_service import MIST_ACTION, insert_pending_command
 from backend.mqtt import handlers
 from backend.push_events import NO_ACK_RESULT
 from backend.supabase_client import get_supabase_client
@@ -67,6 +67,10 @@ _RESERVED_PAYLOAD_KEYS: frozenset[str] = frozenset({
 DEFAULT_INTERVAL_SEC = 1.0
 DEFAULT_BATCH = 50
 DEFAULT_TTL_SEC = 10  # commands.ttl_sec 가 NULL/0 일 때 fallback
+
+# mist 분할 발행(2026-09-23): 첫 분사 종료 → 후속 발행까지 여유. 펌웨어 재기동 가드 200ms +
+# 폴링 1초 + MQTT 왕복을 덮는다. 너무 짧으면 후속이 `busy` 로 버려져 물이 덜 나간다.
+MIST_SPLIT_GAP_SEC = 1.5
 
 
 def _parse_iso(ts: str) -> datetime:
@@ -157,7 +161,14 @@ def poll_and_dispatch(bridge: "MqttBridge", batch: int = DEFAULT_BATCH) -> int:
         return 0
 
     processed = 0
+    now = datetime.now(timezone.utc)
     for row in rows:
+        # 예약 발행: issued_at 이 미래면 아직 때가 아니다 — pending 그대로 둔다 (mist 분할 후속 분사).
+        try:
+            if _parse_iso(row["issued_at"]) > now:
+                continue
+        except (KeyError, ValueError, TypeError):
+            pass
         try:
             _dispatch_one(bridge, row)
             processed += 1
@@ -204,21 +215,20 @@ def _dispatch_one(bridge: "MqttBridge", row: dict[str, Any]) -> None:
         _enqueue_failure(row, device_uuid, "unknown_device")
         return
 
-    # 2.5) mist 분사 시간이 기기 상한을 넘으면 발행 전 거절 (2026-09-23, 앱 0.131.0 5/7/10초)
-    #      펌웨어는 상한 초과를 조용히 clamp 하므로(10초 요청 → 5초 분사) 여기서 막아야
-    #      "10초인 줄 알았는데 5초" 가 생기지 않는다. REST/예약은 400 으로 먼저 막지만,
-    #      앱이 commands 에 직접 INSERT 하는 경로는 이 지점만 지난다.
+    # 2.5) mist 분할 (2026-09-23): 요청이 기기 상한(capabilities.mist_max_ms, 미보고=5000)을
+    #      넘으면 상한만큼 먼저 분사하고 나머지는 후속 명령으로 예약 발행한다. 펌웨어는 상한
+    #      초과를 조용히 clamp 하므로(10초 요청 → 5초 분사) 그대로 보내면 안 되고, 펌웨어 플래시
+    #      없이 10초를 채우는 방법은 이것뿐이다. 분사마다 펌웨어 타이머가 끄므로 후속이 유실돼도
+    #      "물이 덜 나옴"일 뿐 펌프가 켜진 채 남지 않는다. 신 펌웨어(상한 ≥ 요청)는 한 번에 간다.
+    burst_ms: int | None = None
+    remainder_ms = 0
     if action == MIST_ACTION:
         extra0 = row.get("payload")
         dur = extra0.get("duration_ms") if isinstance(extra0, dict) else None
-        cap = handlers.device_mist_max_ms(device_uuid)
-        if isinstance(dur, (int, float)) and not isinstance(dur, bool) and dur > cap:
-            sb.table("commands").update(
-                {"status": "rejected", "result": "unsupported_duration"}
-            ).eq("id", cmd_id).execute()
-            logger.warning("command %s: mist %sms > 기기 상한 %sms → rejected", cmd_id, dur, cap)
-            _enqueue_failure(row, device_uuid, "unsupported_duration")
-            return
+        if isinstance(dur, (int, float)) and not isinstance(dur, bool):
+            cap = handlers.device_mist_max_ms(device_uuid)
+            if dur > cap:
+                burst_ms, remainder_ms = cap, int(dur) - cap
 
     # 3) payload 구성 ([docs/MQTT.md](../../docs/MQTT.md) §2)
     publish_payload: dict[str, Any] = {
@@ -240,6 +250,8 @@ def _dispatch_one(bridge: "MqttBridge", row: dict[str, Any]) -> None:
                 "command %s payload 의 예약 키 무시: %s", cmd_id, sorted(dropped)
             )
         publish_payload.update(safe)
+    if burst_ms is not None:
+        publish_payload["duration_ms"] = burst_ms   # DB 행은 요청값(10000) 그대로, 기기엔 상한만큼
 
     # 4) MQTT publish
     success = bridge.publish_command(device_text, publish_payload)
@@ -255,6 +267,42 @@ def _dispatch_one(bridge: "MqttBridge", row: dict[str, Any]) -> None:
         "status", "pending"
     ).execute()
     logger.info("command %s → %s (%s)", cmd_id, device_text, action)
+
+    # 6) mist 분할 나머지 — 첫 분사가 **실제로 발행된 뒤**에만 예약한다 (publish 실패 시 후속만
+    #    홀로 나가는 일 방지). 발행 시각 = 지금 + 첫 분사 길이 + 여유.
+    if burst_ms is not None and remainder_ms > 0:
+        _enqueue_mist_remainder(sb, row, burst_ms, remainder_ms)
+
+
+def _enqueue_mist_remainder(sb: Any, row: dict[str, Any], burst_ms: int, remainder_ms: int) -> None:
+    """분할된 mist 의 나머지를 후속 명령으로 예약 발행(issued_at = 첫 분사 종료 + MIST_SPLIT_GAP_SEC).
+
+    source='timer' — 서버가 시간 기준으로 만든 명령. push_events 는 schedule 만 보내므로 후속 분사가
+    "분무 시작" 푸시를 중복으로 내지 않는다. reason 에 원 명령 id 를 남겨 감사 로그에서 묶인다.
+    나머지가 아직 상한을 넘으면(예: 상한 3000 에 10000) 후속이 발행될 때 다시 분할된다 — 재귀 불필요.
+    """
+    due = (datetime.now(timezone.utc)
+           + timedelta(milliseconds=burst_ms) + timedelta(seconds=MIST_SPLIT_GAP_SEC))
+    try:
+        inserted = insert_pending_command(
+            sb,
+            device_uuid=row["device_id"],
+            action=MIST_ACTION,
+            payload={"duration_ms": remainder_ms},
+            issued_by=row.get("issued_by"),
+            ttl_sec=DEFAULT_TTL_SEC,
+            source="timer",
+            reason=f"mist split of {row['id']} (+{remainder_ms}ms)",
+            issued_at=due,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("mist 후속 분사 INSERT 실패 (parent=%s)", row.get("id"))
+        return
+    if inserted is None:
+        logger.error("mist 후속 분사 INSERT 실패 (parent=%s)", row.get("id"))
+        return
+    logger.info("command %s mist 분할: %dms 발행, 나머지 %dms → %s (%s)",
+                row["id"], burst_ms, remainder_ms, inserted.get("id"), due.isoformat())
 
 
 class CommandDispatcher:

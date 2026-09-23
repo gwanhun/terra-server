@@ -25,7 +25,7 @@ await sb.from('commands').insert({
   'device_id': deviceUuid,              // devices.id (UUID), 본인 소유 → RLS 통과
   'issued_by': sb.auth.currentUser!.id,
   'action': 'mist',
-  'payload': {'duration_ms': 7000},     // 5000 | 7000 | 10000 (앱 0.131.0) · 1000/2000/3000 도 계속 허용
+  'payload': {'duration_ms': 10000},    // 앱 칩 5000 | 10000 · 호환 1000/2000/3000/7000 도 허용
 });
 ```
 
@@ -39,27 +39,35 @@ await sb.from('commands').insert({
 });
 ```
 
-- `duration_ms` 허용값: **1000 / 2000 / 3000 / 5000 / 7000 / 10000**. **5000 초과는 기기 `capabilities.mist_max_ms` 이하**여야 하며(§1.4), 넘으면 서버가 발행 전에 `rejected` / `result=unsupported_duration` 으로 거절한다.
+- `duration_ms` 허용값: **1000 / 2000 / 3000 / 5000 / 7000 / 10000** (앱 칩은 5000·10000). 기기 상한(`capabilities.mist_max_ms`, 미보고=5000)을 넘는 값은 **서버가 나눠 보낸다** — 10초 = 5초 + 5초 (§1.4).
 - 상태 추적은 기존 `commands` Realtime 구독(`commands-rt`) 그대로 — `pending → sent → acked`.
 
-### 1.4 분사 시간 5/7/10초와 기기 상한 `capabilities.mist_max_ms` (2026-09-23)
+### 1.4 분사 시간 5초/10초 — 10초는 서버가 5초×2 로 분할 (2026-09-23)
 
-앱 0.131.0 부터 분사 시간을 5/7/10초 중 고른다(기본 7초). 펌웨어는 **상한을 넘는 요청을 조용히
-clamp** 하므로(구 펌웨어 5초), 서버가 아무 검증 없이 넘기면 "10초 뿌렸다고 믿는데 실제 5초" 가
-생긴다. 그래서 기기별 상한으로 막는다:
+앱 칩은 **5초 / 10초** 둘입니다(3·7초 제외 결정, 2026-09-23). 현재 배포된 기기 펌웨어는 분무 1회 상한이
+**5초**이고(`MIST_MAX_MS 5000`, 초과는 조용히 clamp) OTA 가 없어 당장 플래시가 어렵습니다.
+그래서 **서버가 기기 상한 단위로 나눠 보냅니다**:
 
-| 기기 상태 | `devices.capabilities.mist_max_ms` | 1000~5000 | 7000 / 10000 |
-|---|---|:---:|:---:|
-| 구 펌웨어 (미보고) | 없음 → 서버는 5000 으로 취급 | ✓ | **거절** (REST 400 / 직접 INSERT 는 `rejected`·`unsupported_duration`) |
-| 신 펌웨어 (2026-09-23+) | `10000` (telemetry·페어링으로 보고) | ✓ | ✓ |
+```
+앱: mist 10000 (행 1개, payload 그대로 저장)
+서버 dispatcher: 기기 상한 = capabilities.mist_max_ms (미보고 = 5000)
+  → 기기에 mist 5000 발행 → 펌웨어 타이머로 5초 후 OFF
+  → 나머지 5000 을 후속 명령으로 예약 (issued_at = 지금 + 5.0s + 1.5s 여유)
+  → 약 6.5~7.5초 뒤 mist 5000 발행 → 5초 분사
+결과: 5초 분사 · 약 2초 쉼 · 5초 분사 (총 ~12초, 물 양은 10초분)
+```
 
-- **앱 UI**: `capabilities.mist_max_ms` 가 없거나 `< duration` 이면 그 칩을 숨긴다(`led_dimmable` 과 같은 패턴).
-  값은 기기 부팅 후 첫 telemetry 에서 채워지므로 `devices` Realtime UPDATE 를 구독 중이면 자동 반영.
-- **거절 경로 세 가지 모두 커버**: `POST /devices/{id}/mist` 400 · `POST/PATCH /schedules` 400 ·
-  `commands` 직접 INSERT 는 브리지가 발행 직전에 `rejected`/`unsupported_duration`.
-- **배포 순서 제약 없음**: 서버가 먼저 나가도 구 펌웨어 기기에는 5000 초과가 안 나간다.
-- 저장된 옛 예약(1/2/3초)은 어느 펌웨어에서도 계속 통과한다.
-- 펌웨어 쪽: `MIST_MAX_MS` 5000→10000, telemetry/페어링 `capabilities` 에 `mist_max_ms` 동봉 (10초 연속 구동 벤치 후 배포).
+| 항목 | 내용 |
+|---|---|
+| 왜 분할인가 | 펌웨어 상한을 서버가 넘길 수 없고, 분사마다 **펌웨어 타이머가 끄므로** 후속이 유실돼도 "물이 덜 나옴"일 뿐 펌프가 켜진 채 남지 않음. (`relay_on`/`relay_off` 로 흉내 내면 off 유실 = 침수라 쓰지 않음) |
+| 후속 명령 행 | `commands` 에 **별도 행**으로 생김 — `action=mist`, `payload.duration_ms=5000`, `source='timer'`, `reason="mist split of <원 명령 id> (+5000ms)"`, `issued_by`=원 명령과 동일. 명령 이력에서 보이며, 푸시는 나가지 않음(푸시는 `source=schedule` 만) |
+| 원 명령 상태 | 첫 분사의 ack 로 `acked`/`ok`. 후속 행은 자기 ack 로 별도 `acked` |
+| 앱 버튼 잠금 | **총 분사 시간 + 3초** (10초면 13초) — 후속 분사 중 재요청은 펌웨어가 `busy` |
+| 예약(schedule) | 10초 예약도 동일하게 발화 시 분할 |
+| 신 펌웨어 | `capabilities.mist_max_ms ≥ 요청` 이면 나누지 않고 한 번에. 기기별로 자동 판단 — 앱 변경 없음 |
+| 5초 | 어느 펌웨어에서든 한 번에 |
+
+앱은 `mist_max_ms` 를 볼 필요가 없습니다 — 칩 노출 로직 없이 5초·10초 둘 다 항상 보여주면 됩니다.
 
 ### 1.2 발행 — 방법 B: REST 엔드포인트 (서버측 검증 필요 시)
 
@@ -79,7 +87,7 @@ final res = await http.post(
   body: jsonEncode({'duration_ms': 2000}),
 );
 // 201: { "id": "<command uuid>", "action": "mist", "status": "pending" }
-// 400: duration_ms 허용값 아님 또는 기기 상한(capabilities.mist_max_ms) 초과 — detail 에 사유
+// 400: duration_ms 허용값 아님
 // 404: 본인 디바이스 아님/미존재
 ```
 
@@ -95,7 +103,6 @@ final res = await http.post(
 | `bad_request` | duration_ms 누락/0 | ✗ (앱 버그 — 값 확인) |
 | `error` | 액추에이터 구동 실패 (GPIO/드라이버 rc≠OK) | ✗ "장치 오류 — 재시도" |
 | `unknown_action` | 펌웨어가 `mist` 미지원 | ✗ "디바이스 펌웨어 업데이트 필요" |
-| `unsupported_duration` (`status=rejected`, **서버**) | 5000 초과 요청이 기기 `mist_max_ms` 를 넘음 — 펌웨어가 조용히 5초로 자르는 대신 발행 전 거절 | ✗ "이 기기는 N초까지 — 펌웨어 업데이트 필요" (§1.4) |
 
 > ⚠️ **제어 디바이스(terra-iot-nano) 펌웨어의 `result` 전체 어휘**:
 > `ok` / `busy` / `bad_request` / `error` / `locked`(히터 안전잠금) / `unknown_action` /
@@ -125,11 +132,11 @@ Authorization: Bearer <jwt>
 Content-Type: application/json
 ```
 
-**매일 예약 (물분무 7초, 매일 08:00 KST):**
+**매일 예약 (물분무 10초, 매일 08:00 KST):**
 ```json
 {
   "action": "mist",
-  "payload": { "duration_ms": 7000 },
+  "payload": { "duration_ms": 10000 },
   "kind": "daily",
   "time_of_day": "08:00"
 }
@@ -148,7 +155,7 @@ Content-Type: application/json
 | 필드 | 값 | 비고 |
 |------|-----|------|
 | `action` | `mist` \| `fan_toggle` \| `led_on` \| `led_off` \| `relay_toggle` \| `heater_toggle` | 그 외는 400 |
-| `payload` | action 인자 | `mist` 는 `{"duration_ms": 1000\|2000\|3000\|5000\|7000\|10000}` 필수. 5000 초과는 기기 `mist_max_ms` 이하(§1.4) |
+| `payload` | action 인자 | `mist` 는 `{"duration_ms": 5000\|10000}` (호환 1000/2000/3000/7000) 필수. 상한 초과는 발화 시 분할(§1.4) |
 | `kind` | `daily` \| `weekly` | |
 | `time_of_day` | `"HH:MM"` | **KST(한국시간) 기준** |
 | `days_of_week` | `[1..7]` | **weekly 필수.** 1=월 … 7=일 |
@@ -217,7 +224,7 @@ sb.channel('schedules-rt')
 
 ## 3. 체크리스트 (앱 구현 시)
 
-- [ ] 분사 시간 칩 5/7/10초(기본 7) → `commands` INSERT `{action:'mist', payload:{duration_ms:5000|7000|10000}}` — `capabilities.mist_max_ms` 없거나 <7000 이면 7·10초 칩 숨김
+- [ ] 분사 시간 칩 **5초 / 10초** → `commands` INSERT `{action:'mist', payload:{duration_ms:5000|10000}}`. 구 펌웨어에서 10초는 5초 두 번(§1.4) — 칩을 숨길 필요 없음
 - [ ] 물분무 결과 `busy`/`error`/`unknown_action` UI 처리
 - [ ] 예약 생성 폼: 동작 · 반복(매일/요일) · 시각(KST) · (요일 선택 시)요일 · (mist 선택 시)지속시간
 - [ ] 예약 목록/수정/삭제 REST 연동

@@ -553,9 +553,9 @@ def test_unsupported_action_rejected_before_publish(
     assert {"status": "rejected", "result": "unsupported_action"} in updates
 
 
-# ---------- mist 분사 시간 게이트 (발행 직전, 앱 직접 INSERT 경로까지 커버) ----------
+# ---------- mist 분할 발행 (2026-09-23): 기기 상한 초과 → 상한만큼 + 후속 예약 ----------
 
-def _mist_tables(cmd: dict, updates: list[dict], caps: dict | None):
+def _mist_tables(cmd: dict, updates: list[dict], inserts: list[dict], caps: dict | None):
     def _table(name: str) -> MagicMock:
         t = MagicMock()
         if name == "commands":
@@ -565,6 +565,8 @@ def _mist_tables(cmd: dict, updates: list[dict], caps: dict | None):
                 c = MagicMock(); c.eq.return_value.execute.return_value.data = [{"id": cmd["id"]}]
                 return c
             t.update.side_effect = _cap
+            ins = MagicMock(); ins.execute.return_value.data = [{"id": "cmd-cont"}]
+            t.insert.side_effect = lambda row: inserts.append(row) or ins
         elif name == "devices":
             t.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
                 {"device_id": DEVICE_TEXT, "capabilities": caps}
@@ -573,36 +575,63 @@ def _mist_tables(cmd: dict, updates: list[dict], caps: dict | None):
     return _table
 
 
-def _mist_cmd(ms: int) -> dict:
+def _mist_cmd(ms: int, issued_at: str | None = None) -> dict:
     return {"id": "cmd-m", "device_id": DEVICE_UUID, "action": "mist", "payload": {"duration_ms": ms},
-            "issued_at": _now_iso(), "ttl_sec": 30, "issued_by": "o", "source": "manual", "source_id": None}
+            "issued_at": issued_at or _now_iso(), "ttl_sec": 30, "issued_by": "owner-1",
+            "source": "manual", "source_id": None}
 
 
-def test_mist_over_device_max_rejected_before_publish(
-    fake_sb: MagicMock, fake_bridge: MagicMock, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """구 펌웨어(mist_max_ms 미보고=5000)에 10초 → 발행 안 하고 rejected/unsupported_duration.
+def test_mist_10s_on_old_firmware_split_into_two_bursts(fake_sb: MagicMock, fake_bridge: MagicMock) -> None:
+    """구 펌웨어(상한 미보고=5000)에 10초 → 기기엔 5000 발행 + 나머지 5000 을 약 6.5초 뒤로 예약.
 
-    펌웨어가 조용히 5초로 자르는 것을 막는 최종 방어선. 앱이 commands 에 직접 INSERT 해도 여기서 걸린다.
+    펌웨어가 조용히 5초로 자르는 대신 두 번 분사해 10초를 채운다. DB 원 행은 요청값(10000) 유지.
     """
-    updates: list[dict] = []
-    fake_sb.table.side_effect = _mist_tables(_mist_cmd(10000), updates, caps=None)
-    monkeypatch.setattr(dispatcher, "_enqueue_failure", lambda *a: None)
+    updates: list[dict] = []; inserts: list[dict] = []
+    fake_sb.table.side_effect = _mist_tables(_mist_cmd(10000), updates, inserts, caps=None)
+    before = datetime.now(timezone.utc)
 
     assert dispatcher.poll_and_dispatch(fake_bridge) == 1
-    fake_bridge.publish_command.assert_not_called()
-    assert {"status": "rejected", "result": "unsupported_duration"} in updates
+    assert fake_bridge.publish_command.call_args.args[1]["duration_ms"] == 5000
+    assert {"status": "sent"} in updates
+
+    assert len(inserts) == 1
+    cont = inserts[0]
+    assert cont["action"] == "mist" and cont["payload"] == {"duration_ms": 5000}
+    assert cont["source"] == "timer" and cont["issued_by"] == "owner-1"
+    assert "cmd-m" in cont["reason"]
+    delay = (datetime.fromisoformat(cont["issued_at"]) - before).total_seconds()
+    assert 6.0 <= delay <= 7.5            # 5초 분사 + 1.5초 여유 (재기동 가드·폴링·MQTT)
 
 
-def test_mist_within_device_max_published(fake_sb: MagicMock, fake_bridge: MagicMock) -> None:
-    updates: list[dict] = []
-    fake_sb.table.side_effect = _mist_tables(_mist_cmd(10000), updates, caps={"mist_max_ms": 10000})
+def test_mist_7s_on_old_firmware_split_5_plus_2(fake_sb: MagicMock, fake_bridge: MagicMock) -> None:
+    updates: list[dict] = []; inserts: list[dict] = []
+    fake_sb.table.side_effect = _mist_tables(_mist_cmd(7000), updates, inserts, caps=None)
+    assert dispatcher.poll_and_dispatch(fake_bridge) == 1
+    assert fake_bridge.publish_command.call_args.args[1]["duration_ms"] == 5000
+    assert inserts[0]["payload"] == {"duration_ms": 2000}
+
+
+def test_mist_within_device_max_single_publish(fake_sb: MagicMock, fake_bridge: MagicMock) -> None:
+    """신 펌웨어(상한 10000 보고)면 나누지 않고 한 번에."""
+    updates: list[dict] = []; inserts: list[dict] = []
+    fake_sb.table.side_effect = _mist_tables(_mist_cmd(10000), updates, inserts, caps={"mist_max_ms": 10000})
     assert dispatcher.poll_and_dispatch(fake_bridge) == 1
     assert fake_bridge.publish_command.call_args.args[1]["duration_ms"] == 10000
+    assert inserts == []
 
 
-def test_mist_legacy_value_published_on_old_firmware(fake_sb: MagicMock, fake_bridge: MagicMock) -> None:
-    updates: list[dict] = []
-    fake_sb.table.side_effect = _mist_tables(_mist_cmd(3000), updates, caps=None)
+def test_mist_legacy_value_not_split(fake_sb: MagicMock, fake_bridge: MagicMock) -> None:
+    updates: list[dict] = []; inserts: list[dict] = []
+    fake_sb.table.side_effect = _mist_tables(_mist_cmd(3000), updates, inserts, caps=None)
     assert dispatcher.poll_and_dispatch(fake_bridge) == 1
     assert fake_bridge.publish_command.call_args.args[1]["duration_ms"] == 3000
+    assert inserts == []
+
+
+def test_future_issued_at_stays_pending(fake_sb: MagicMock, fake_bridge: MagicMock) -> None:
+    """예약 발행: issued_at 이 미래인 행은 때가 될 때까지 발행도, 상태 변경도 하지 않는다."""
+    updates: list[dict] = []; inserts: list[dict] = []
+    fake_sb.table.side_effect = _mist_tables(_mist_cmd(5000, issued_at=_now_iso(+5)), updates, inserts, caps=None)
+    assert dispatcher.poll_and_dispatch(fake_bridge) == 0
+    fake_bridge.publish_command.assert_not_called()
+    assert updates == []
