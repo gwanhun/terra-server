@@ -5,9 +5,11 @@ handlers.py 가 paho 의존이 없어서 Supabase mock 만으로 충분.
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock
 
 import pytest
+from postgrest.exceptions import APIError
 
 from backend.mqtt import handlers
 
@@ -683,11 +685,13 @@ def test_camera_telemetry_backfills_hw_id_once(
     fake_sb.table.side_effect = _camera_state_table_factory(updates, hw_id=None)
 
     handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "hw_id": "30EDA0E22E80"})
-    assert updates[0]["hw_id"] == "30EDA0E22E80"
+    # heartbeat 와 별도 UPDATE 로 쓴다 — 충돌이 last_seen 을 끌어내리지 않게 (2026-09-23)
+    assert "hw_id" not in updates[0]
+    assert updates[1] == {"hw_id": "30EDA0E22E80"}
 
-    # 두 번째 하트비트: 캐시에 반영돼 UPDATE 에서 빠진다 (15초마다 쓰지 않는다)
+    # 두 번째 하트비트: 캐시에 반영돼 다시 쓰지 않는다 (15초마다 쓰지 않는다)
     handlers.handle_telemetry(CAMERA_TEXT, {"ts": 2, "hw_id": "30EDA0E22E80"})
-    assert "hw_id" not in updates[1]
+    assert len(updates) == 3 and "hw_id" not in updates[2]
 
 
 def test_camera_telemetry_keeps_existing_hw_id(
@@ -710,6 +714,92 @@ def test_camera_telemetry_without_hw_id_does_not_write_it(
 
     handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1})
     assert "hw_id" not in updates[0]
+
+
+def _dup_error() -> APIError:
+    return APIError({"message": "duplicate key value violates unique constraint "
+                                "\"cameras_owner_hw_id_uniq\"", "code": "23505",
+                     "details": "", "hint": None})
+
+
+def _camera_factory_hw_id_conflict(updates: list[dict]) -> "callable":
+    """hw_id 만 담긴 UPDATE 에 23505 를 던지는 cameras 테이블 mock."""
+    base = _camera_state_table_factory(updates, hw_id=None)
+
+    def _table(name: str) -> MagicMock:
+        t = base(name)
+        if name == "cameras":
+            def _update(payload: dict) -> MagicMock:
+                updates.append(payload)
+                if set(payload) == {"hw_id"}:
+                    raise _dup_error()
+                return t._upd
+            t.update.side_effect = _update
+        return t
+    return _table
+
+
+def test_camera_hw_id_conflict_does_not_break_heartbeat(
+    fake_sb: MagicMock, published: list, caplog: pytest.LogCaptureFixture
+) -> None:
+    """hw_id UNIQUE 충돌이 나도 last_seen_at/is_online 은 매번 갱신되고, 재시도는 1회로 끝난다.
+
+    2026-09-23 이전엔 같은 UPDATE 에 묶여 있어 충돌 한 번에 하트비트가 통째로 실패 →
+    멀쩡한 카메라가 영구 오프라인으로 보였다. 이 테스트가 그 회귀를 막는다.
+    """
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_factory_hw_id_conflict(updates)
+
+    with caplog.at_level(logging.WARNING):
+        handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "hw_id": "30EDA0E22E80"})
+        handlers.handle_telemetry(CAMERA_TEXT, {"ts": 2, "hw_id": "30EDA0E22E80"})
+
+    heartbeats = [u for u in updates if "last_seen_at" in u]
+    hw_writes = [u for u in updates if set(u) == {"hw_id"}]
+    assert len(heartbeats) == 2                          # 충돌과 무관하게 매번 갱신
+    assert all(u["is_online"] is True for u in heartbeats)
+    assert all("hw_id" not in u for u in heartbeats)     # 하트비트에 hw_id 가 섞이지 않음
+    assert len(hw_writes) == 1                           # 충돌 후 재시도 안 함 (스팸 방지)
+    assert "백필 충돌" in caplog.text
+
+
+def test_device_hw_id_conflict_does_not_break_heartbeat(
+    fake_sb: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """기기도 동일 — 3초 주기 텔레메트리에서 hw_id 충돌이 last_seen 을 막지 않는다."""
+    updates: list[dict] = []
+
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        if name == "devices":
+            t.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+                {"id": DEVICE_UUID}
+            ]
+            t._upd = MagicMock()
+            t._upd.eq.return_value.execute.return_value.data = [{"id": DEVICE_UUID}]
+
+            def _update(payload: dict) -> MagicMock:
+                updates.append(payload)
+                if set(payload) == {"hw_id"}:
+                    raise _dup_error()
+                return t._upd
+            t.update.side_effect = _update
+        elif name == "telemetry":
+            t.insert.return_value.execute.return_value.data = [{"device_id": DEVICE_UUID}]
+        return t
+
+    fake_sb.table.side_effect = _table
+
+    with caplog.at_level(logging.WARNING):
+        handlers.handle_telemetry(DEVICE_TEXT, {"ts": 1, "hw_id": "A0B7651C2908"})
+        handlers.handle_telemetry(DEVICE_TEXT, {"ts": 2, "hw_id": "A0B7651C2908"})
+
+    heartbeats = [u for u in updates if "last_seen_at" in u]
+    hw_writes = [u for u in updates if set(u) == {"hw_id"}]
+    assert len(heartbeats) == 2
+    assert all("hw_id" not in u for u in heartbeats)
+    assert len(hw_writes) == 1
+    assert "백필 충돌" in caplog.text
 
 
 def test_camera_telemetry_skips_capabilities_when_same_as_db(

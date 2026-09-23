@@ -1211,14 +1211,17 @@ function renderRegAccounts() {
     const td2 = document.createElement('td');
     const nm = document.createElement('input'); nm.type = 'text'; nm.value = '베타기기 ' + tail;
     nm.style.width = '110px'; nm.style.fontSize = '12px'; td2.appendChild(nm);
+    // 사육장 셀렉트 — 계정에 사육장이 2개 이상일 때만 등록 시점에 채워서 노출 (registerForAccount)
+    const encSel = document.createElement('select'); encSel.className = 'hidden';
+    encSel.style.cssText = 'max-width:120px;font-size:11px;margin-left:4px'; td2.appendChild(encSel);
     const td3 = document.createElement('td');
     const bd = document.createElement('button'); bd.textContent = '기기'; bd.style.fontSize = '11px'; bd.style.padding = '3px 8px';
     const bc = document.createElement('button'); bc.textContent = '카메라'; bc.style.fontSize = '11px'; bc.style.padding = '3px 8px'; bc.style.marginLeft = '4px';
     const bv = document.createElement('button'); bv.textContent = '확인'; bv.style.fontSize = '11px'; bv.style.padding = '3px 8px'; bv.style.marginLeft = '4px';
     td3.appendChild(bd); td3.appendChild(bc); td3.appendChild(bv);
     const td4 = document.createElement('td'); td4.style.fontFamily = 'monospace'; td4.style.fontSize = '11px';
-    bd.onclick = () => registerForAccount(email, 'device', nm.value.trim(), td4, [bd, bc, bv]);
-    bc.onclick = () => registerForAccount(email, 'camera', nm.value.trim(), td4, [bd, bc, bv]);
+    bd.onclick = () => registerForAccount(email, 'device', nm.value.trim(), td4, [bd, bc, bv], encSel);
+    bc.onclick = () => registerForAccount(email, 'camera', nm.value.trim(), td4, [bd, bc, bv], encSel);
     bv.onclick = () => checkAccount(email, td4, [bd, bc, bv]);
     tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3); tr.appendChild(td4);
     tb.appendChild(tr);
@@ -1226,7 +1229,28 @@ function renderRegAccounts() {
   document.getElementById('reg-count').textContent = emails.length + '개 계정';
 }
 
-async function registerForAccount(email, kind, name, resultEl, btns) {
+// 사육장(enclosure) 연결 — 2026-09-23 petcam 발견: cameras.enclosure_id 가 NULL 이면 앱이
+// 카메라·기기를 어느 사육장 세트에도 안 묶어 **화면에 아예 안 나온다**(영상은 쌓이는데 안 보임).
+// 이 콘솔로 등록한 베타 기기가 전부 그 상태로 시작하던 게 원인. 계정의 사육장 수에 따라:
+//   0개 → 등록은 진행하되 🔴 경고 (테스터가 앱에서 만들어야 함 — 대신 만들어주지 않는다, owner 결정)
+//   1개 → 자동 첨부 (모호성 없음)
+//   N개 → 행의 셀렉트에 채워 노출, 고르기 전엔 등록 막음
+async function pickEnclosureFor(client, encSel, resultEl) {
+  const { data, error } = await client.from('enclosures').select('id, name');   // RLS: 그 계정 것만
+  if (error) throw new Error('사육장 조회 실패: ' + error.message);
+  const encs = data || [];
+  if (encs.length === 0) return { enclosure_id: null, warn: true };
+  if (encs.length === 1) return { enclosure_id: encs[0].id, warn: false };
+  if (encSel.value && encs.some(e => e.id === encSel.value)) return { enclosure_id: encSel.value, warn: false };
+  encSel.innerHTML = '<option value="">사육장 선택…</option>'
+    + encs.map(e => `<option value="${esc(e.id)}">${esc(e.name)}</option>`).join('');
+  encSel.classList.remove('hidden');
+  resultEl.className = 'bad';
+  resultEl.textContent = '사육장 ' + encs.length + '개 — 이름 옆에서 고른 뒤 다시 누르기';
+  return null;   // 등록 중단
+}
+
+async function registerForAccount(email, kind, name, resultEl, btns, encSel) {
   const client = getBatchClient(); if (!client) return;
   if (!name) { resultEl.textContent = '이름 입력'; resultEl.className = 'bad'; return; }
   const password = document.getElementById('reg-pass').value;
@@ -1237,10 +1261,13 @@ async function registerForAccount(email, kind, name, resultEl, btns) {
     const { data, error } = await client.auth.signInWithPassword({ email, password });
     if (error) throw new Error(error.message);
     const token = data.session.access_token;
+    const enc = await pickEnclosureFor(client, encSel, resultEl);
+    if (!enc) { await client.auth.signOut(); return; }
     const path = kind === 'camera' ? '/cameras/pair' : '/devices/pair';
     const body = kind === 'camera'
       ? { name, model: 'esp32-p4', resolution: 'HD' }
       : { name };
+    if (enc.enclosure_id) body.enclosure_id = enc.enclosure_id;
     resultEl.textContent = '등록 중…';
     const res = await fetch(base + path, {
       method: 'POST', cache: 'no-store',
@@ -1261,6 +1288,9 @@ async function registerForAccount(email, kind, name, resultEl, btns) {
     } else {
       resultEl.innerHTML = 'device_id: <b>' + esc(r.device_id) + '</b><br>mqtt_token: ' + esc(r.mqtt_token);
     }
+    resultEl.innerHTML += enc.warn
+      ? '<br><span class="bad">🔴 사육장 0개 — 이대로는 앱에서 안 보임. 테스터가 앱에서 사육장을 만든 뒤 기기 편집에서 연결해야 함</span>'
+      : '<br><span class="muted">사육장 연결됨 (' + esc(enc.enclosure_id.slice(0, 8)) + '…)</span>';
   } catch (e) {
     resultEl.className = 'bad';
     resultEl.textContent = '❌ ' + (e.message || e);

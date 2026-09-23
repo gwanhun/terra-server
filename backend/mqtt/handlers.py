@@ -37,6 +37,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
+from postgrest.exceptions import APIError
 from supabase import Client
 
 from backend.mqtt.camera_commands import rotation_command
@@ -226,6 +227,7 @@ def reset_device_cache() -> None:
         _camera_state_cache.clear()
         _rotation_resend_at.clear()
     _device_hw_id_done.clear()
+    _hw_id_conflict.clear()
 
 
 # ---------- 카메라 설정 상태 캐시 (rotate_180 / capabilities) ----------
@@ -282,6 +284,71 @@ _uptime_prev: dict[str, int] = {}   # uuid → 마지막 uptime_sec (재부팅 �
 # hw_id 를 이미 채운 디바이스 uuid. 디바이스 텔레메트리는 3초 주기라 매 건 UPDATE 하면
 # 낭비이고, hw_id 는 보드가 바뀌지 않는 한 불변이므로 프로세스당 1회만 쓴다.
 _device_hw_id_done: set[str] = set()
+# hw_id 백필이 UNIQUE 충돌(23505)로 막힌 행(cameras/devices 공용). 같은 owner 의 다른
+# 활성 행이 이미 그 hw_id 를 갖고 있는 경우로, 베타 콘솔로 기존 행을 안 지운 채 재등록하면
+# 생긴다. 사람이 중복 행을 정리(해제/삭제)하기 전엔 재시도해도 결과가 안 바뀌므로
+# 프로세스당 1회만 경고하고 멈춘다(카메라 15초·기기 3초 주기 로그 스팸 방지).
+_hw_id_conflict: set[str] = set()
+
+
+def _hw_id_holders(sb: Client, table: str, id_col: str, entity_uuid: str, hw_id: str) -> list[str]:
+    """충돌 상대 — 같은 owner 에서 같은 hw_id 를 가진 다른 활성 행의 식별자. 진단 로그용.
+
+    service_role 이라 RLS 가 없으므로 owner_id 를 먼저 읽어 명시 필터한다(CLAUDE.md 규칙).
+    어느 단계든 실패하면 빈 목록 — 로그 한 줄 때문에 하트비트 처리를 막지 않는다.
+    """
+    try:
+        me = sb.table(table).select("owner_id").eq("id", entity_uuid).limit(1).execute()
+        rows = me.data if isinstance(me.data, list) else []
+        owner = rows[0].get("owner_id") if rows and isinstance(rows[0], dict) else None
+        if not owner:
+            return []
+        res = (
+            sb.table(table)
+            .select(f"id, {id_col}")
+            .eq("owner_id", owner)
+            .eq("hw_id", hw_id)
+            .is_("unlinked_at", "null")
+            .neq("id", entity_uuid)
+            .execute()
+        )
+        rows = res.data if isinstance(res.data, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+    return [str(r.get(id_col) or r.get("id")) for r in rows if isinstance(r, dict)]
+
+
+def _backfill_hw_id(
+    sb: Client, table: str, id_col: str, entity_uuid: str, label: str, hw_id: str
+) -> bool:
+    """hw_id 를 heartbeat 와 **별도 UPDATE** 로 기록. 성공하면 True.
+
+    분리한 이유(2026-09-23): 같은 UPDATE 에 last_seen_at/is_online 과 묶여 있으면 hw_id
+    UNIQUE 충돌 한 번에 하트비트까지 통째로 실패한다 → last_seen_at 이 영원히 안 올라가
+    멀쩡히 켜진 카메라가 3분 뒤 영구 오프라인으로 보인다(clip_stats/image_state 도 유실).
+    실패는 로그에만 남아 조용했다. 여기서는 충돌을 23505 로 구분해 상대 행까지 찍는다 —
+    petcam 쪽 중복 정리 도구가 바로 쓸 수 있는 신호다.
+    """
+    if entity_uuid in _hw_id_conflict:
+        return False
+    try:
+        sb.table(table).update({"hw_id": hw_id}).eq("id", entity_uuid).execute()
+    except APIError as exc:
+        if exc.code == "23505":
+            _hw_id_conflict.add(entity_uuid)
+            holders = _hw_id_holders(sb, table, id_col, entity_uuid, hw_id)
+            logger.warning(
+                "%s %s: hw_id=%s 백필 충돌 — 같은 owner 의 활성 행 %s 이 이미 보유. "
+                "중복 행을 해제/삭제해야 함. 이 프로세스에서는 재시도 안 함",
+                table, label, hw_id, holders or "(상대 미상)",
+            )
+        else:
+            logger.exception("%s hw_id UPDATE 실패 (%s)", table, label)
+        return False
+    except Exception:  # noqa: BLE001
+        logger.exception("%s hw_id UPDATE 실패 (%s)", table, label)
+        return False
+    return True
 
 
 def _camera_sys_state(camera_id_text: str, camera_uuid: str, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -467,11 +534,7 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
             if state is None or state.get("capabilities") != caps:
                 update["capabilities"] = caps
 
-        # 하드웨어 ID(2026-09-21): 이미 생긴 중복 카메라 행을 실물 보드와 대조해 정리하기
-        # 위한 것. 페어링에서 이미 저장되지만 구 펌웨어로 등록된 행은 NULL 이라, 새 펌웨어로
-        # 올라오면 여기서 한 번 채워진다. 보드가 바뀌지 않는 한 값도 안 바뀌므로 1회만 쓴다.
-        if isinstance(hw_id, str) and hw_id and state is not None and not state.get("hw_id"):
-            update["hw_id"] = hw_id[:64]
+        # hw_id 는 여기(heartbeat UPDATE)에 넣지 않는다 — 아래 _backfill_hw_id 로 분리.
 
         # 클립 파이프라인 카운터(2026-09-16): 매 heartbeat 저장. 스킵/업로드 실패가 늘거나
         # 업로드가 오래 진행 중이면 경고 로그 — "heartbeat 는 정상인데 녹화가 멈춘" 상태 감시.
@@ -497,8 +560,12 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
         else:
             if "capabilities" in update:
                 _camera_state_patch(entity_uuid, capabilities=update["capabilities"])
-            if "hw_id" in update:
-                _camera_state_patch(entity_uuid, hw_id=update["hw_id"])
+
+        # 하드웨어 ID(2026-09-21): 구 펌웨어로 등록돼 NULL 인 행을 새 펌웨어 하트비트가 한 번
+        # 채운다. 보드가 바뀌지 않는 한 불변이라 성공 후엔 캐시에 반영해 다시 쓰지 않는다.
+        if isinstance(hw_id, str) and hw_id and state is not None and not state.get("hw_id"):
+            if _backfill_hw_id(sb, "cameras", "camera_id", entity_uuid, device_id_text, hw_id[:64]):
+                _camera_state_patch(entity_uuid, hw_id=hw_id[:64])
 
         reported = payload.get("rotate_180")
         if isinstance(reported, bool):
@@ -548,17 +615,16 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
 
     # last_seen_at/is_online 갱신. 실패해도 telemetry 저장은 성공이라 별도 try.
     dev_update: dict[str, Any] = {"last_seen_at": _now_iso(), "is_online": True}
-    # 하드웨어 ID(2026-09-21): 구 펌웨어로 등록돼 devices.hw_id 가 NULL 인 행을 채운다.
-    # 이미 생긴 중복 기기 행을 실물 보드와 대조해 정리하기 위한 것.
-    hw_id = payload.get("hw_id")
-    if isinstance(hw_id, str) and hw_id and device_uuid not in _device_hw_id_done:
-        dev_update["hw_id"] = hw_id[:64]
     try:
         sb.table("devices").update(dev_update).eq("id", device_uuid).execute()
     except Exception:  # noqa: BLE001
         logger.exception("devices UPDATE 실패 (device=%s)", device_id_text)
-    else:
-        if "hw_id" in dev_update:
+
+    # 하드웨어 ID(2026-09-21): 구 펌웨어로 등록돼 NULL 인 행을 채운다. heartbeat 와 분리한
+    # 이유는 _backfill_hw_id 참고. 프로세스당 1회만 시도(3초 주기라 매 건 쓰면 낭비).
+    hw_id = payload.get("hw_id")
+    if isinstance(hw_id, str) and hw_id and device_uuid not in _device_hw_id_done:
+        if _backfill_hw_id(sb, "devices", "device_id", device_uuid, device_id_text, hw_id[:64]):
             _device_hw_id_done.add(device_uuid)
 
     # 임계값 평가 → alerts INSERT/RESOLVE (Stage D). 실패해도 telemetry 저장은 성공.
