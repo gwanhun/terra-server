@@ -55,17 +55,22 @@
 
 - `WEBRTC_STUN_URLS` — STUN 서버 URL (콤마 구분). 기본 Google STUN.
 - `WEBRTC_TURN_URLS` — TURN 서버 URL (옵션, 콤마 구분). 빈 값이면 응답에서 TURN 항목 누락 → STUN-only 동작.
-- `WEBRTC_TURN_USERNAME` / `WEBRTC_TURN_CREDENTIAL` — TURN 자격증명. TURN URL 있을 때만 의미 있음.
+- `WEBRTC_TURN_SECRET` — **운영 권장.** coturn `static-auth-secret` 과 같은 값. 있으면 `/cameras/webrtc/config` 가
+  요청한 사용자 기준 **단기 자격증명**을 만들어 준다: `username=<만료ts>:<user_id>`, `credential=base64(HMAC-SHA1)`.
+  앱은 재연결마다 config 를 새로 받으므로 만료돼도 자연히 갱신된다.
+- `WEBRTC_TURN_TTL_SEC` — 단기 자격증명 유효기간(초). 기본 21600(6시간), 300~86400 으로 클램프.
+- `WEBRTC_TURN_USERNAME` / `WEBRTC_TURN_CREDENTIAL` — 정적 자격증명(개발/임시). `SECRET` 이 있으면 무시.
 
 #### 언제 TURN 이 필요?
 대칭 NAT (양쪽 모두) 환경에서 P2P 가 직접 연결 못 함. 보통 모바일 셀룰러 → 카메라 (가정 IP) 시나리오. STUN 만으로 80% 정도는 통과, 안 되면 TURN relay 가 받쳐줌.
 
 #### 자체 운영 (coturn)
 ```
-WEBRTC_TURN_URLS=turn:turn.example.com:3478?transport=udp
-WEBRTC_TURN_USERNAME=terra
-WEBRTC_TURN_CREDENTIAL=...
+WEBRTC_TURN_URLS=turn:turn.terra-server.uk:3478?transport=udp,turn:turn.terra-server.uk:3478?transport=tcp,turns:turn.terra-server.uk:443?transport=tcp
+WEBRTC_TURN_SECRET=<openssl rand -hex 32 — coturn static-auth-secret 과 동일>
+WEBRTC_TURN_TTL_SEC=21600
 ```
+배포 절차·coturn 설정: [DEPLOYMENT.md "TURN 서버"](DEPLOYMENT.md), `scripts/coturn/turnserver.conf.example`.
 
 ### Cloudflare R2 (Stage F)
 

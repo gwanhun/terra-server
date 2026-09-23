@@ -384,6 +384,66 @@ sudo certbot renew --dry-run
 | Caddy 가 인증서 발급 못 함 | DNS A 레코드가 아직 전파 안 됨 (`dig api.example.com`), 또는 방화벽 80 닫혀있음 (`sudo ufw status`) |
 | ESP32 가 `mqtts://` 연결 실패 (`MBEDTLS_ERR_X509_CERT_VERIFY_FAILED`) | ESP32 펌웨어에 시스템 CA bundle 미활성 또는 시간(SNTP) 미동기화 → 인증서 유효기간 검증 실패 |
 
+## TURN 서버 (coturn, 별도 인스턴스) — 2026-09-23
+
+> 왜: `/cameras/webrtc/config` 가 STUN 만 주면 폰 LTE·대칭 NAT 에서 라이브가 아예 안 붙는다(약 20%).
+> 왜 별도: 카메라 고정 2.5Mbps × in/out = **시청 1시간 ≈ 2.2GB**. API 서버 2TB 와 같은 통이면 라이브가 API 를 굶긴다.
+> 앱팀 결정(2026-09-23): 별도 인스턴스, 서울. 앱 수정 불필요 — config 응답에 TURN 이 들어가면 바로 적용.
+
+### 1) 인스턴스
+- Lightsail **서울**, Ubuntu, $7 플랜(2TB) — API 서버와 동일 등급. 정적 IP 할당.
+- DNS: `turn.terra-server.uk` A 레코드 → 정적 IP.
+- 네트워킹(방화벽): `3478 TCP+UDP`, `5349 TCP`, `443 TCP`, **`49152-65535 UDP`**(relay), certbot 용 `80 TCP`.
+
+### 2) 설치·인증서
+```bash
+sudo apt install -y coturn certbot
+sudo certbot certonly --standalone -d turn.terra-server.uk
+# coturn 이 privkey 를 읽도록 (mosquitto 와 같은 패턴)
+sudo chgrp turnserver /etc/letsencrypt/live /etc/letsencrypt/archive
+sudo chmod g+rx     /etc/letsencrypt/live /etc/letsencrypt/archive
+sudo chmod 640 /etc/letsencrypt/archive/turn.terra-server.uk/privkey*.pem
+sudo chgrp turnserver /etc/letsencrypt/archive/turn.terra-server.uk/privkey*.pem
+```
+갱신 훅 — coturn 은 시작 시 인증서를 읽으므로 갱신 후 재시작:
+```bash
+echo 'systemctl restart coturn' | sudo tee /etc/letsencrypt/renewal-hooks/deploy/coturn.sh
+sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/coturn.sh
+```
+
+### 3) 설정
+```bash
+openssl rand -hex 32                      # ← WEBRTC_TURN_SECRET. API 서버 .env 와 여기 둘 다 같은 값
+sudo cp scripts/coturn/turnserver.conf.example /etc/turnserver.conf   # <...> 채우기 (external-ip 필수!)
+sudo sed -i 's/^#TURNSERVER_ENABLED=1/TURNSERVER_ENABLED=1/' /etc/default/coturn
+sudo systemctl enable --now coturn
+sudo journalctl -u coturn -n 30            # "listener ... 443" 바인드 실패면 아래 override
+```
+443 바인드 실패 시:
+```bash
+sudo systemctl edit coturn     # [Service] 아래 추가: AmbientCapabilities=CAP_NET_BIND_SERVICE
+sudo systemctl restart coturn
+```
+
+### 4) API 서버 활성화
+`.env` 에 세 줄 추가 후 `sudo systemctl restart terra-api` ([ENV.md](ENV.md) WebRTC 절):
+```
+WEBRTC_TURN_URLS=turn:turn.terra-server.uk:3478?transport=udp,turn:turn.terra-server.uk:3478?transport=tcp,turns:turn.terra-server.uk:443?transport=tcp
+WEBRTC_TURN_SECRET=<위에서 만든 값>
+WEBRTC_TURN_TTL_SEC=21600
+```
+
+### 5) 검증
+1. `GET /cameras/webrtc/config` 응답 `iceServers[1]` 에 `username=<ts>:<uuid>`, `credential` 이 있는지.
+2. 브라우저 Trickle ICE 페이지(webrtc.github.io/samples/src/content/peerconnection/trickle-ice)에 그 값을 넣고 **`relay` 후보**가 나오는지. 안 나오면 `external-ip` 또는 방화벽 UDP 범위부터 의심.
+3. 폰 **LTE** + 카메라 집 Wi-Fi 로 라이브 → `webrtc_connect_logs.local_cand='relay'` 가 찍히면 완료(앱팀 기준).
+
+### 트래픽 감시
+```bash
+sudo tail -f /var/log/turnserver.log | grep -i "session\|allocat"
+```
+Lightsail 콘솔 "네트워킹 → 데이터 전송" 으로 월 소진량 확인. 1TB 근처면 `max-bps` 로 상한.
+
 ## 로그 / 모니터링
 
 ```bash

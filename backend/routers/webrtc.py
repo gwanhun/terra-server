@@ -7,6 +7,9 @@ worker over MQTT.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import logging
 import os
 import re
@@ -92,7 +95,20 @@ class WebRTCCandidatesOut(BaseModel):
     )
 
 
-def _ice_servers_from_env() -> list[dict[str, Any]]:
+def _turn_short_term_credential(user_id: str, secret: str, ttl_sec: int) -> tuple[str, str]:
+    """coturn TURN REST API(`use-auth-secret`) 방식 단기 자격증명.
+
+    username = "<만료 unix ts>:<user_id>", credential = base64(HMAC-SHA1(secret, username)).
+    coturn 이 같은 secret 으로 HMAC 을 재계산해 대조하고, ts 가 지나면 거부한다.
+    앱은 재연결마다 /config 를 새로 받으므로 만료돼도 자연히 갱신된다(앱팀 2026-09-22 요청).
+    """
+    expires = int(time.time()) + ttl_sec
+    username = f'{expires}:{user_id}'
+    digest = hmac.new(secret.encode(), username.encode(), hashlib.sha1).digest()
+    return username, base64.b64encode(digest).decode()
+
+
+def _ice_servers_from_env(user_id: str | None = None) -> list[dict[str, Any]]:
     stun_urls = [
         u.strip()
         for u in os.getenv('WEBRTC_STUN_URLS', 'stun:stun.l.google.com:19302').split(',')
@@ -103,11 +119,19 @@ def _ice_servers_from_env() -> list[dict[str, Any]]:
         servers.append({'urls': stun_urls})
 
     turn_urls = [u.strip() for u in os.getenv('WEBRTC_TURN_URLS', '').split(',') if u.strip()]
+    turn_secret = os.getenv('WEBRTC_TURN_SECRET', '').strip()
     turn_user = os.getenv('WEBRTC_TURN_USERNAME', '').strip()
     turn_pass = os.getenv('WEBRTC_TURN_CREDENTIAL', '').strip()
     if turn_urls:
         turn: dict[str, Any] = {'urls': turn_urls}
-        if turn_user and turn_pass:
+        if turn_secret and user_id:
+            # 단기 자격증명(권장). 유출돼도 TTL 뒤 무효 — 정적 비밀번호를 앱에 뿌리지 않는다.
+            ttl = int(os.getenv('WEBRTC_TURN_TTL_SEC', '21600') or 21600)   # 기본 6시간
+            ttl = max(300, min(ttl, 86400))                                   # 5분 ~ 24시간
+            username, credential = _turn_short_term_credential(user_id, turn_secret, ttl)
+            turn.update({'username': username, 'credential': credential})
+        elif turn_user and turn_pass:
+            # 정적 자격증명 — coturn `lt-cred-mech` 개발/임시용. 운영은 SECRET 을 쓸 것.
             turn.update({'username': turn_user, 'credential': turn_pass})
         servers.append(turn)
     return servers
@@ -219,8 +243,8 @@ def _extract_answer_sdp(payload: dict[str, Any]) -> str | None:
 
 
 @router.get('/webrtc/config', response_model=WebRTCConfigOut, summary='WebRTC STUN/TURN 설정')
-def get_webrtc_config(_: str = Depends(get_current_user_id)) -> WebRTCConfigOut:
-    return WebRTCConfigOut(iceServers=_ice_servers_from_env())
+def get_webrtc_config(user_id: str = Depends(get_current_user_id)) -> WebRTCConfigOut:
+    return WebRTCConfigOut(iceServers=_ice_servers_from_env(user_id))
 
 
 @router.post(

@@ -17,7 +17,7 @@
 |:---:|---|---|---|
 | 1 | 연결 결과 로그 테이블 | ✅ `webrtc_connect_logs` **적용 완료** (2026-09-23, cron jobid=10). 제안 DDL 에서 5곳 조정 | §1.2 조정 내용 확인 후 INSERT 시작 |
 | 1+ | (서버 추가 제안) | ✅ **배포 완료** (`f158db2`) — `POST /webrtc/offer` 응답에 `offer_attempts`·`answer_ms` | **두 값을 로그 행에 넣어주세요** — 실패 원인 분리의 핵심 |
-| 2 | TURN 서버 배포 | ⏸️ **인스턴스 결정 대기**. 서버 코드는 HMAC 생성만 추가하면 됨 | 없음 (앱 수정 불필요 확인) |
+| 2 | TURN 서버 배포 | 🔧 **서버 코드 완료**(HMAC 단기 자격증명). 별도 인스턴스(서울) 생성·인증서·env 활성화 남음 — 절차 `DEPLOYMENT.md` | 배포되면 폰 LTE 로 `local_cand=relay` 검증 |
 | 2-q | 펌웨어가 relay 로 check 보낼 수 있나 | ✅ **예** — 근거 §2.1 | — |
 | 선택 1 | 새 세션 IDR 즉시 전송 | 🔄 **정정** — 첫 회신(offer 재시도)은 틀렸고, 실측 18초는 H.264 락 starvation 으로 2026-08-12 수정됨 (§3) | `ms_first_frame − ms_connected` 기준값 2.5초로 판정 |
 | 선택 2 | `/close` 유실 세션이 다음 연결 차단 | ✅ **이미 방어돼 있음** (§4) | 실제 겪었다면 시각+camera_id 주세요 |
@@ -144,14 +144,16 @@ TURN 이 중계하기 때문입니다. 주신 완료 기준 `local_cand=relay` �
 
 ### 2.4 서버 코드 — HMAC 생성 추가 필요
 
-현재 `_ice_servers_from_env()` 는 환경변수 문자열을 그대로 돌려줄 뿐이라 `use-auth-secret`
-방식의 `username=<만료ts>:<user_id>` / `credential=HMAC-SHA1` 생성 코드가 없습니다.
-20줄 정도의 추가이고, coturn 배포가 정해지면 같이 올리겠습니다.
+→ ✅ **2026-09-23 구현 완료.** `WEBRTC_TURN_SECRET` 이 설정되면 `/cameras/webrtc/config` 가
+요청한 사용자 기준으로 `username=<만료ts>:<user_id>` / `credential=base64(HMAC-SHA1)` 을 만들어
+내려줍니다. TTL 기본 6시간(`WEBRTC_TURN_TTL_SEC`, 제안 범위 6~24h 안). coturn 쪽은
+`use-auth-secret` + `static-auth-secret=<같은 값>`. 설정 예시 `scripts/coturn/turnserver.conf.example`,
+배포 절차 `docs/DEPLOYMENT.md` "TURN 서버" 절.
 
 **주신 대로 `/cameras/webrtc/config` 응답 `iceServers` 에 넣으면 앱 수정 없이 적용됩니다.**
 자동 재연결마다 config 를 새로 받는다는 점도 확인했습니다 — 만료 갱신이 자연히 됩니다.
 
-### 2.5 결정이 필요한 것 — 인스턴스 분리 여부
+### 2.5 인스턴스 분리 — ✅ 별도 인스턴스(서울)로 결정됨 (아래는 결정 근거로 남김)
 
 | 항목 | 내용 |
 |---|---|
@@ -162,7 +164,7 @@ TURN 이 중계하기 때문입니다. 주신 완료 기준 `local_cand=relay` �
 | 권고 | **coturn 별도 인스턴스.** 라이브가 API 를 굶기는 걸 막고 요금도 분리됩니다 |
 | 추가 | `turns:…:443` 은 **별도 인증서** 필요 (api.terra-server.uk 와 다른 도메인) |
 
-리전은 서울로 맞추겠습니다. 인스턴스 방침만 정해지면 coturn 설정 파일까지 준비하겠습니다.
+→ 별도 인스턴스(서울)로 결정해 주셨습니다. 설정 파일·서버 코드는 준비됐고 **인스턴스 생성·인증서 발급·env 활성화**가 남았습니다. 올라가면 폰 LTE 로 `local_cand=relay` 검증 부탁드립니다.
 
 ---
 
@@ -316,5 +318,5 @@ PostgREST 재시도는 메시지가 아니라 **SQLSTATE 만 보고** 돕니다.
 
 ### 저희가 다음에 할 것
 
-- coturn 배포 (인스턴스 방침 확정 후) + 서버 HMAC 생성 코드
+- coturn 인스턴스 생성·인증서·env 활성화 (서버 코드·설정 파일은 완료)
 - 로그 1~2주 쌓인 뒤 `offer_attempts` 분포로 PSRAM 가설 검증 → 펌웨어 대응 결정

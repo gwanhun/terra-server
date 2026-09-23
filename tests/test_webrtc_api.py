@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+import time
 from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
@@ -37,6 +41,43 @@ def test_webrtc_config_returns_default_stun(app_client: TestClient) -> None:
     body = res.json()
     assert body['iceServers'][0]['urls'] == ['stun:stun.l.google.com:19302']
     assert body['sdpSemantics'] == 'unified-plan'
+
+
+def test_webrtc_config_turn_short_term_credential(app_client: TestClient, monkeypatch) -> None:
+    """WEBRTC_TURN_SECRET 이 있으면 coturn use-auth-secret 형식의 단기 자격증명을 만든다.
+
+    username = "<만료ts>:<user_id>", credential = base64(HMAC-SHA1(secret, username)).
+    coturn 이 같은 계산으로 대조하므로 형식이 한 글자라도 다르면 relay 가 전부 401 이다.
+    """
+    urls = 'turn:turn.example.com:3478?transport=udp,turns:turn.example.com:443?transport=tcp'
+    monkeypatch.setenv('WEBRTC_TURN_URLS', urls)
+    monkeypatch.setenv('WEBRTC_TURN_SECRET', 'test-secret')
+    monkeypatch.setenv('WEBRTC_TURN_TTL_SEC', '3600')
+    before = int(time.time())
+
+    res = app_client.get('/cameras/webrtc/config')
+
+    assert res.status_code == 200
+    turn = res.json()['iceServers'][1]
+    assert turn['urls'] == urls.split(',')
+    exp_s, uid = turn['username'].split(':', 1)
+    assert uid == TEST_USER_ID
+    assert before + 3600 <= int(exp_s) <= before + 3600 + 5
+    expected = base64.b64encode(
+        hmac.new(b'test-secret', turn['username'].encode(), hashlib.sha1).digest()
+    ).decode()
+    assert turn['credential'] == expected
+
+
+def test_webrtc_config_turn_static_credential_fallback(app_client: TestClient, monkeypatch) -> None:
+    """SECRET 이 없고 USERNAME/CREDENTIAL 만 있으면 종전처럼 정적 자격증명(개발용)."""
+    monkeypatch.setenv('WEBRTC_TURN_URLS', 'turn:turn.example.com:3478')
+    monkeypatch.delenv('WEBRTC_TURN_SECRET', raising=False)
+    monkeypatch.setenv('WEBRTC_TURN_USERNAME', 'terra')
+    monkeypatch.setenv('WEBRTC_TURN_CREDENTIAL', 'pw')
+
+    turn = app_client.get('/cameras/webrtc/config').json()['iceServers'][1]
+    assert turn['username'] == 'terra' and turn['credential'] == 'pw'
 
 
 def test_webrtc_offer_relays_to_camera_and_returns_answer(
