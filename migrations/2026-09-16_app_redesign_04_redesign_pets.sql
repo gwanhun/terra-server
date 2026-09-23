@@ -1,21 +1,16 @@
 -- ============================================================================
--- ⚠️ 이 파일은 프로덕션과 어긋나 있다 — 그대로 재적용하지 말 것 (2026-09-22)
+-- ✅ 2026-09-23 운영과 동기화 — 오류 코드 40001 → PT409 (앱팀 2026-09-22 변경 반영)
 -- ----------------------------------------------------------------------------
 -- 대상 함수: redesign_save_pet_v1, redesign_delete_pet_v1
--- 앱팀이 2026-09-22 운영 DB 에서 이 함수들의 '구성 변경' 오류 코드를
--- 40001(serialization_failure) → PT409 로 바꿨다. 이 파일에는 아직 40001 이 남아 있고,
--- 전부 CREATE OR REPLACE FUNCTION 이라 **재적용하면 그 수정이 조용히 되돌아간다.**
+-- 앱팀이 2026-09-22 운영 DB 에서 이 함수들 안의 ERRCODE='40001' 을 전부 'PT409' 로
+-- 치환했다(tera-ai-flutter supabase/migrations/20260922_redesign_conflict_errcode.sql —
+-- pg_get_functiondef 로 본문을 읽어 regexp_replace 후 EXECUTE, 함수 본문은 그대로).
+-- 이 사본에도 같은 치환을 적용했으므로 이제 그대로 재적용해도 운영과 일치한다.
 --
--- 왜 바꿨나: PostgREST 는 40001 을 일시적 충돌로 보고 트랜잭션을 자동 재시도한다.
--- 앱이 보낸 expected 구성이 실제와 다를 때는 재시도해도 조건이 안 바뀌어 무한 루프가 됐다
--- (운영 로그 24시간 약 520만 건, 분당 약 6,000건 / PostgREST 연결 4개 점유).
--- PT409 는 재시도 없이 HTTP 409 로 즉시 응답한다.
---
--- 권위 있는 SQL: tera-ai-flutter@main supabase/migrations/20260922_redesign_conflict_errcode.sql
--- 이 레포 사본의 동기화는 그 파일을 받은 뒤에 한다(추측으로 고치면 새 drift 가 생긴다).
---
--- DB 재구축·복구로 이 번들을 다시 붙여야 한다면, 01~06 적용 후 반드시 위 20260922
--- 마이그레이션을 이어서 적용할 것.
+-- 왜 PT409 인가: PostgREST 는 40001(serialization_failure)을 일시적 충돌로 보고 자동
+-- 재시도한다. 앱의 expected 구성이 실제와 다를 때는 재시도해도 조건이 안 바뀌어 무한
+-- 루프가 됐다(24시간 약 520만 건, 연결 4개 점유). PT409 는 재시도 없이 HTTP 409 즉시 응답.
+-- 새 RPC 도 충돌·구성 변경류 오류는 PT409 를 쓴다(MIGRATIONS_APPLIED.md 규칙).
 -- ============================================================================
 -- ============================================================================
 -- 앱 팀 재설계 번들 04/06 — redesign_pets
@@ -63,15 +58,15 @@ BEGIN
   IF is_existing AND old_owner IS DISTINCT FROM owner THEN
     RAISE EXCEPTION 'pet not owned' USING ERRCODE='42501'; END IF;
   IF is_existing AND old_deleted_at IS NOT NULL THEN
-    RAISE EXCEPTION 'deleted pet cannot be edited or resurrected' USING ERRCODE='40001'; END IF;
+    RAISE EXCEPTION 'deleted pet cannot be edited or resurrected' USING ERRCODE='PT409'; END IF;
   IF old_group IS DISTINCT FROM p_expected_group_id THEN
-    RAISE EXCEPTION 'membership changed' USING ERRCODE='40001'; END IF;
+    RAISE EXCEPTION 'membership changed' USING ERRCODE='PT409'; END IF;
   IF p_group_id IS NOT NULL THEN
     PERFORM 1 FROM public.enclosures WHERE id=p_group_id AND owner_id=owner FOR UPDATE;
     IF NOT FOUND THEN RAISE EXCEPTION 'group not owned' USING ERRCODE='42501'; END IF;
     -- Do not silently evict another pet. Group editor handles explicit moves.
     IF EXISTS(SELECT 1 FROM public.pets WHERE enclosure_id=p_group_id AND deleted_at IS NULL AND id<>pet_key) THEN
-      RAISE EXCEPTION 'group already has a pet' USING ERRCODE='40001'; END IF;
+      RAISE EXCEPTION 'group already has a pet' USING ERRCODE='PT409'; END IF;
   END IF;
   IF is_existing AND p_pet->>'name'=old_name THEN wanted:=old_name;
   ELSE
@@ -124,7 +119,7 @@ BEGIN
   IF NOT FOUND OR original_owner IS DISTINCT FROM owner THEN
     RAISE EXCEPTION 'pet not owned' USING ERRCODE='42501'; END IF;
   IF original_deleted_at IS NOT NULL OR actual IS DISTINCT FROM p_expected_group_id THEN
-    RAISE EXCEPTION 'membership changed or pet already deleted' USING ERRCODE='40001'; END IF;
+    RAISE EXCEPTION 'membership changed or pet already deleted' USING ERRCODE='PT409'; END IF;
   -- No physical deletion: pet profile, media and pet_events remain intact.
   UPDATE public.pets SET enclosure_id=NULL,deleted_at=changed_at,updated_at=changed_at
     WHERE id=p_pet_id AND user_id=owner;

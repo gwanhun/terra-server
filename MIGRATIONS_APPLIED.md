@@ -33,7 +33,7 @@ Supabase 에 적용한 마이그레이션 기록(SOT). `migrations/*.sql` 을 SQ
 | ✅ | `2026-09-21_gme_jobs_clip_cascade.sql` | 2026-09-21 | `gme_jobs.clip_id` FK 에 ON DELETE CASCADE. 카메라 삭제 500 대응이었으나 **단독으로는 불충분** — motion_clips 참조 테이블이 45개라 클립 보유 기기는 소프트 해제 사용 |
 | ✅ | `2026-09-21_cameras_hw_id.sql` | 2026-09-21 | `cameras.hw_id`(efuse MAC) + `(owner_id, hw_id)` 부분 UNIQUE. 재페어링 시 기존 행 재사용 → 중복 카메라 행 방지 |
 | ✅ | `2026-09-21_devices_hw_id.sql` | 2026-09-21 | `devices.hw_id` 동일 적용. **코드만 먼저 배포되어 20:44~20:46 페어링이 PostgREST 400 → `PAIR_FAIL 500` 으로 실패했었음** (컬럼 없는 상태에서 조회·INSERT) |
-| ⚠️ | `20260922_redesign_conflict_errcode.sql` (**앱 레포**) | 2026-09-22 | **이 레포에 파일 없음.** 앱팀이 운영 DB 에 직접 적용 — `redesign_save_group_v1`·`redesign_remove_group_member_v1`·`redesign_save_pet_v1`·`redesign_delete_pet_v1` 의 '구성 변경' 오류를 `40001` → `PT409`. 40001 은 PostgREST 가 무한 재시도해 24시간 520만 건·연결 4개 점유를 유발했음. 권위 있는 SQL = `tera-ai-flutter@main supabase/migrations/20260922_redesign_conflict_errcode.sql`. ⚠️ 위 `_02_`·`_04_` 파일은 아직 40001 이라 **재적용 시 되돌아감** (각 파일 상단 경고 참고) |
+| ✅ | `20260922_redesign_conflict_errcode.sql` (**앱 레포**) | 2026-09-22 | **이 레포에 파일 없음.** 앱팀이 운영 DB 에 직접 적용 — `redesign_save_group_v1`·`redesign_remove_group_member_v1`·`redesign_save_pet_v1`·`redesign_delete_pet_v1` 의 '구성 변경' 오류를 `40001` → `PT409`. 40001 은 PostgREST 가 무한 재시도해 24시간 520만 건·연결 4개 점유를 유발했음. 권위 있는 SQL = `tera-ai-flutter@main supabase/migrations/20260922_redesign_conflict_errcode.sql`. 이 레포 사본 `_02_`·`_04_` 는 **2026-09-23 동기화 완료**(7곳 `40001`→`PT409` 치환, 원문 수령 후) — 재적용해도 운영과 일치 |
 | ✅ | `2026-09-22_webrtc_connect_logs.sql` | 2026-09-23 | `webrtc_connect_logs` (라이브 연결 시도 1건당 1행, 앱 직접 INSERT·service_role 조회). 앱 핸드오프 2026-09-22 요청 1. 보존 cron `cleanup-webrtc-connect-logs-90d` **jobid=10** 등록 확인 |
 
 ## 규칙
