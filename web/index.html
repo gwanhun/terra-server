@@ -870,19 +870,43 @@ async function loadDevices() {
   });
 }
 
-// 디바이스 행의 온도/습도 셀 — TEL_LATEST 캐시에서. 없으면 '-'.
+// 디바이스 행의 온도/습도 셀 — 표시 규칙은 docs/APP_TELEMETRY_DISPLAY_2026-09-28.md §3 (앱 참조 구현).
+//  - 값은 TEL_GOOD(마지막 정상 행)에서. a_ok=false 행(t_a NULL)이 와도 값을 지우지 않고 ⚠ 배지만.
+//  - 신선도: <15초 그대로 / 15~180초 흐리게 + "N초 전" / devices.is_online=false 흐리게 + "오프라인".
+//    (예전엔 마지막 행을 나이 확인 없이 계속 보여줘서 전원 꺼진 기기도 온도가 살아 있는 것처럼 보였다.)
+const TEL_FRESH_SEC = 15;
+
+function telFreshness(deviceUuid) {
+  const g = TEL_GOOD[deviceUuid];
+  if (!g) return null;
+  const ageSec = Math.max(0, (Date.now() - new Date(g.ts).getTime()) / 1000);
+  const dev = DEVICES.find(d => d.id === deviceUuid);
+  const offline = dev ? dev.is_online === false : ageSec > 180;
+  const fault = TEL_LATEST[deviceUuid]?.a_ok === false;
+  return { g, ageSec, offline, fault };
+}
+
+function telValueHtml(deviceUuid, value, unit) {
+  const f = telFreshness(deviceUuid);
+  if (!f || value == null) return '<span class="muted">-</span>';
+  const badge = f.fault ? '<span title="센서 읽기 실패 — 마지막 정상값 표시 중">⚠</span>' : '';
+  const num = `${value.toFixed(1)}${unit}`;
+  if (f.offline) {
+    const at = new Date(f.g.ts).toTimeString().slice(0, 5);
+    return `<span class="muted" title="마지막 수신 ${f.g.ts}" style="opacity:.5">${num}${badge}<br><small>오프라인 · ${at} 기준</small></span>`;
+  }
+  if (f.ageSec >= TEL_FRESH_SEC) {
+    return `<span class="muted" title="마지막 수신 ${f.g.ts}">${num}${badge}<br><small>${Math.round(f.ageSec)}초 전</small></span>`;
+  }
+  return `<span class="${f.fault ? 'bad' : 'good'}">${num}${badge}</span>`;
+}
+
 function formatDeviceTemp(deviceUuid) {
-  const t = TEL_LATEST[deviceUuid];
-  if (!t || t.t_a == null) return '<span class="muted">-</span>';
-  const cls = t.a_ok === false ? 'bad' : 'good';
-  return `<span class="${cls}">${t.t_a.toFixed(1)}°C</span>`;
+  return telValueHtml(deviceUuid, TEL_GOOD[deviceUuid]?.t_a, '°C');
 }
 
 function formatDeviceHumid(deviceUuid) {
-  const t = TEL_LATEST[deviceUuid];
-  if (!t || t.h_a == null) return '<span class="muted">-</span>';
-  const cls = t.a_ok === false ? 'bad' : 'good';
-  return `<span class="${cls}">${t.h_a.toFixed(1)}%</span>`;
+  return telValueHtml(deviceUuid, TEL_GOOD[deviceUuid]?.h_a, '%');
 }
 
 // Realtime telemetry INSERT 시 디바이스 행 셀만 in-place 갱신.
@@ -1705,8 +1729,16 @@ async function deleteDevice(id) {
 // ─────────────────────────────────────────────────────────────────────────
 // 실시간 텔레메트리 (Stage A) — Supabase Realtime 으로 INSERT 자동 수신
 // ─────────────────────────────────────────────────────────────────────────
-// device_uuid → 최신 row 캐시 (앱이 매번 SELECT 안 해도 되게)
+// device_uuid → 최신 row 캐시 (앱이 매번 SELECT 안 해도 되게). a_ok=false 행도 그대로 들어온다.
 const TEL_LATEST = {};
+// device_uuid → 마지막 "정상"(a_ok=true, t_a 있음) 행. 표시 값은 여기서만 읽고, 절대 null 로 되돌리지 않는다.
+const TEL_GOOD = {};
+function telRemember(row) {
+  TEL_LATEST[row.device_id] = row;
+  if (row.a_ok === true && row.t_a != null) TEL_GOOD[row.device_id] = row;
+}
+// 새 행이 안 와도 "N초 전"/오프라인 표시가 따라가게 5초마다 셀만 다시 그림.
+setInterval(() => { Object.keys(TEL_GOOD).forEach(updateDeviceTempCell); }, 5000);
 // device_uuid → device_id (TEXT) 캐시 (loadDevices 때 갱신)
 const DEV_LABEL = {};
 let DEVICES = [];   // /devices 응답 캐시 (예약 패널 드롭다운)
@@ -1727,7 +1759,7 @@ function subscribeRealtime() {
         { event: 'INSERT', schema: 'public', table: 'telemetry' },
         (payload) => {
           const row = payload.new;
-          TEL_LATEST[row.device_id] = row;
+          telRemember(row);
           renderTelemetry();
           updateDeviceTempCell(row.device_id);   // 디바이스 패널의 온도 셀도 갱신
         })
@@ -1782,6 +1814,10 @@ function subscribeRealtime() {
           const n = payload.new;
           const cell = document.querySelector(`[data-dev-sys="${n.id}"]`);
           if (cell) cell.innerHTML = sysCellHtml(n.sys_state);
+          // is_online 은 offline_monitor 가 180초 무응답 시 false 로 바꾼다 → 온습도 셀을 오프라인 표시로.
+          const d = DEVICES.find(x => x.id === n.id);
+          if (d) { d.is_online = n.is_online; d.last_seen_at = n.last_seen_at; }
+          updateDeviceTempCell(n.id);
         })
     .subscribe();
 
@@ -1812,13 +1848,11 @@ async function loadTelemetryLatest() {
     .order('ts', { ascending: false })
     .limit(200);
   if (error) return;
-  // device 별 최신만 유지
+  // device 별 최신 행(TEL_LATEST)과 최신 정상 행(TEL_GOOD)을 각각 첫 등장으로 채움 (rows 는 ts desc)
   const seen = {};
   (rows || []).forEach(r => {
-    if (!seen[r.device_id]) {
-      seen[r.device_id] = true;
-      TEL_LATEST[r.device_id] = r;
-    }
+    if (!seen[r.device_id]) { seen[r.device_id] = true; TEL_LATEST[r.device_id] = r; }
+    if (!TEL_GOOD[r.device_id] && r.a_ok === true && r.t_a != null) TEL_GOOD[r.device_id] = r;
   });
   renderTelemetry();
 }
