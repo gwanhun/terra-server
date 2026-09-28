@@ -143,7 +143,7 @@ Authorization: Bearer <사용자 JWT>
 | 구분 | 상태 |
 |---|---|
 | DB 마이그레이션 (`devices.sys_state`) | **운영 적용 완료** (2026-09-28, petcam 9/28 조회로도 확인) |
-| DB 마이그레이션 (`commands.source` 에 `restore`) | **미적용** — `2026-09-28_commands_source_restore.sql`. 복원 코드 배포 전에 적용. 없으면 복원 INSERT 만 실패하고 다른 동작엔 영향 없음 |
+| DB 마이그레이션 (`commands.source` 에 `restore`) | **운영 적용 완료** (2026-09-28) |
 | 서버 코드 | `main` 반영: `080dd8e`(reboot·sys_state) → PR #6 머지(기기 heartbeat 폴백) → 예약 복원(§2.4). pytest 344 passed |
 | 서버 운영 | **배포 예정** — 배포되면 이 줄 갱신. 배포 전엔 `POST /devices/{id}/reboot` 가 404(라우트 없음), `sys_state` 는 항상 `null`, 복원 없음 |
 | 펌웨어 | 빌드 완료(nano·supermini). **실기 검증 전** — 플래시 후 콘솔에서 재부팅 → `reset=SW:mqtt_reboot` 수신을 확인하고 이 줄 갱신 |
