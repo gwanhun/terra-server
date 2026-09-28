@@ -374,6 +374,21 @@ def _hw_id_holders(sb: Client, table: str, id_col: str, entity_uuid: str, hw_id:
     return [str(r.get(id_col) or r.get("id")) for r in rows if isinstance(r, dict)]
 
 
+# 카메라가 "살아있다"는 표시. 이 두 필드는 어떤 선택 필드 실패에도 기록돼야 한다.
+_CAMERA_LIVENESS_FIELDS = ("last_seen_at", "is_online")
+
+
+def _update_camera_liveness(
+    sb: Client, label: str, entity_uuid: str, update: dict[str, Any]
+) -> None:
+    """heartbeat 가 선택 필드 때문에 실패했을 때 필수 필드만 다시 쓴다."""
+    liveness = {k: update[k] for k in _CAMERA_LIVENESS_FIELDS}
+    try:
+        sb.table("cameras").update(liveness).eq("id", entity_uuid).execute()
+    except Exception:  # noqa: BLE001
+        logger.exception("cameras 필수 필드 UPDATE 도 실패 (camera=%s)", label)
+
+
 def _backfill_hw_id(
     sb: Client, table: str, id_col: str, entity_uuid: str, label: str, hw_id: str
 ) -> bool:
@@ -609,10 +624,19 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
             if img.get("ae_frozen") is True:
                 logger.warning("camera %s: AE 진동 동결 중 img=%s", device_id_text, img)
 
+        # 평소엔 한 문장으로 쓴다(DB 쓰기·Realtime 이벤트 1회). 선택 필드 때문에 실패하면
+        # (마이그레이션 누락 컬럼 등) 필수 필드만으로 한 번 더 쓴다 — 2026-09-28 image_state
+        # 컬럼 누락으로 녹화 중인 카메라가 전부 오프라인으로 보인 사고(9/21 hw_id 와 같은 구조).
         try:
             sb.table("cameras").update(update).eq("id", entity_uuid).execute()
         except Exception:  # noqa: BLE001
-            logger.exception("cameras UPDATE 실패 (camera=%s)", device_id_text)
+            optional = sorted(set(update) - set(_CAMERA_LIVENESS_FIELDS))
+            logger.exception(
+                "cameras heartbeat UPDATE 실패 (camera=%s, 선택 필드=%s) — 필수 필드만 재시도",
+                device_id_text, optional,
+            )
+            if optional:
+                _update_camera_liveness(sb, device_id_text, entity_uuid, update)
         else:
             if "capabilities" in update:
                 _camera_state_patch(entity_uuid, capabilities=update["capabilities"])

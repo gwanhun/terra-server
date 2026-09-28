@@ -22,7 +22,7 @@ Supabase 에 적용한 마이그레이션 기록(SOT). `migrations/*.sql` 을 SQ
 | ✅ | `2026-09-15_push_outbox.sql` | 2026-09-16 | 앱 푸시 이벤트 전송 대기열 + 정리 cron (`cleanup-push-outbox` jobid=6 신규) |
 | ✅ | `2026-09-16_enclosures_name_unique.sql` | 2026-09-16 | 그룹 이름 중복 금지 UNIQUE 인덱스 (앱 §1-1: btrim, 대소문자 구분). 생성 성공 = 기존 중복 없음 |
 | ✅ | `2026-09-16_soft_unlink.sql` | 2026-09-16 | devices/cameras `unlinked_at` + `unlink_request_id` + 활성 부분 인덱스 (소프트 해제, 앱 §1) |
-| ⬜ | `2026-09-17_cameras_image_state.sql` | — | `cameras.image_state` (노출/야간 상태 텔레메트리). **미적용** |
+| ✅ | `2026-09-17_cameras_image_state.sql` | 2026-09-28 | `cameras.image_state` (노출/야간 상태 텔레메트리). **9/17~28 파일 없이 미적용이라 heartbeat UPDATE 가 통째로 실패 → 녹화 중인 카메라 전부 오프라인 표시.** petcam 측(S-Soo100)이 SQL Editor 로 적용, 직후 5대 온라인 복귀 확인 |
 | ✅ | `2026-09-16_cameras_clip_stats.sql` | 2026-09-16 | `cameras.clip_stats` JSONB + `clip_stats_at` (펌웨어 텔레메트리 `clips` 카운터) |
 | ✅ | `2026-09-16_app_redesign_01_assignment_history.sql` | 2026-09-16 | 앱 재설계 번들 (tera-ai-flutter@bb430fa). pets.deleted_at · pet_camera_assignments 이력 테이블 · reconcile 헬퍼 · pets_user_id_fkey CASCADE 교체 |
 | ✅ | `2026-09-16_app_redesign_02_redesign_groups.sql` | 2026-09-16 | 앱 재설계 번들 (tera-ai-flutter@bb430fa). 그룹 RPC(save/remove/rename) · 이름 검증 · 멱등 요청·카운터 테이블 · enclosures.group_number |

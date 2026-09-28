@@ -763,6 +763,63 @@ def test_camera_hw_id_conflict_does_not_break_heartbeat(
     assert "백필 충돌" in caplog.text
 
 
+def _missing_column_error(column: str) -> APIError:
+    return APIError({"message": f"Could not find the '{column}' column of 'cameras' in the schema cache",
+                     "code": "PGRST204", "details": None, "hint": None})
+
+
+def _camera_factory_missing_column(updates: list[dict], column: str) -> "callable":
+    """`column` 이 담긴 UPDATE 를 PGRST204 로 거부하는 cameras 테이블 mock (마이그레이션 누락 재현)."""
+    base = _camera_state_table_factory(updates)
+
+    def _table(name: str) -> MagicMock:
+        t = base(name)
+        if name == "cameras":
+            def _update(payload: dict) -> MagicMock:
+                updates.append(payload)
+                if column in payload:
+                    raise _missing_column_error(column)
+                return t._upd
+            t.update.side_effect = _update
+        return t
+    return _table
+
+
+def test_camera_missing_optional_column_keeps_heartbeat(
+    fake_sb: MagicMock, published: list, caplog: pytest.LogCaptureFixture
+) -> None:
+    """선택 필드 컬럼이 DB 에 없어도 last_seen_at/is_online 은 갱신된다.
+
+    2026-09-17~28: 펌웨어가 보낸 `img` 를 cameras.image_state 에 쓰는데 그 컬럼 마이그레이션이
+    누락돼 heartbeat UPDATE 가 통째로 실패 → 녹화 중인 카메라가 전부 오프라인으로 보였다
+    (9/21 hw_id 와 같은 구조). 선택 필드가 실패하면 필수 필드만으로 한 번 더 쓴다.
+    """
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_factory_missing_column(updates, "image_state")
+    clips = {"rec": 3, "skip": 0, "up_fail": 0, "up_busy_s": -1}
+
+    with caplog.at_level(logging.ERROR):
+        handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "clips": clips, "img": {"exp": 120}})
+
+    assert len(updates) == 2
+    assert "image_state" in updates[0]                   # 1차: 한 문장으로 시도
+    assert set(updates[1]) == {"last_seen_at", "is_online"}  # 2차: 필수 필드만
+    assert updates[1]["is_online"] is True
+    assert "image_state" in caplog.text                  # 어떤 필드가 문제였는지 로그에 남는다
+
+
+def test_camera_heartbeat_writes_once_when_columns_exist(fake_sb: MagicMock, published: list) -> None:
+    """정상 경로는 UPDATE 1회 — 재시도 로직이 DB 쓰기·Realtime 이벤트를 늘리지 않는다."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_state_table_factory(updates)
+
+    handlers.handle_telemetry(
+        CAMERA_TEXT, {"ts": 1, "clips": {"rec": 1}, "img": {"exp": 120}}
+    )
+
+    assert len(updates) == 1
+
+
 def test_device_hw_id_conflict_does_not_break_heartbeat(
     fake_sb: MagicMock, caplog: pytest.LogCaptureFixture
 ) -> None:
