@@ -231,6 +231,9 @@ def reset_device_cache() -> None:
     _hw_id_conflict.clear()
     _missing_columns.clear()
     _device_caps_cache.clear()
+    _uptime_prev.clear()
+    from backend import schedule_restore  # 지연 import (schedule_restore → command_service, handlers 미참조)
+    schedule_restore.reset()
 
 
 # ---------- 카메라 설정 상태 캐시 (rotate_180 / capabilities) ----------
@@ -754,6 +757,15 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
         dev_update["sys_state"] = sys_state
     # 선택 필드(sys_state) 실패가 온라인 표시를 막지 않게 — 카메라와 같은 정책(_write_heartbeat).
     _write_heartbeat(sb, "devices", device_id_text, device_uuid, dev_update)
+
+    # 재부팅 후 예약 상태 복원(2026-09-28, 앱 회신 §2): 부팅 직후 첫 telemetry 에서 조명·팬 예약의
+    # "지금 켜져 있어야 할" 상태를 ON 명령으로 1회 큐잉. 실패해도 telemetry 처리는 계속.
+    if sys_state:
+        try:
+            from backend import schedule_restore
+            schedule_restore.maybe_restore(sb, device_uuid, device_id_text, sys_state["uptime_s"])
+        except Exception:  # noqa: BLE001
+            logger.exception("예약 상태 복원 실패 (device=%s)", device_id_text)
 
     # 하드웨어 ID(2026-09-21): 구 펌웨어로 등록돼 NULL 인 행을 채운다. heartbeat 와 분리한
     # 이유는 _backfill_hw_id 참고. 프로세스당 1회만 시도(3초 주기라 매 건 쓰면 낭비).

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from backend.scheduling import KST, compute_next_run, parse_time_of_day
+from backend.scheduling import KST, compute_next_run, compute_prev_run, parse_time_of_day
 
 
 def _utc(y, mo, d, h, mi) -> datetime:
@@ -96,3 +96,38 @@ def test_invalid_kind() -> None:
     now = _utc(2026, 8, 10, 0, 0)
     with pytest.raises(ValueError):
         compute_next_run(now, "monthly", parse_time_of_day("08:00"))
+
+
+# ---------- compute_prev_run (재부팅 후 예약 복원용, next_run 의 거울) ----------
+
+def _kst(y, mo, d, h, mi=0) -> datetime:
+    return datetime(y, mo, d, h, mi, tzinfo=KST)
+
+
+def test_prev_run_daily_today_if_passed() -> None:
+    now = _kst(2026, 9, 28, 14, 0)
+    prev = compute_prev_run(now, "daily", parse_time_of_day("08:00"))
+    assert prev == _kst(2026, 9, 28, 8, 0).astimezone(timezone.utc)
+
+
+def test_prev_run_daily_yesterday_if_not_yet() -> None:
+    now = _kst(2026, 9, 28, 7, 59)
+    prev = compute_prev_run(now, "daily", parse_time_of_day("08:00"))
+    assert prev == _kst(2026, 9, 27, 8, 0).astimezone(timezone.utc)
+
+
+def test_prev_run_exact_now_is_included() -> None:
+    now = _kst(2026, 9, 28, 8, 0)
+    assert compute_prev_run(now, "daily", parse_time_of_day("08:00")) == now.astimezone(timezone.utc)
+
+
+def test_prev_run_weekly_goes_back_to_matching_day() -> None:
+    """2026-09-28(월) 14:00, 예약 금(5) 08:00 → 9/25(금)."""
+    now = _kst(2026, 9, 28, 14, 0)
+    prev = compute_prev_run(now, "weekly", parse_time_of_day("08:00"), [5])
+    assert prev == _kst(2026, 9, 25, 8, 0).astimezone(timezone.utc)
+
+
+def test_prev_run_weekly_requires_days() -> None:
+    with pytest.raises(ValueError):
+        compute_prev_run(_kst(2026, 9, 28, 14), "weekly", parse_time_of_day("08:00"), None)

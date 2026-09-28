@@ -1164,6 +1164,25 @@ def test_device_rejected_sys_state_falls_back_to_liveness(fake_sb: MagicMock) ->
     assert set(updates[1]) == {"last_seen_at", "is_online"}
 
 
+def test_device_telemetry_reboot_triggers_schedule_restore(
+    fake_sb: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """uptime 이 줄어든 첫 telemetry 에서 schedule_restore 가 1회 호출된다 (같은 부팅 후속은 X)."""
+    from backend import schedule_restore
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(schedule_restore, "restore_after_reboot",
+                        lambda sb, uuid, label, now_utc=None: calls.append((uuid, label)) or [])
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _device_table_factory(updates, db_caps=None)
+
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 1, "uptime_sec": 7200})
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 2, "uptime_sec": 4, "reset": "SW:mqtt_reboot"})
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 3, "uptime_sec": 7})
+
+    assert calls == [(DEVICE_UUID, DEVICE_TEXT)]
+    assert len([u for u in updates if "last_seen_at" in u]) == 3   # 복원과 무관하게 heartbeat 는 계속
+
+
 def test_device_telemetry_old_firmware_no_sys_state(fake_sb: MagicMock) -> None:
     updates: list[dict] = []
     fake_sb.table.side_effect = _device_table_factory(updates, db_caps=None)

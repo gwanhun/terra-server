@@ -419,6 +419,11 @@ POST /devices/{device_uuid}/reboot        (본문 없음)
   액추에이터는 부팅 초기 블록이 전부 OFF 로 잡으므로 분무 중이어도 안전. 구 펌웨어: `unknown_action`.
 - 완료 판정: `commands` Realtime 으로 `acked` 확인 후, `devices` Realtime 의 `sys_state.uptime_s` 감소 +
   `sys_state.reset == "SW:mqtt_reboot"`.
+- **재부팅 후 예약 상태 복원**: 브리지가 `sys_state.uptime_s` 감소로 재부팅을 감지하면 조명·팬·냉각팬 예약의
+  "지금 켜져 있어야 할" ON 명령을 1회 큐잉한다(`commands.source="restore"`, `reason="reboot_restore"`,
+  `source_id=schedules.id`). mist·펌프·toggle·`duration_ms` one-shot 은 제외, `skip_when_*` 가드는 복원에도 적용.
+  원격 reboot 뿐 아니라 브라운아웃·크래시 재부팅에도 동작. 상세: [APP_DEVICE_REBOOT_SYS_STATE_2026-09-28.md §2.4](APP_DEVICE_REBOOT_SYS_STATE_2026-09-28.md).
+- 구 펌웨어의 `reboot` ack 는 `status=acked` + `result=unknown_action` 이다. 성공 판정은 `result == "ok"` 로.
 - `DeviceOut.sys_state` (object | null, 2026-09-28+ 펌웨어): 3초 telemetry 마다 갱신.
   `{ "uptime_s": 300, "reset": "POWERON"|"BROWNOUT"|"SW:mqtt_reboot"|…, "heap": <bytes>, "rssi": <dBm> }`.
   `rssi` ≤ -75 는 WiFi 약함, `reset` 이 `BROWNOUT`/`PANIC`/`*_WDT` 면 전원·펌웨어 이상. 구 펌웨어는 null.

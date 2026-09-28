@@ -69,9 +69,39 @@ def compute_next_run(
     raise RuntimeError("next_run 계산 실패 — 로직 점검 필요")
 
 
+def compute_prev_run(
+    now_utc: datetime,
+    kind: str,
+    time_of_day: time,
+    days_of_week: list[int] | None = None,
+) -> datetime:
+    """now_utc **이하** 가장 최근 실행 시각을 UTC 로 반환 (compute_next_run 의 거울).
+
+    재부팅 후 예약 상태 복원(schedule_restore)용: "지금 켜져 있어야 하나" 는 각 액추에이터의
+    on/off 예약 중 마지막으로 지나간 것이 무엇인지로 정한다. 정확히 now 인 시각도 포함.
+    """
+    if kind not in VALID_KINDS:
+        raise ValueError(f"지원하지 않는 kind: {kind!r}")
+    if kind == "weekly" and not days_of_week:
+        raise ValueError("weekly 는 days_of_week 가 최소 1개 필요")
+
+    now_kst = now_utc.astimezone(KST)
+    for offset in range(0, 8):
+        cand_date = (now_kst - timedelta(days=offset)).date()
+        cand_kst = datetime.combine(cand_date, time_of_day, tzinfo=KST)
+        if cand_kst > now_kst:
+            continue  # 오늘분이 아직 안 온 경우
+        if kind == "daily":
+            return cand_kst.astimezone(timezone.utc)
+        if cand_kst.isoweekday() in days_of_week:  # type: ignore[operator]
+            return cand_kst.astimezone(timezone.utc)
+    raise RuntimeError("prev_run 계산 실패 — 로직 점검 필요")
+
+
 __all__ = [
     "KST",
     "VALID_KINDS",
     "compute_next_run",
+    "compute_prev_run",
     "parse_time_of_day",
 ]
