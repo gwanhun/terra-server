@@ -107,7 +107,7 @@ def test_mist_5s_10s_and_legacy_values_accepted(app_client: TestClient, fake_sb:
     cmd = MagicMock()
     cmd.insert.return_value.execute.return_value.data = [{"id": "cmd-1"}]
     fake_sb.table.side_effect = lambda name: {"devices": dev, "commands": cmd}[name]
-    for ms in (1000, 2000, 3000, 5000, 7000, 10000):
+    for ms in (1000, 2000, 3000, 5000, 7000, 10000, 20000):
         res = app_client.post(f"/devices/{DEVICE_UUID}/mist", json={"duration_ms": ms})
         assert res.status_code == 201, (ms, res.text)
-    assert cmd.insert.call_args.args[0]["payload"] == {"duration_ms": 10000}   # 요청값 그대로 저장
+    assert cmd.insert.call_args.args[0]["payload"] == {"duration_ms": 20000}   # 요청값 그대로 저장

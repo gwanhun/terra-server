@@ -620,6 +620,24 @@ def test_mist_within_device_max_single_publish(fake_sb: MagicMock, fake_bridge: 
     assert inserts == []
 
 
+def test_mist_20s_new_firmware_single_publish(fake_sb: MagicMock, fake_bridge: MagicMock) -> None:
+    """2026-09-28 펌웨어(상한 30000 보고)에 20초 → 한 번에."""
+    updates: list[dict] = []; inserts: list[dict] = []
+    fake_sb.table.side_effect = _mist_tables(_mist_cmd(20000), updates, inserts, caps={"mist_max_ms": 30000})
+    assert dispatcher.poll_and_dispatch(fake_bridge) == 1
+    assert fake_bridge.publish_command.call_args.args[1]["duration_ms"] == 20000
+    assert inserts == []
+
+
+def test_mist_20s_old_firmware_first_burst_and_15s_remainder(fake_sb: MagicMock, fake_bridge: MagicMock) -> None:
+    """구 펌웨어에 20초 → 5000 발행 + 나머지 15000 후속(후속은 발행 시 다시 5000+10000 으로 분할)."""
+    updates: list[dict] = []; inserts: list[dict] = []
+    fake_sb.table.side_effect = _mist_tables(_mist_cmd(20000), updates, inserts, caps=None)
+    assert dispatcher.poll_and_dispatch(fake_bridge) == 1
+    assert fake_bridge.publish_command.call_args.args[1]["duration_ms"] == 5000
+    assert len(inserts) == 1 and inserts[0]["payload"] == {"duration_ms": 15000}
+
+
 def test_mist_legacy_value_not_split(fake_sb: MagicMock, fake_bridge: MagicMock) -> None:
     updates: list[dict] = []; inserts: list[dict] = []
     fake_sb.table.side_effect = _mist_tables(_mist_cmd(3000), updates, inserts, caps=None)

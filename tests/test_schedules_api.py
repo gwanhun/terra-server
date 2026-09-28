@@ -449,7 +449,7 @@ def test_validate_mist_duration_format_only() -> None:
     from fastapi import HTTPException
     from backend.routers.schedules import _validate_action_payload
 
-    for ms in (1000, 3000, 5000, 7000, 10000):
+    for ms in (1000, 3000, 5000, 7000, 10000, 20000):
         _validate_action_payload("mist", {"duration_ms": ms})          # 기기 상한과 무관하게 통과
     with pytest.raises(HTTPException) as ei:
         _validate_action_payload("mist", {"duration_ms": 9999})        # 화이트리스트 밖

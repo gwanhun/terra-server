@@ -43,7 +43,7 @@ _BAD_CMD = {400: {"description": "duration_ms 허용값 아님"}}
 class MistRequest(BaseModel):
     duration_ms: int = Field(
         ...,
-        description="분무 지속시간 (ms). 앱 칩 5000 | 10000. 호환: 1000 | 2000 | 3000 | 7000. "
+        description="분무 지속시간 (ms). 앱 칩 5000 | 10000 | 20000. 호환: 1000 | 2000 | 3000 | 7000. "
                     "기기 상한(capabilities.mist_max_ms, 미보고=5000)을 넘으면 서버가 나눠 보낸다(10초=5+5).",
         examples=[2000],
     )

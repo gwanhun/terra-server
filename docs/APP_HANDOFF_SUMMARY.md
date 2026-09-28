@@ -13,7 +13,7 @@
 
 | 기능 | 방식 | 계약 |
 |---|---|---|
-| 물분무 | REST 또는 INSERT | `mist` + `{duration_ms:1000\|2000\|3000}` |
+| 물분무 | REST 또는 INSERT | `mist` + `{duration_ms:5000\|10000\|20000}` (호환 1000/2000/3000/7000) — [APP_TIMER_MIST.md §1.4](APP_TIMER_MIST.md) |
 | on/off 제어 | INSERT | `relay_on/off`, `fan_on/off`, `heater_on/off`, `led_on/off` |
 | 팬 타이머 | INSERT | `fan_on` + `{duration_ms}` (자동 OFF, 최대 2h) |
 | LED 밝기 | INSERT | `led_on` + `{brightness:0~100}` (MOSFET 보드) |

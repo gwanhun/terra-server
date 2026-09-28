@@ -776,7 +776,7 @@ function quickCmdButtons(deviceUuid, online) {
 // firmware 가 one-shot 타이머로 자동 OFF (단일 명령 자기완결).
 function mistButtons(deviceUuid, online) {
   const disabled = online ? '' : 'opacity:.5';
-  return [5000, 10000].map(ms =>   // 앱 칩과 동일. 10초는 구 펌웨어(상한 5초)에서 서버가 5초×2 로 분할 발행
+  return [5000, 10000, 20000].map(ms =>   // 앱 칩과 동일. 구 펌웨어(상한 5초)에서는 서버가 5초 단위로 분할 발행
     `<button onclick="mistCommand('${deviceUuid}',${ms})" title="물분무 ${ms / 1000}초" `
     + `style="font-size:11px;padding:2px 5px;background:#0a2a3a;border:1px solid #14506e;color:#8cd;${disabled}">💦${ms / 1000}s</button>`
   ).join(' ');
