@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 from fastapi.testclient import TestClient
 
-from tests.conftest import TEST_USER_ID
+from tests.conftest import OTHER_USER_ID, TEST_USER_ID
 
 DEVICE_UUID = "dev-1"
 
@@ -36,6 +36,36 @@ def test_mist_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
     assert payload["payload"] == {"duration_ms": 2000}
     assert payload["issued_by"] == TEST_USER_ID
     assert payload["status"] == "pending"
+
+
+def test_reboot_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
+    """원격 재부팅(2026-09-28): commands 에 action=reboot, ttl 60 큐잉. payload 없음."""
+    dev = _device_mock()
+    cmd = MagicMock()
+    cmd.insert.return_value.execute.return_value.data = [{"id": "cmd-rb"}]
+    tables = {"devices": dev, "commands": cmd}
+    fake_sb.table.side_effect = lambda name: tables[name]
+
+    res = app_client.post(f"/devices/{DEVICE_UUID}/reboot")
+    assert res.status_code == 201, res.text
+    assert res.json() == {"id": "cmd-rb", "action": "reboot", "status": "pending"}
+
+    payload = cmd.insert.call_args.args[0]
+    assert payload["action"] == "reboot"
+    assert payload["payload"] is None
+    assert payload["ttl_sec"] == 60
+    assert payload["issued_by"] == TEST_USER_ID
+
+
+def test_reboot_foreign_device_404(app_client: TestClient, fake_sb: MagicMock) -> None:
+    dev = _device_mock(owner=OTHER_USER_ID)
+    cmd = MagicMock()
+    tables = {"devices": dev, "commands": cmd}
+    fake_sb.table.side_effect = lambda name: tables[name]
+
+    res = app_client.post(f"/devices/{DEVICE_UUID}/reboot")
+    assert res.status_code == 404, res.text
+    cmd.insert.assert_not_called()
 
 
 def test_mist_invalid_duration_400(app_client: TestClient, fake_sb: MagicMock) -> None:

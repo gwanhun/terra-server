@@ -35,6 +35,7 @@ FULL_DEVICE_PAYLOAD = {
     "dht22_b": {"ok": True, "t": 28, "h": 55}, "relay": "OFF", "fan": "ON", "fan2": "OFF",
     "heater": {"state": "OFF", "locked": False}, "led": "ON", "led_brightness": 75,
     "hw_id": "30EDA0E22E81", "capabilities": {"board": "mosfet"},
+    "uptime_sec": 300, "free_heap": 190000, "reset": "SW:mqtt_reboot", "wifi_rssi": -40,
 }
 
 

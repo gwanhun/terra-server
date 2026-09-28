@@ -3,6 +3,7 @@
 
 엔드포인트:
 - POST /devices/{device_uuid}/mist   — 물분무 1/2/3초 (JWT)
+- POST /devices/{device_uuid}/reboot — 원격 재부팅 (JWT, 2026-09-28)
 
 ## 왜 REST 엔드포인트? (앱이 commands 직접 INSERT 하는데)
 mist 는 물이 나가는 액추에이터 → 서버측 검증(허용 지속시간)을 강제하고 싶다.
@@ -54,6 +55,13 @@ class CommandOut(BaseModel):
     status: str
 
 
+# 원격 재부팅. 펌웨어(command_dispatch.c `reboot`)는 ack 를 먼저 보내고 1.5초 뒤 재부팅하며,
+# 다음 telemetry 의 reset 이 "SW:mqtt_reboot" 로 보고된다(devices.sys_state.reset).
+# 카메라 reboot 과 달리 commands 테이블을 거치므로 ack/no_ack 가 기록된다.
+REBOOT_ACTION = "reboot"
+REBOOT_TTL_SEC = 60
+
+
 
 
 @router.post(
@@ -92,3 +100,37 @@ def mist(
         raise HTTPException(status_code=500, detail="command INSERT 실패")
 
     return CommandOut(id=inserted["id"], action=MIST_ACTION, status="pending")
+
+
+@router.post(
+    "/{device_uuid}/reboot",
+    response_model=CommandOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="IoT 기기 원격 재부팅 (MQTT reboot 명령)",
+    responses={**_AUTH_REQUIRED, **_NOT_FOUND},
+)
+def reboot(
+    device_uuid: str,
+    user_id: str = Depends(get_current_user_id),
+) -> CommandOut:
+    """본인 기기에 `reboot` 명령 1건을 큐잉한다. 구 펌웨어는 `unknown_action` ack.
+
+    액추에이터는 부팅 초기 블록이 전부 OFF 로 잡으므로 분무 중이어도 안전하다.
+    결과는 commands.status(acked / no_ack) 와 다음 telemetry 의 sys_state.reset 으로 확인.
+    """
+    sb = get_supabase_client()
+    require_active_device(sb, device_uuid, user_id)
+
+    inserted = insert_pending_command(
+        sb,
+        device_uuid=device_uuid,
+        action=REBOOT_ACTION,
+        payload=None,
+        issued_by=user_id,
+        ttl_sec=REBOOT_TTL_SEC,
+    )
+    if inserted is None:
+        raise HTTPException(status_code=500, detail="command INSERT 실패")
+
+    logger.info("reboot 큐잉 device=%s command_id=%s", device_uuid, inserted["id"])
+    return CommandOut(id=inserted["id"], action=REBOOT_ACTION, status="pending")

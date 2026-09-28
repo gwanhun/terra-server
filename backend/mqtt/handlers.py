@@ -471,12 +471,13 @@ def _backfill_hw_id(
     return True
 
 
-def _camera_sys_state(camera_id_text: str, camera_uuid: str, payload: dict[str, Any]) -> dict[str, Any] | None:
-    """heartbeat 의 uptime_sec / reset / free_heap → clip_stats.sys 로 저장할 dict.
+def _sys_state(kind: str, id_text: str, entity_uuid: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    """heartbeat/telemetry 의 uptime_sec / reset / free_heap / wifi_rssi → 저장할 dict.
 
+    카메라는 clip_stats.sys 에, IoT 기기는 devices.sys_state 에 얹는다(2026-09-28 기기도 동일 필드).
     uptime 이 직전보다 줄면 재부팅으로 보고 경고 로그(사유 = 펌웨어가 보고한 `reset`:
     SW:<why> 는 펌웨어 자체 워치독/명령, PANIC·INT_WDT·TASK_WDT 는 크래시, BROWNOUT 은 전원).
-    "카메라가 자꾸 끊긴다" 를 시리얼 없이 콘솔/저널에서 진단하기 위한 것(2026-09-17).
+    "자꾸 끊긴다" 를 시리얼 없이 콘솔/저널에서 진단하기 위한 것(2026-09-17).
     """
     uptime = payload.get("uptime_sec")
     if not isinstance(uptime, (int, float)):
@@ -492,11 +493,11 @@ def _camera_sys_state(camera_id_text: str, camera_uuid: str, payload: dict[str, 
     rssi = payload.get("wifi_rssi")          # 2026-09-28 펌웨어부터(dBm). 약한 WiFi 설치 판별
     if isinstance(rssi, (int, float)):
         sys_state["rssi"] = int(rssi)
-    prev = _uptime_prev.get(camera_uuid)
-    _uptime_prev[camera_uuid] = uptime
+    prev = _uptime_prev.get(entity_uuid)
+    _uptime_prev[entity_uuid] = uptime
     if prev is not None and uptime < prev:
-        logger.warning("camera %s: 재부팅 감지 reset=%s (이전 uptime %ss → %ss)",
-                       camera_id_text, reset, prev, uptime)
+        logger.warning("%s %s: 재부팅 감지 reset=%s (이전 uptime %ss → %ss)",
+                       kind, id_text, reset, prev, uptime)
     return sys_state
 
 
@@ -668,7 +669,7 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
         # 클립 파이프라인 카운터(2026-09-16): 매 heartbeat 저장. 스킵/업로드 실패가 늘거나
         # 업로드가 오래 진행 중이면 경고 로그 — "heartbeat 는 정상인데 녹화가 멈춘" 상태 감시.
         clips = payload.get("clips")
-        sys_state = _camera_sys_state(device_id_text, entity_uuid, payload)
+        sys_state = _sys_state("camera", device_id_text, entity_uuid, payload)
         if isinstance(clips, dict):
             # sys(uptime/reset/heap) 는 별도 컬럼 없이 clip_stats 에 얹는다(마이그레이션 불필요).
             update["clip_stats"] = {**clips, "sys": sys_state} if sys_state else clips
@@ -745,6 +746,11 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
 
     # last_seen_at/is_online 갱신. 실패해도 telemetry 저장은 성공이라 별도 try.
     dev_update: dict[str, Any] = {"last_seen_at": _now_iso(), "is_online": True}
+    # 시스템 진단(2026-09-28): uptime/reset/heap/rssi 최신값을 devices.sys_state 에. 카메라의
+    # clip_stats.sys 와 같은 형식이라 콘솔이 같은 셀 렌더를 쓴다. 구 펌웨어(키 없음)는 건드리지 않음.
+    sys_state = _sys_state("device", device_id_text, device_uuid, payload)
+    if sys_state:
+        dev_update["sys_state"] = sys_state
     try:
         sb.table("devices").update(dev_update).eq("id", device_uuid).execute()
     except Exception:  # noqa: BLE001

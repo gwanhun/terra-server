@@ -42,6 +42,7 @@ Content-Type: application/json
 | `PATCH` | `/devices/{id}` | JWT | 디바이스 이름/종 수정 |
 | `POST` | `/devices/{id}/unlink` | JWT | **디바이스 등록 해제 (소프트, 기록 보존)** — 앱의 "삭제" 는 이것 |
 | `DELETE` | `/devices/{id}` | JWT | 디바이스 hard delete (운영·탈퇴용, 앱 미사용) |
+| `POST` | `/devices/{id}/reboot` | JWT | **IoT 기기 원격 재부팅** (`commands` 에 `reboot` 큐잉, 2026-09-28) |
 | `POST` | `/enclosures` | JWT | 사육장 생성 |
 | `GET` | `/enclosures` | JWT | 본인 사육장 목록 |
 | `GET` | `/enclosures/{id}` | JWT | 사육장 단건 |
@@ -316,6 +317,7 @@ AND issued_by = auth.uid()
 | `led_up` | — | LED PWM duty + |
 | `led_down` | — | LED PWM duty - |
 | `token_rotate` | `new_token` (string) | NVS 의 mqtt_token 갱신 + MQTT 재연결 |
+| `reboot` | — | 원격 재부팅 (2026-09-28+ 펌웨어). ack `state="REBOOT"` 후 1.5초 뒤 재부팅. 앱은 아래 3.7-b REST 사용 권장 |
 
 > ⚠ 카메라 워커 명령 (snapshot/webrtc 류) 은 별도 — [docs/MQTT.md §2](MQTT.md) 참조 (Stage G).
 
@@ -401,6 +403,25 @@ WHERE device_id = '<uuid>' AND status IN ('pending', 'sent');
 ```
 
 ---
+
+### 3.7-b `POST /devices/{id}/reboot` — IoT 기기 원격 재부팅 (2026-09-28)
+
+telemetry 는 오는데 명령에 반응이 없거나, WiFi 가 자주 끊기는 기기를 전원 재투입 없이 살리는 용도.
+카메라 4.8 과 달리 `commands` 테이블을 거치므로 결과(acked / no_ack)가 기록된다.
+
+```
+POST /devices/{device_uuid}/reboot        (본문 없음)
+→ 201 { "id": "<commands.id>", "action": "reboot", "status": "pending" }
+→ 404 { "detail": "..." }                 타인 기기 / unlinked
+```
+
+- 발행은 dispatcher 가 담당 (`ttl_sec` 60). 신 펌웨어: ack `state="REBOOT"` 를 먼저 보내고 1.5초 뒤 재부팅.
+  액추에이터는 부팅 초기 블록이 전부 OFF 로 잡으므로 분무 중이어도 안전. 구 펌웨어: `unknown_action`.
+- 완료 판정: `commands` Realtime 으로 `acked` 확인 후, `devices` Realtime 의 `sys_state.uptime_s` 감소 +
+  `sys_state.reset == "SW:mqtt_reboot"`.
+- `DeviceOut.sys_state` (object | null, 2026-09-28+ 펌웨어): 3초 telemetry 마다 갱신.
+  `{ "uptime_s": 300, "reset": "POWERON"|"BROWNOUT"|"SW:mqtt_reboot"|…, "heap": <bytes>, "rssi": <dBm> }`.
+  `rssi` ≤ -75 는 WiFi 약함, `reset` 이 `BROWNOUT`/`PANIC`/`*_WDT` 면 전원·펌웨어 이상. 구 펌웨어는 null.
 
 ### 3.8 텔레메트리 실시간 수신 (IoT 센서값)
 

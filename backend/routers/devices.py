@@ -112,6 +112,9 @@ class DeviceOut(BaseModel):
     species: str | None
     firmware_ver: str | None
     capabilities: dict[str, Any] | None = None
+    sys_state: dict[str, Any] | None = Field(
+        None, description="펌웨어 진단 최신값 {uptime_s, reset, heap, rssi} (2026-09-28+ 펌웨어). NULL=미보고"
+    )
     created_at: str
     last_seen_at: str | None
     is_online: bool
@@ -271,7 +274,7 @@ def list_devices(
         sb.table("devices")
         .select(
             "id, device_id, enclosure_id, name, species, firmware_ver, "
-            "capabilities, created_at, last_seen_at, is_online"
+            "capabilities, sys_state, created_at, last_seen_at, is_online"
         )
         .eq("owner_id", user_id)
         .is_("unlinked_at", "null")            # 소프트 해제된 기기는 제외 (앱 §1-3)
@@ -297,7 +300,7 @@ def get_device(
         sb.table("devices")
         .select(
             "id, device_id, enclosure_id, name, species, firmware_ver, "
-            "capabilities, created_at, last_seen_at, is_online, owner_id, unlinked_at"
+            "capabilities, sys_state, created_at, last_seen_at, is_online, owner_id, unlinked_at"
         )
         .eq("id", device_uuid)
         .single()

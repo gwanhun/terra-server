@@ -55,7 +55,11 @@
   "led":    "ON",
   "led_brightness": 75,
   "hw_id": "A0B7651C2908",
-  "capabilities": { "board": "mosfet", "led_dimmable": true, "mist_max_ms": 10000 }
+  "capabilities": { "board": "mosfet", "led_dimmable": true, "mist_max_ms": 10000 },
+  "uptime_sec": 300,
+  "free_heap": 190000,
+  "reset": "SW:mqtt_reboot",
+  "wifi_rssi": -40
 }
 ```
 
@@ -71,6 +75,11 @@
   채워진다. 디바이스 telemetry 는 3초 주기라 프로세스당 1회만 UPDATE 한다. 용도는 **이미 생겨버린
   중복 기기 행을 실물 보드와 대조해 정리**하는 것이고, 중복 생성 자체를 막는 것은
   `POST /devices/pair` 쪽이다(API.md 3.2 참고).
+- `uptime_sec` / `free_heap` / `reset` / `wifi_rssi` (2026-09-28+): 카메라 heartbeat 와 같은 시스템 진단.
+  서버는 최신값을 `devices.sys_state{uptime_s,reset,heap,rssi}` 에 저장(telemetry 행에는 안 넣음),
+  uptime 이 직전보다 줄면 "재부팅 감지 reset=…" 경고 로그. `reset` 은 `POWERON`/`BROWNOUT`/`PANIC`/
+  `TASK_WDT` 등 `esp_reset_reason()` 이름 또는 펌웨어 자체 재부팅 `SW:<why>` (`SW:mqtt_reboot` = 원격 재부팅).
+  `wifi_rssi` 는 미연결/조회 실패 시 키 없음. 콘솔 기기 행 `sys` 셀에 `up · reset · heap · rssi` 표시.
 
 카메라 워커 telemetry (15초 주기, heartbeat 성격 — 서버는 `telemetry` 행을 INSERT 하지 않음):
 
@@ -137,6 +146,9 @@
   - `set_temp_offset` (`offset_c`: -10.0~10.0) — 온도 보정 오프셋. 기기가 NVS(`terra/t_off`)에 저장하고
     센서 읽기 직후 적용해 **LCD·telemetry·HTTP 가 모두 같은 보정값**을 쓴다. ack `state="CALIB"`,
     범위 밖/숫자 아님은 `result="bad_request"`. 구 펌웨어는 `unknown_action`.
+  - `reboot` (2026-09-28+) — 원격 재부팅. `POST /devices/{id}/reboot` 가 `ttl_sec` 60 으로 큐잉.
+    펌웨어는 ack `state="REBOOT"` 를 먼저 보내고 1.5초 뒤 재부팅(액추에이터는 부팅 초기 블록이 전부 OFF).
+    다음 telemetry 의 `reset` 이 `SW:mqtt_reboot`. 구 펌웨어는 `unknown_action`.
   - `token_rotate` (추가 필드: `new_token`)
 
 > **`duration_ms` 를 실제로 처리하는 action 은 `mist` / `fan_on` / `fan2_on` 셋뿐이다**
@@ -271,3 +283,4 @@ topic read  esp32/picam-b2c3d4e5/command
 | 2026-09-16 | 0.5.3 | `heater_*` 서버 거절(400 / `unsupported_action`), 소프트 해제된 기기의 메시지는 브리지가 미페어링 취급 |
 | 2026-09-23 | 0.5.4 | `mist` duration 5000/10000 (호환 7000) + 기기 상한 초과 시 **분할 발행**(`source=timer` 후속, 미래 `issued_at` 예약 발행), 기기 telemetry `capabilities` 수신 |
 | 2026-09-20 | 0.5.4 | IoT `set_temp_offset` action 추가 (온도 보정, NVS 영속, LCD/telemetry 공통 적용) |
+| 2026-09-28 | 0.6.1 | IoT telemetry `uptime_sec`/`free_heap`/`reset`/`wifi_rssi` → `devices.sys_state`, IoT `reboot` action + `POST /devices/{id}/reboot` (카메라와 동일 진단·원격 재부팅) |

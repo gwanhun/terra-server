@@ -191,7 +191,7 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
     </div>
     <div id="dev-token" class="hidden"></div>
     <table id="dev-table">
-      <thead><tr><th>device_id</th><th>이름</th><th>사육장</th><th>online</th><th>온도</th><th>습도</th><th>LED</th><th>last_seen</th><th></th></tr></thead>
+      <thead><tr><th>device_id</th><th>이름</th><th>사육장</th><th>online</th><th>온도</th><th>습도</th><th>LED</th><th>sys</th><th>last_seen</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -855,12 +855,14 @@ async function loadDevices() {
       <td data-dev-temp="${r.id}">${formatDeviceTemp(r.id)}</td>
       <td data-dev-humid="${r.id}">${formatDeviceHumid(r.id)}</td>
       <td data-dev-led="${r.id}">${formatDeviceLed(r.id)}</td>
+      <td data-dev-sys="${r.id}">${sysCellHtml(r.sys_state)}</td>
       <td><small>${esc(r.last_seen_at?.slice(0,16) || '-')}</small></td>
       <td style="white-space:nowrap">
         ${quickCmdButtons(r.id, r.is_online)}
         &nbsp;${mistButtons(r.id, r.is_online)}
         &nbsp;${ledSlider(r)}
         &nbsp;<button onclick="openTrend('${r.id}')" title="온도 추이 — 30분 집계(telemetry_30m), 최근 30일까지" style="font-size:11px;padding:2px 8px;margin-left:8px">📈추이</button>
+        <button onclick="rebootDevice('${r.id}','${esc(r.device_id)}')" title="MQTT reboot 명령 1회 큐잉 — 2026-09-28+ 펌웨어만 반응, 구 펌웨어는 unknown_action" style="font-size:11px;padding:2px 8px;margin-left:4px">재부팅</button>
         <button onclick="unlinkDevice('devices','${r.id}')" title="소프트 해제 — 기록 보존, 앱의 '삭제'와 동일" style="font-size:11px;padding:2px 8px;margin-left:4px">해제</button>
         <button class="danger" onclick="deleteDevice('${r.id}')" title="hard delete — 기록까지 삭제(운영용)" style="font-size:11px;padding:2px 8px;margin-left:4px">삭제</button>
       </td>`;
@@ -895,6 +897,21 @@ function updateDeviceTempCell(deviceUuid) {
 
 // commands 테이블에 직접 INSERT (Supabase JS) — RLS 가 본인 디바이스만 허용.
 // terra-bridge 가 polling 으로 감지해서 MQTT publish.
+// 기기 시스템 진단 셀 (devices.sys_state) — 카메라 clip_stats.sys 와 같은 형식이라 렌더 공유.
+function sysCellHtml(sy) {
+  if (!sy) return '<small class="muted" title="구 펌웨어(2026-09-28 이전) 또는 아직 telemetry 없음">—</small>';
+  return `<small>${sysStateText(sy)}</small>`;
+}
+
+// 원격 재부팅 — POST /devices/{id}/reboot (commands 큐잉). 결과는 commands.status(acked/no_ack) 와
+// 다음 telemetry 의 sys_state.reset = "SW:mqtt_reboot" 로 확인.
+async function rebootDevice(id, label) {
+  if (!confirm(`${label} 재부팅?\n약 10초간 꺼졌다 켜짐 (액추에이터 전부 OFF). 구 펌웨어는 unknown_action.`)) return;
+  const r = await api('/devices/' + id + '/reboot', { method: 'POST' });
+  log({ reboot: r });
+  toast(r && r.id ? `reboot 큐잉 · command ${r.id}` : 'reboot 큐잉 실패', r && r.id ? 'good' : 'bad');
+}
+
 async function quickCommand(deviceUuid, action, needConfirm) {
   if (needConfirm && !confirm(`'${action}' 명령 발행할까?`)) return;
 
@@ -1697,6 +1714,7 @@ let DEVICES = [];   // /devices 응답 캐시 (예약 패널 드롭다운)
 let _telChannel = null;
 let _alertChannel = null;
 let _camChannel = null;
+let _devChannel = null;
 let CAM_LAST = {};   // cameras 행 캐시 (id → row). Realtime UPDATE 변경 감지용
 
 function subscribeRealtime() {
@@ -1755,6 +1773,18 @@ function subscribeRealtime() {
         })
     .subscribe();
 
+  // devices UPDATE: 브리지가 3초마다 last_seen/sys_state(uptime·reset·heap·rssi) 를 갱신 → sys 셀만 교체.
+  _devChannel = sb
+    .channel('rt-devices')
+    .on('postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'devices' },
+        (payload) => {
+          const n = payload.new;
+          const cell = document.querySelector(`[data-dev-sys="${n.id}"]`);
+          if (cell) cell.innerHTML = sysCellHtml(n.sys_state);
+        })
+    .subscribe();
+
   // critical 알림용 브라우저 권한 요청 (1회)
   if ('Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission();
@@ -1765,6 +1795,7 @@ function unsubscribeRealtime() {
   if (_telChannel) { sb.removeChannel(_telChannel); _telChannel = null; }
   if (_alertChannel) { sb.removeChannel(_alertChannel); _alertChannel = null; }
   if (_camChannel) { sb.removeChannel(_camChannel); _camChannel = null; }
+  if (_devChannel) { sb.removeChannel(_devChannel); _devChannel = null; }
 }
 
 // 페이지 진입 시 1회 — 디바이스별 최신 telemetry 1건씩 가져와 캐시 채움
@@ -1907,6 +1938,14 @@ function rotateCellHtml(r) {
     <small class="muted">${caps ? 'caps✓' : 'caps—'}</small></label>`;
 }
 
+// {uptime_s, reset, heap, rssi} → "up 5m · reset POWERON · heap 190K · rssi -40" (카메라·기기 공용)
+function sysStateText(sy) {
+  const up = sy.uptime_s >= 0 ? (sy.uptime_s < 3600 ? Math.round(sy.uptime_s/60)+'m' : (sy.uptime_s/3600).toFixed(1)+'h') : '?';
+  const resetBad = sy.reset && !/^(POWERON|SW:(rotate|ble_reprov|http_restart|mqtt_reboot))$/.test(sy.reset);
+  const rssiTxt = typeof sy.rssi === 'number' ? ` · <span class="${sy.rssi <= -75 ? 'bad' : ''}" title="WiFi RSSI(dBm), -75 이하 = 약함">rssi ${sy.rssi}</span>` : '';
+  return `<span class="${resetBad ? 'bad' : 'muted'}" title="마지막 재부팅 사유 · 가동시간 · 남은 힙">up ${up} · reset ${esc(sy.reset || '?')}${sy.heap ? ' · heap ' + Math.round(sy.heap/1024) + 'K' : ''}${rssiTxt}</span>`;
+}
+
 function clipCellHtml(r) {
   const c = r.clip_stats;
   if (!c) return '<small class="muted">—</small>';
@@ -1914,10 +1953,7 @@ function clipCellHtml(r) {
   const age = c.last_rec_s >= 0 ? (c.last_rec_s < 3600 ? Math.round(c.last_rec_s/60)+'m' : Math.round(c.last_rec_s/3600)+'h') : '없음';
   const stuck = (c.up_busy_s ?? -1) >= 300 ? ` <span class="bad">up ${Math.round(c.up_busy_s/60)}m!</span>` : '';
   const sy = c.sys;
-  const up = sy && sy.uptime_s >= 0 ? (sy.uptime_s < 3600 ? Math.round(sy.uptime_s/60)+'m' : (sy.uptime_s/3600).toFixed(1)+'h') : null;
-  const resetBad = sy && sy.reset && !/^(POWERON|SW:(rotate|ble_reprov|http_restart|mqtt_reboot))$/.test(sy.reset);
-  const rssiTxt = sy && typeof sy.rssi === 'number' ? ` · <span class="${sy.rssi <= -75 ? 'bad' : ''}" title="WiFi RSSI(dBm), -75 이하 = 약함">rssi ${sy.rssi}</span>` : '';
-  const syTxt = sy ? `<br><span class="${resetBad ? 'bad' : 'muted'}" title="마지막 재부팅 사유 · 가동시간 · 남은 힙">up ${up} · reset ${esc(sy.reset || '?')}${sy.heap ? ' · heap ' + Math.round(sy.heap/1024) + 'K' : ''}${rssiTxt}</span>` : '';
+  const syTxt = sy ? `<br>${sysStateText(sy)}` : '';
   const le = c.last_err;
   const leTxt = le ? `<br><span class="bad" title="마지막 업로드 실패: stage 1=upload-url 2=R2 PUT 3=meta · esp_err · HTTP 상태(0=전송 실패) · 경과초">last_err stage${le.stage} err${le.err} http${le.http} ${Math.round((le.age_s||0)/60)}m ago</span>` : '';
   const im = r.image_state;

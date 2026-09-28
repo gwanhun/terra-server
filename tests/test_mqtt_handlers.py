@@ -1082,6 +1082,42 @@ def test_device_telemetry_capabilities_same_as_db_not_written(fake_sb: MagicMock
     assert not [u for u in updates if "capabilities" in u]
 
 
+def test_device_telemetry_saves_sys_state(fake_sb: MagicMock, caplog: pytest.LogCaptureFixture) -> None:
+    """2026-09-28 펌웨어의 uptime/heap/reset/rssi 는 devices.sys_state 로(telemetry 행 X),
+    uptime 이 줄면 재부팅 감지 경고. 카메라 clip_stats.sys 와 같은 키."""
+    updates: list[dict] = []
+    inserts: list[dict] = []
+    base = _device_table_factory(updates, db_caps=None)
+
+    def _table(name: str) -> MagicMock:
+        t = base(name)
+        if name == "telemetry":
+            t.insert.side_effect = lambda p: inserts.append(p) or t.insert.return_value
+        return t
+    fake_sb.table.side_effect = _table
+
+    handlers.handle_telemetry(DEVICE_TEXT, {
+        "ts": 1, "uptime_sec": 300, "free_heap": 190000, "reset": "POWERON", "wifi_rssi": -40})
+    with caplog.at_level(logging.WARNING, logger="backend.mqtt.handlers"):
+        handlers.handle_telemetry(DEVICE_TEXT, {"ts": 2, "uptime_sec": 5, "reset": "SW:mqtt_reboot"})
+
+    sys_writes = [u["sys_state"] for u in updates if "sys_state" in u]
+    assert sys_writes == [
+        {"uptime_s": 300, "reset": "POWERON", "heap": 190000, "rssi": -40},
+        {"uptime_s": 5, "reset": "SW:mqtt_reboot"},
+    ]
+    assert any("재부팅 감지" in r.getMessage() and "SW:mqtt_reboot" in r.getMessage() for r in caplog.records)
+    assert len(inserts) == 2
+    assert all("sys_state" not in row and "uptime_sec" not in row for row in inserts)
+
+
+def test_device_telemetry_old_firmware_no_sys_state(fake_sb: MagicMock) -> None:
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _device_table_factory(updates, db_caps=None)
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 1})
+    assert not [u for u in updates if "sys_state" in u]
+
+
 def test_device_telemetry_without_capabilities_untouched(fake_sb: MagicMock) -> None:
     """구 펌웨어(키 없음)는 capabilities 를 건드리지 않는다 — 콘솔 기본값이 유지된다."""
     updates: list[dict] = []
