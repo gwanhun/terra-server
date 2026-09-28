@@ -13,7 +13,7 @@
 | 1~3 | 앱 결정(버튼 · rssi · last_err 미사용) | ✅ 확인. rssi 경계 **−75 이하 = 약함** 으로 문서 통일 |
 | 4·5 | PR #4 · #5 | ✅ **main 머지 완료** (`dcff402`), 320 passed. 순서는 §1 참고 |
 | 6 | 카메라 ack 로그 | ✅ 구현 — `camera ack camera=… msg_id=… result=… action=…` info 1줄 (§2) |
-| 7 | 운영 인증 smoke | 🟡 웹 콘솔에 **재부팅 버튼** 추가. 배포 후 1회 실행·로그 확인해 공유 (§3) |
+| 7 | 운영 인증 smoke | ✅ **완료** — 신 펌웨어 1대(p4cam-0d1b47b4)로 E2E: 발행 → 카메라 ack ok → 재부팅 → 12초 후 MQTT 복귀 → `firmware_ver`/`rssi`/`reset` 서버 반영 (§3.1) |
 | 8 | 문서 정정 4건 | ✅ 반영 (§4). API.md §4.8·4.9 이번 커밋에 포함 |
 | 9 | 펌웨어 확인 질문 4개 | ✅ 전부 "예" — 근거 §6 |
 
@@ -46,7 +46,19 @@ camera ack camera=p4cam-xxxx msg_id=8f1c… result=ok action=None               
 2. 토스트에 `reboot 발행 · msg_id …` (= `published: true`).
 3. 서버에서 `journalctl -u terra-api -u terra-bridge --since "5 min ago" | grep <msg_id>` → 발행 1줄 + `result=rejected_unknown_action` ack 1줄.
 
-결과는 이 문서 §7 에 추가해 공유하겠습니다.
+### 3.1 결과 (9/28 13:50 KST)
+
+구 펌웨어가 아니라 **오늘 빌드를 올린 카메라 1대(p4cam-0d1b47b4)** 로 했습니다. 시리얼·서버 양쪽 확인:
+
+```
+카메라: command: action=reboot msg_id=e9773269-…  →  ack: … result=ok  →  1.5초 후 재부팅: mqtt_reboot
+        재부팅 → got ip(+7.0s) → MQTT connected(+10.5s)            ≈ 12초
+서버:   cameras.firmware_ver = "fb2-p4 0.2.0-20260928"  (heartbeat fw 로 갱신됨)
+        clip_stats.sys = {reset: "SW:mqtt_reboot", uptime_s: 52, rssi: -36, heap: …}
+```
+
+- 앱 문서 §2.2 의 "20~40초 추정" 을 **실측 12초(MQTT), 첫 하트비트까지 ≤27초** 로 정정했습니다.
+- 앱 테스트는 이 카메라로 바로 가능합니다(온라인, 신 펌웨어). 구 펌웨어 `rejected_unknown_action` 경로는 다른 카메라로 눌러보면 됩니다.
 
 ## 4. 문서 정정 (3-3)
 
