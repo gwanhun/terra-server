@@ -35,7 +35,7 @@ Supabase 에 적용한 마이그레이션 기록(SOT). `migrations/*.sql` 을 SQ
 | ✅ | `2026-09-21_devices_hw_id.sql` | 2026-09-21 | `devices.hw_id` 동일 적용. **코드만 먼저 배포되어 20:44~20:46 페어링이 PostgREST 400 → `PAIR_FAIL 500` 으로 실패했었음** (컬럼 없는 상태에서 조회·INSERT) |
 | ✅ | `20260922_redesign_conflict_errcode.sql` (**앱 레포**) | 2026-09-22 | **이 레포에 파일 없음.** 앱팀이 운영 DB 에 직접 적용 — `redesign_save_group_v1`·`redesign_remove_group_member_v1`·`redesign_save_pet_v1`·`redesign_delete_pet_v1` 의 '구성 변경' 오류를 `40001` → `PT409`. 40001 은 PostgREST 가 무한 재시도해 24시간 520만 건·연결 4개 점유를 유발했음. 권위 있는 SQL = `tera-ai-flutter@main supabase/migrations/20260922_redesign_conflict_errcode.sql`. 이 레포 사본 `_02_`·`_04_` 는 **2026-09-23 동기화 완료**(7곳 `40001`→`PT409` 치환, 원문 수령 후) — 재적용해도 운영과 일치 |
 | ✅ | `2026-09-22_webrtc_connect_logs.sql` | 2026-09-23 | `webrtc_connect_logs` (라이브 연결 시도 1건당 1행, 앱 직접 INSERT·service_role 조회). 앱 핸드오프 2026-09-22 요청 1. 보존 cron `cleanup-webrtc-connect-logs-90d` **jobid=10** 등록 확인 |
-| ⬜ | `2026-09-28_devices_sys_state.sql` | (미적용) | `devices.sys_state` JSONB — IoT 펌웨어 2026-09-28+ 의 uptime/reset/heap/rssi 최신값. **코드 배포 전에 적용할 것** (없으면 devices UPDATE 가 400 → last_seen 갱신까지 실패) |
+| ✅ | `2026-09-28_devices_sys_state.sql` | 2026-09-28 | `devices.sys_state` JSONB — IoT 펌웨어 2026-09-28+ 의 uptime/reset/heap/rssi 최신값. 코드(080dd8e)보다 먼저 적용됨 |
 
 ## 규칙
 - 새 마이그레이션은 `migrations/YYYY-MM-DD_설명.sql` 로 추가하고, 적용 후 이 표에 행 추가.
