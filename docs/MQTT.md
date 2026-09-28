@@ -139,7 +139,7 @@
     — ⚠️ **`duration_ms` 미지원.** 보내면 **무시하고 켠 뒤 `ok` 응답**(자동 OFF 없음, 실패 감지 불가)
     — ⚠️ `brightness: 0` 은 `led_on` 이어도 실제로 꺼지고 `state: "OFF"` 응답
   - `mist` (`duration_ms`: 앱 칩 5000|10000, 호환 1000|2000|3000|7000) / `spray_1s` / `spray_3s` / `spray_5s`
-    — 펌웨어 `MIST_MAX_MS`(현재 5000)로 clamp. **기기 상한(`capabilities.mist_max_ms`, 미보고=5000)을 넘는
+    — 펌웨어 `MIST_MAX_MS`(구 펌웨어 5000, 2026-09-28+ 30000 · `capabilities.mist_max_ms` 로 보고)로 clamp. **기기 상한(`capabilities.mist_max_ms`, 미보고=5000)을 넘는
       요청은 서버가 상한 단위로 나눠 보낸다**(10초 = 5000 발행 + 5000 을 `source=timer` 후속 명령으로 ~6.5초 뒤 예약 발행).
       후속 명령은 `commands.issued_at` 이 미래인 pending 행이며 dispatcher 가 그 시각까지 발행하지 않는다
   - `lcd_bitmap` / `lcd_clear`
