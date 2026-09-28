@@ -25,13 +25,13 @@ logger = logging.getLogger(__name__)
 # 명령 TTL 기본값 (dispatcher.DEFAULT_TTL_SEC 와 동일 의도 — 액추에이터는 짧게)
 DEFAULT_CMD_TTL_SEC = 10
 
-# 물분무 허용 지속시간 (ms). 앱 칩은 5초·10초 (2026-09-23 결정) + 20초 (2026-09-28, 펌웨어 상한
-# 30000 상향과 함께 개방). 나머지는 호환용 — 저장된 옛 예약(1/2/3초)과 앱 0.131.0 의 7초 칩이
-# 400 을 맞지 않게 그대로 받는다.
-# 기기 상한(capabilities.mist_max_ms, 미보고=5000)을 넘는 값은 dispatcher 가 분할 발행한다
-# (구 펌웨어에 20초 = 5초×4, 후속이 발행될 때마다 다시 분할).
+# 물분무 지속시간 (ms) — 2026-09-28 화이트리스트(1/2/3/5/7/10초) 폐지, **1000~20000 범위의 정수**면 허용.
+# 펌웨어 상한 30000 상향과 함께 개방. 기기 상한(capabilities.mist_max_ms, 미보고=5000)을 넘는 값은
+# dispatcher 가 5초 단위로 분할 발행하므로(후속 발행 시마다 재분할) 구 펌웨어에도 임의 값이 동작한다
+# (예: 13초 = 5+5+3). 20000 은 서버 정책 상한이고 펌웨어 하드 상한(30000)과는 별개.
 MIST_ACTION = "mist"
-ALLOWED_MIST_MS: tuple[int, ...] = (1000, 2000, 3000, 5000, 7000, 10000, 20000)
+MIST_MIN_MS = 1000
+MIST_REQUEST_MAX_MS = 20000
 # 모든 펌웨어가 지원하는 상한. 펌웨어 MIST_MAX_MS 가 5000 이던 시절(~2026-09-23)의 값으로,
 # capabilities.mist_max_ms 를 보고하지 않는 구 펌웨어는 이 값으로 취급한다.
 MIST_BASE_MAX_MS = 5000
@@ -57,15 +57,19 @@ def mist_max_ms_of(capabilities: Any) -> int:
 
 
 def validate_mist_duration(duration_ms: Any) -> int:
-    """물분무 지속시간 형식 검증. 화이트리스트 밖이면 InvalidCommand.
+    """물분무 지속시간 검증: MIST_MIN_MS~MIST_REQUEST_MAX_MS 범위의 정수. 아니면 InvalidCommand.
 
     기기 상한 초과는 여기서 막지 않는다 — dispatcher 가 분할 발행으로 채운다.
     """
-    if duration_ms not in ALLOWED_MIST_MS:
+    if (isinstance(duration_ms, bool) or not isinstance(duration_ms, (int, float))
+            or duration_ms != int(duration_ms)):
+        raise InvalidCommand(f"duration_ms 는 정수(ms)여야 함 (got={duration_ms!r})")
+    ms = int(duration_ms)
+    if not (MIST_MIN_MS <= ms <= MIST_REQUEST_MAX_MS):
         raise InvalidCommand(
-            f"duration_ms 는 {ALLOWED_MIST_MS} 중 하나여야 함 (got={duration_ms!r})"
+            f"duration_ms 는 {MIST_MIN_MS}~{MIST_REQUEST_MAX_MS} 범위여야 함 (got={ms})"
         )
-    return int(duration_ms)
+    return ms
 
 
 def insert_pending_command(
@@ -112,8 +116,9 @@ def insert_pending_command(
 
 
 __all__ = [
-    "ALLOWED_MIST_MS",
     "DEFAULT_CMD_TTL_SEC",
+    "MIST_MIN_MS",
+    "MIST_REQUEST_MAX_MS",
     "InvalidCommand",
     "MIST_ACTION",
     "insert_pending_command",

@@ -108,7 +108,7 @@ def test_create_mist_bad_duration_400(app_client: TestClient, fake_sb: MagicMock
         f"/devices/{DEVICE_UUID}/schedules",
         json={
             "action": "mist",
-            "payload": {"duration_ms": 9999},
+            "payload": {"duration_ms": 25000},
             "kind": "daily",
             "time_of_day": "08:00",
         },
@@ -449,8 +449,8 @@ def test_validate_mist_duration_format_only() -> None:
     from fastapi import HTTPException
     from backend.routers.schedules import _validate_action_payload
 
-    for ms in (1000, 3000, 5000, 7000, 10000, 20000):
-        _validate_action_payload("mist", {"duration_ms": ms})          # 기기 상한과 무관하게 통과
+    for ms in (1000, 3000, 4500, 9999, 13000, 20000):
+        _validate_action_payload("mist", {"duration_ms": ms})          # 1000~20000 임의 정수, 기기 상한과 무관
     with pytest.raises(HTTPException) as ei:
-        _validate_action_payload("mist", {"duration_ms": 9999})        # 화이트리스트 밖
+        _validate_action_payload("mist", {"duration_ms": 25000})       # 범위 밖
     assert ei.value.status_code == 400

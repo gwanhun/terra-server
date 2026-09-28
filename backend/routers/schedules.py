@@ -125,7 +125,8 @@ def _now() -> datetime:
 def _validate_action_payload(action: str, payload: dict[str, Any] | None) -> None:
     """action 화이트리스트 + mist payload 검증. 실패 시 400.
 
-    mist 의 기기 상한 초과는 막지 않는다 — 발화 시 dispatcher 가 분할 발행한다(10초 = 5초+5초).
+    mist 의 기기 상한 초과는 막지 않는다 — 발화 시 dispatcher 가 분할 발행한다(5초 단위). duration 은
+    1000~20000 범위 정수(command_service.validate_mist_duration).
     """
     if action not in SCHEDULABLE_ACTIONS:
         raise HTTPException(

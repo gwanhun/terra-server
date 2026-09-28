@@ -25,7 +25,7 @@ await sb.from('commands').insert({
   'device_id': deviceUuid,              // devices.id (UUID), 본인 소유 → RLS 통과
   'issued_by': sb.auth.currentUser!.id,
   'action': 'mist',
-  'payload': {'duration_ms': 10000},    // 앱 칩 5000 | 10000 · 호환 1000/2000/3000/7000 도 허용
+  'payload': {'duration_ms': 10000},    // 1000~20000 범위 정수 (2026-09-28 화이트리스트 폐지)
 });
 ```
 
@@ -39,7 +39,7 @@ await sb.from('commands').insert({
 });
 ```
 
-- `duration_ms` 허용값: **1000 / 2000 / 3000 / 5000 / 7000 / 10000 / 20000** (앱 칩은 5000·10000·20000, 20000 은 2026-09-28 개방). 기기 상한(`capabilities.mist_max_ms`, 미보고=5000)을 넘는 값은 **서버가 나눠 보낸다** — 10초 = 5초 + 5초, 20초 = 5초 × 4 (§1.4).
+- `duration_ms`: **1000~20000 범위의 정수(ms)** — 2026-09-28 부터 화이트리스트(1/2/3/5/7/10초) 폐지, 범위 안이면 어떤 값이든 됨. 기기 상한(`capabilities.mist_max_ms`, 미보고=5000)을 넘는 값은 **서버가 5초 단위로 나눠 보낸다** — 13초 = 5+5+3 (§1.4).
 - 상태 추적은 기존 `commands` Realtime 구독(`commands-rt`) 그대로 — `pending → sent → acked`.
 
 ### 1.4 분사 시간 5초/10초 — 10초는 서버가 5초×2 로 분할 (2026-09-23)
@@ -71,7 +71,7 @@ await sb.from('commands').insert({
 
 > **2026-09-28 갱신**: 신 펌웨어(nano `a09772f` / supermini `7ed013d`)는 상한 **30초**를 `capabilities.mist_max_ms=30000` 으로
 > 보고합니다. 리플래시된 기기는 10초 분무가 **분할 없이 한 번에** 나가고 `source='timer'` 후속 행이 생기지 않습니다.
-> 구 펌웨어 기기는 위 분할이 그대로 적용됩니다(20초 = 5초 × 4, 총 ~26초). 허용값에 **20000** 이 추가돼 20초 칩을 넣을 수 있습니다 — [APP_MIST_MAX_30S_2026-09-28.md](APP_MIST_MAX_30S_2026-09-28.md).
+> 구 펌웨어 기기는 위 분할이 그대로 적용됩니다(20초 = 5초 × 4, 총 ~26초). 화이트리스트가 폐지돼 **1000~20000 범위 임의 값**이 가능합니다(슬라이더 등) — [APP_MIST_MAX_30S_2026-09-28.md](APP_MIST_MAX_30S_2026-09-28.md).
 
 ### 1.2 발행 — 방법 B: REST 엔드포인트 (서버측 검증 필요 시)
 
@@ -91,7 +91,7 @@ final res = await http.post(
   body: jsonEncode({'duration_ms': 2000}),
 );
 // 201: { "id": "<command uuid>", "action": "mist", "status": "pending" }
-// 400: duration_ms 허용값 아님
+// 400: duration_ms 범위(1000~20000) 밖 또는 정수 아님
 // 404: 본인 디바이스 아님/미존재
 ```
 
@@ -228,7 +228,7 @@ sb.channel('schedules-rt')
 
 ## 3. 체크리스트 (앱 구현 시)
 
-- [ ] 분사 시간 칩 **5초 / 10초 / 20초** → `commands` INSERT `{action:'mist', payload:{duration_ms:5000|10000|20000}}`. 구 펌웨어에서는 5초 단위 분할(§1.4) — 칩을 숨길 필요 없음
+- [ ] 분사 시간 → `commands` INSERT `{action:'mist', payload:{duration_ms:<1000~20000>}}`. 칩(5/10/20초)이든 슬라이더든 앱 자유. 구 펌웨어에서는 5초 단위 분할(§1.4) — 기기별 분기 불필요
 - [ ] 물분무 결과 `busy`/`error`/`unknown_action` UI 처리
 - [ ] 예약 생성 폼: 동작 · 반복(매일/요일) · 시각(KST) · (요일 선택 시)요일 · (mist 선택 시)지속시간
 - [ ] 예약 목록/수정/삭제 REST 연동

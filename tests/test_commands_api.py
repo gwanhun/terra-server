@@ -74,8 +74,9 @@ def test_mist_invalid_duration_400(app_client: TestClient, fake_sb: MagicMock) -
     tables = {"devices": dev, "commands": cmd}
     fake_sb.table.side_effect = lambda name: tables[name]
 
-    res = app_client.post(f"/devices/{DEVICE_UUID}/mist", json={"duration_ms": 1500})
-    assert res.status_code == 400, res.text
+    for bad in (500, 20001, 0, -1000):          # 범위 밖 (1000~20000)
+        res = app_client.post(f"/devices/{DEVICE_UUID}/mist", json={"duration_ms": bad})
+        assert res.status_code == 400, (bad, res.text)
     cmd.insert.assert_not_called()
 
 
@@ -102,12 +103,12 @@ def test_mist_missing_device_404(app_client: TestClient, fake_sb: MagicMock) -> 
 # ---------- 분사 시간 5/10초 (2026-09-23) — 상한 초과는 발행 시 분할하므로 REST 는 형식만 본다 ----------
 
 def test_mist_5s_10s_and_legacy_values_accepted(app_client: TestClient, fake_sb: MagicMock) -> None:
-    """앱 칩 5000/10000 + 호환값(1/2/3/7초) 전부 201. 기기 상한은 dispatcher 가 분할로 채운다."""
+    """1000~20000 범위의 임의 정수 전부 201 (2026-09-28 화이트리스트 폐지). 기기 상한은 dispatcher 가 분할로 채운다."""
     dev = _device_mock()
     cmd = MagicMock()
     cmd.insert.return_value.execute.return_value.data = [{"id": "cmd-1"}]
     fake_sb.table.side_effect = lambda name: {"devices": dev, "commands": cmd}[name]
-    for ms in (1000, 2000, 3000, 5000, 7000, 10000, 20000):
+    for ms in (1000, 1500, 3000, 4200, 7000, 13000, 20000):
         res = app_client.post(f"/devices/{DEVICE_UUID}/mist", json={"duration_ms": ms})
         assert res.status_code == 201, (ms, res.text)
     assert cmd.insert.call_args.args[0]["payload"] == {"duration_ms": 20000}   # 요청값 그대로 저장
