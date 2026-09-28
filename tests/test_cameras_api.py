@@ -222,6 +222,36 @@ def test_list_cameras(app_client: TestClient, fake_sb: MagicMock) -> None:
     assert len(res.json()) == 1
 
 
+def _selected_columns(fake_sb: MagicMock) -> set[str]:
+    """마지막 cameras.select(...) 호출의 컬럼 목록."""
+    cols = fake_sb.table.return_value.select.call_args.args[0]
+    return {c.strip() for c in cols.split(",")}
+
+
+def test_list_and_get_camera_select_every_response_field(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """GET /cameras · /cameras/{id} 의 select 가 CameraOut 필드를 전부 가져온다.
+
+    빠진 컬럼은 에러 없이 모델 기본값으로 채워져 조용히 틀린다 — 2026-09-28 기준
+    clip_stats/capabilities/image_state 가 항상 null, rotate_180 이 항상 false 로 나갔다.
+    (mock 은 행을 통째로 돌려줘서 기존 테스트로는 안 잡혔다.)
+    """
+    from backend.routers.cameras import CameraOut
+
+    fields = set(CameraOut.model_fields)
+
+    fake_sb.table.return_value.select.return_value.eq.return_value.is_.return_value \
+        .order.return_value.execute.return_value.data = []
+    assert app_client.get("/cameras").status_code == 200
+    assert fields - _selected_columns(fake_sb) == set()
+
+    fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value \
+        .execute.return_value.data = _camera_row()
+    assert app_client.get("/cameras/cam-uuid").status_code == 200
+    assert fields - _selected_columns(fake_sb) == set()
+
+
 def test_get_camera_not_owner_404(
     app_client: TestClient, fake_sb: MagicMock
 ) -> None:

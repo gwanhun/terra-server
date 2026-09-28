@@ -163,6 +163,17 @@ class CameraOut(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+# GET /cameras · /cameras/{id} 가 읽는 컬럼 = CameraOut 필드 전부. 빠지면 에러 없이 모델
+# 기본값(null/false)으로 나가 조용히 틀린다(2026-09-28: rotate_180 항상 false, clip_stats 항상 null).
+# tests/test_cameras_api.py 가 CameraOut 과 어긋나지 않는지 검사한다.
+_CAMERA_OUT_COLUMNS = (
+    "id, camera_id, enclosure_id, name, model, firmware_ver, "
+    "resolution, fps, clip_sec, stream_mode, stream_until, rotate_180, capabilities, "
+    "clip_stats, clip_stats_at, image_state, "
+    "created_at, updated_at, last_seen_at, is_online"
+)
+
+
 _AUTH_REQUIRED = {401: {"description": "JWT 누락/검증 실패"}}
 _NOT_FOUND = {404: {"description": "본인 카메라가 아니거나 미존재"}}
 _BAD_ENUM = {400: {"description": "model/resolution enum 위반 또는 enclosure_id 권한 없음"}}
@@ -346,11 +357,7 @@ def list_cameras(
     sb = get_supabase_client()
     res = (
         sb.table("cameras")
-        .select(
-            "id, camera_id, enclosure_id, name, model, firmware_ver, "
-            "resolution, fps, clip_sec, stream_mode, stream_until, "
-            "created_at, updated_at, last_seen_at, is_online"
-        )
+        .select(_CAMERA_OUT_COLUMNS)
         .eq("owner_id", user_id)
         .is_("unlinked_at", "null")            # 소프트 해제된 카메라는 제외 (앱 §1-3)
         .order("created_at", desc=True)
@@ -373,11 +380,7 @@ def get_camera(
     sb = get_supabase_client()
     res = (
         sb.table("cameras")
-        .select(
-            "id, owner_id, camera_id, enclosure_id, name, model, firmware_ver, "
-            "resolution, fps, clip_sec, stream_mode, stream_until, "
-            "created_at, updated_at, last_seen_at, is_online, unlinked_at"
-        )
+        .select(f"{_CAMERA_OUT_COLUMNS}, owner_id, unlinked_at")
         .eq("id", camera_uuid)
         .single()
         .execute()
