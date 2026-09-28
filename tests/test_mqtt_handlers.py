@@ -878,7 +878,7 @@ def test_camera_missing_column_is_retried_after_ttl(
 
     handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "img": {"exp": 120}})
     missing.clear()                                      # 운영에서 마이그레이션 적용
-    clock[0] += handlers.CAMERA_MISSING_COLUMN_TTL_SEC + 1
+    clock[0] += handlers.MISSING_COLUMN_TTL_SEC + 1
     handlers.handle_telemetry(CAMERA_TEXT, {"ts": 2, "img": {"exp": 121}})
 
     assert "image_state" in updates[-1]
@@ -1109,6 +1109,59 @@ def test_device_telemetry_saves_sys_state(fake_sb: MagicMock, caplog: pytest.Log
     assert any("재부팅 감지" in r.getMessage() and "SW:mqtt_reboot" in r.getMessage() for r in caplog.records)
     assert len(inserts) == 2
     assert all("sys_state" not in row and "uptime_sec" not in row for row in inserts)
+
+
+def _device_factory_rejecting(updates: list[dict], reject: "callable") -> "callable":
+    """devices UPDATE 마다 `reject(payload)` 가 돌려준 예외를 던지는 mock (None 이면 성공)."""
+    base = _device_table_factory(updates, db_caps=None)
+
+    def _table(name: str) -> MagicMock:
+        t = base(name)
+        if name == "devices":
+            def _update(payload: dict) -> MagicMock:
+                updates.append(payload)
+                exc = reject(payload)
+                if exc is not None:
+                    raise exc
+                return t._upd
+            t.update.side_effect = _update
+        return t
+    return _table
+
+
+def test_device_missing_sys_state_column_keeps_liveness(
+    fake_sb: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """devices.sys_state 컬럼이 없어도 last_seen_at/is_online 은 산다 — 카메라 image_state 사고
+    (9/17~28, heartbeat UPDATE 통째 실패 → 전부 오프라인 표시)와 같은 구조를 기기에서도 막는다."""
+    updates: list[dict] = []
+    missing = APIError({"message": "Could not find the 'sys_state' column of 'devices' in the schema cache",
+                        "code": "PGRST204", "details": None, "hint": None})
+    fake_sb.table.side_effect = _device_factory_rejecting(
+        updates, lambda p: missing if "sys_state" in p else None)
+
+    with caplog.at_level(logging.WARNING):
+        handlers.handle_telemetry(DEVICE_TEXT, {"ts": 1, "uptime_sec": 300, "reset": "POWERON"})
+        handlers.handle_telemetry(DEVICE_TEXT, {"ts": 2, "uptime_sec": 303, "reset": "POWERON"})
+
+    assert set(updates[1]) == {"last_seen_at", "is_online"}    # 1회차 재시도: 없는 컬럼만 뺐다
+    assert "sys_state" not in updates[2]                       # 2회차: 기억해서 미리 뺀다
+    assert len(updates) == 3
+    assert "devices.sys_state" in caplog.text
+
+
+def test_device_rejected_sys_state_falls_back_to_liveness(fake_sb: MagicMock) -> None:
+    """컬럼 누락이 아닌 거부(타입·제약 위반 등)도 필수 필드만 다시 써서 온라인 표시를 지킨다."""
+    updates: list[dict] = []
+    bad_json = APIError({"message": "invalid input syntax for type json", "code": "22P02",
+                         "details": None, "hint": None})
+    fake_sb.table.side_effect = _device_factory_rejecting(
+        updates, lambda p: bad_json if "sys_state" in p else None)
+
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 1, "uptime_sec": 300})
+
+    assert len(updates) == 2
+    assert set(updates[1]) == {"last_seen_at", "is_online"}
 
 
 def test_device_telemetry_old_firmware_no_sys_state(fake_sb: MagicMock) -> None:
