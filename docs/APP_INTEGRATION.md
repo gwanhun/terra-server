@@ -292,6 +292,11 @@ final trend = await sb.from('telemetry_30m')
 > 차트 그리는 법(min/max 밴드, 데이터 빠짐 처리, 실시간+과거 합치기) 전체는 **[docs/APP_TIMESERIES_CHART.md](APP_TIMESERIES_CHART.md)** 참조.
 > (`telemetry_1m` 1분 집계 테이블은 현재 미사용/빈 테이블 — 분 단위 상세가 필요해지면 차후 활성화.)
 
+### 3.7-b 기기 원격 재부팅 · 상태 진단 필드 (2026-09-28)
+
+`POST /devices/{id}/reboot` 와 `devices.sys_state`(uptime_s / reset / heap / rssi)는 별도 문서:
+**[docs/APP_DEVICE_REBOOT_SYS_STATE_2026-09-28.md](APP_DEVICE_REBOOT_SYS_STATE_2026-09-28.md)** (계약 정본 [API.md §3.7-b](API.md)).
+
 ### 3.8 SQL 직접 디버깅 (Supabase 대시보드)
 
 ```sql
