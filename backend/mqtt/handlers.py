@@ -250,7 +250,7 @@ _rotation_resend_at: dict[str, float] = {}                          # uuid → l
 
 
 def _camera_state(sb: Client, camera_uuid: str) -> dict[str, Any] | None:
-    """cameras.rotate_180 / capabilities / hw_id 를 TTL 캐시 경유로 조회. 실패/미존재면 None."""
+    """cameras.rotate_180 / capabilities / hw_id / firmware_ver 를 TTL 캐시 경유로 조회. 실패/미존재면 None."""
     now = time.monotonic()
     with _camera_state_lock:
         hit = _camera_state_cache.get(camera_uuid)
@@ -259,7 +259,7 @@ def _camera_state(sb: Client, camera_uuid: str) -> dict[str, Any] | None:
     try:
         res = (
             sb.table("cameras")
-            .select("rotate_180, capabilities, hw_id")
+            .select("rotate_180, capabilities, hw_id, firmware_ver")
             .eq("id", camera_uuid)
             .limit(1)
             .execute()
@@ -274,6 +274,7 @@ def _camera_state(sb: Client, camera_uuid: str) -> dict[str, Any] | None:
         "rotate_180": rows[0].get("rotate_180"),
         "capabilities": rows[0].get("capabilities"),
         "hw_id": rows[0].get("hw_id"),
+        "firmware_ver": rows[0].get("firmware_ver"),
     }
     with _camera_state_lock:
         _camera_state_cache[camera_uuid] = (now + CAMERA_STATE_TTL_SEC, row)
@@ -488,6 +489,9 @@ def _camera_sys_state(camera_id_text: str, camera_uuid: str, payload: dict[str, 
     heap = payload.get("free_heap")
     if isinstance(heap, (int, float)):
         sys_state["heap"] = int(heap)
+    rssi = payload.get("wifi_rssi")          # 2026-09-28 펌웨어부터(dBm). 약한 WiFi 설치 판별
+    if isinstance(rssi, (int, float)):
+        sys_state["rssi"] = int(rssi)
     prev = _uptime_prev.get(camera_uuid)
     _uptime_prev[camera_uuid] = uptime
     if prev is not None and uptime < prev:
@@ -646,12 +650,18 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
         # (앱이 cameras 테이블 Realtime 을 구독 중).
         caps = payload.get("capabilities")
         hw_id = payload.get("hw_id")
-        need_state = isinstance(caps, dict) or (isinstance(hw_id, str) and bool(hw_id))
+        # fw(2026-09-28): 빌드 식별 문자열. 페어링은 1회뿐이라 리플래시된 카메라를 서버가
+        # 구분할 유일한 경로. DB 와 다를 때만 UPDATE (capabilities 와 같은 규칙).
+        fw = payload.get("fw")
+        fw_ok = isinstance(fw, str) and 0 < len(fw) <= 64
+        need_state = isinstance(caps, dict) or (isinstance(hw_id, str) and bool(hw_id)) or fw_ok
         state = _camera_state(sb, entity_uuid) if need_state else None
 
         if isinstance(caps, dict):
             if state is None or state.get("capabilities") != caps:
                 update["capabilities"] = caps
+        if fw_ok and state is not None and state.get("firmware_ver") != fw:
+            update["firmware_ver"] = fw
 
         # hw_id 는 여기(heartbeat UPDATE)에 넣지 않는다 — 아래 _backfill_hw_id 로 분리.
 
@@ -673,10 +683,13 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
                 logger.warning("camera %s: AE 진동 동결 중 img=%s", device_id_text, img)
 
         # 선택 필드 실패가 온라인 표시를 막지 않게 — 정책은 _write_camera_heartbeat 참고.
-        # capabilities 는 실제로 들어갔을 때만 캐시에 반영(실패했는데 넣으면 영영 안 써진다).
+        # capabilities / firmware_ver 는 실제로 들어갔을 때만 캐시에 반영
+        # (실패했는데 넣으면 캐시가 DB 와 어긋나 TTL 동안 다시 안 써진다).
         written = _write_camera_heartbeat(sb, device_id_text, entity_uuid, update)
         if written is not None and "capabilities" in written:
             _camera_state_patch(entity_uuid, capabilities=written["capabilities"])
+        if written is not None and "firmware_ver" in written:
+            _camera_state_patch(entity_uuid, firmware_ver=written["firmware_ver"])
 
         # 하드웨어 ID(2026-09-21): 구 펌웨어로 등록돼 NULL 인 행을 새 펌웨어 하트비트가 한 번
         # 채운다. 보드가 바뀌지 않는 한 불변이라 성공 후엔 캐시에 반영해 다시 쓰지 않는다.

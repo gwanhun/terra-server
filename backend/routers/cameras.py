@@ -33,7 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from backend.auth import get_current_user_id
 from backend.crypto import generate_token, hash_token
 from backend.mqtt import registry
-from backend.mqtt.camera_commands import rotation_command
+from backend.mqtt.camera_commands import reboot_command, rotation_command
 from backend.supabase_client import get_supabase_client
 from backend.unlink_service import unlink_entity
 from backend.webrtc_signaling import MqttWebRTCSignaling
@@ -446,6 +446,48 @@ def _publish_rotation(camera_id_text: str, rotate_180: bool) -> None:
             "set_rotation 발행 실패 camera=%s (텔레메트리 동기화로 수렴)",
             camera_id_text, exc_info=True,
         )
+
+
+class RebootOut(BaseModel):
+    published: bool = Field(..., description="MQTT command 발행 성공 여부(best-effort)")
+    msg_id: str | None = Field(None, description="발행한 명령의 msg_id (ack 대조용)")
+
+
+@router.post(
+    "/{camera_uuid}/reboot",
+    response_model=RebootOut,
+    summary="카메라 원격 재부팅 (MQTT reboot 명령)",
+    responses={**_AUTH_REQUIRED, **_NOT_FOUND},
+)
+def reboot_camera(
+    camera_uuid: str,
+    user_id: str = Depends(get_current_user_id),
+) -> RebootOut:
+    """본인 카메라에 `reboot` 명령을 1회 발행한다(구 펌웨어는 rejected_unknown_action ack).
+
+    하트비트는 살아 있는데 녹화·업로드가 멈춘 카메라용. 발행 실패는 5xx 대신
+    published=false 로 알린다(브로커 일시 장애 시 앱이 재시도).
+    """
+    sb = get_supabase_client()
+    res = (
+        sb.table("cameras")
+        .select("id, owner_id, camera_id, unlinked_at")
+        .eq("id", camera_uuid)
+        .single()
+        .execute()
+    )
+    row = res.data
+    if not row or row["owner_id"] != user_id or row.get("unlinked_at"):
+        raise HTTPException(status_code=404, detail="camera not found")
+
+    cmd = reboot_command()
+    try:
+        MqttWebRTCSignaling().publish(row.get("camera_id", ""), cmd)
+        logger.info("reboot 발행 camera=%s msg_id=%s", row.get("camera_id"), cmd["msg_id"])
+        return RebootOut(published=True, msg_id=cmd["msg_id"])
+    except Exception:  # noqa: BLE001
+        logger.warning("reboot 발행 실패 camera=%s", row.get("camera_id"), exc_info=True)
+        return RebootOut(published=False, msg_id=None)
 
 
 @router.post(

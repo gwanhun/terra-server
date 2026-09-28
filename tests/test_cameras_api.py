@@ -363,3 +363,51 @@ def test_get_camera_clip_stats_serialized(app_client: TestClient, fake_sb: Magic
     assert res.status_code == 200
     assert res.json()["clip_stats"] == stats
     assert res.json()["clip_stats_at"] == "2026-09-16T01:00:00Z"
+
+
+# ---------- reboot (2026-09-28 베타 멈춤 대응: 원격 재부팅) ----------
+
+
+def test_reboot_camera_publishes_reboot_command(
+    app_client: TestClient, fake_sb: MagicMock, monkeypatch
+) -> None:
+    calls: list[tuple[str, dict]] = []
+    _install_fake_signaling(monkeypatch, calls)
+    chain = fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value
+    chain.execute.return_value.data = _camera_row()
+
+    res = app_client.post("/cameras/cam-uuid/reboot")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["published"] is True
+    assert len(calls) == 1
+    camera_id, cmd = calls[0]
+    assert camera_id == "p4cam-aabbccdd"
+    assert cmd["action"] == "reboot"
+    assert cmd["ttl_sec"] == 60
+    assert body["msg_id"] == cmd["msg_id"]
+
+
+def test_reboot_camera_not_owner_404(
+    app_client: TestClient, fake_sb: MagicMock, monkeypatch
+) -> None:
+    calls: list[tuple[str, dict]] = []
+    _install_fake_signaling(monkeypatch, calls)
+    chain = fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value
+    chain.execute.return_value.data = _camera_row(owner_id="other-user")
+
+    res = app_client.post("/cameras/cam-uuid/reboot")
+    assert res.status_code == 404
+    assert calls == []
+
+
+def test_reboot_camera_publish_failure_is_not_5xx(
+    app_client: TestClient, fake_sb: MagicMock, monkeypatch
+) -> None:
+    _install_fake_signaling(monkeypatch, [], raise_exc=True)
+    chain = fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value
+    chain.execute.return_value.data = _camera_row()
+
+    res = app_client.post("/cameras/cam-uuid/reboot")
+    assert res.status_code == 200
+    assert res.json() == {"published": False, "msg_id": None}

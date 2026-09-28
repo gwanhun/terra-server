@@ -610,9 +610,9 @@ def test_resolve_entity_unknown_returns_none(fake_sb: MagicMock) -> None:
 
 def _camera_state_table_factory(
     updates: list[dict], *, rotate_180: bool = False, capabilities: dict | None = None,
-    hw_id: str | None = None,
+    hw_id: str | None = None, firmware_ver: str | None = None,
 ) -> "callable":
-    """_camera_table_factory + cameras.select('rotate_180, capabilities, hw_id') 응답."""
+    """_camera_table_factory + cameras.select('rotate_180, capabilities, hw_id, firmware_ver') 응답."""
     def _table(name: str) -> MagicMock:
         t = MagicMock()
         if name == "devices":
@@ -622,7 +622,7 @@ def _camera_state_table_factory(
                 sel = MagicMock()
                 if "rotate_180" in cols:
                     data = [{"rotate_180": rotate_180, "capabilities": capabilities,
-                             "hw_id": hw_id}]
+                             "hw_id": hw_id, "firmware_ver": firmware_ver}]
                 else:
                     data = [{"id": CAMERA_UUID}]
                 sel.eq.return_value.limit.return_value.execute.return_value.data = data
@@ -675,6 +675,25 @@ def test_camera_telemetry_stores_capabilities_when_changed(
         CAMERA_TEXT, {"ts": 2, "rotate_180": False, "capabilities": {"rotate_180": True}}
     )
     assert "capabilities" not in updates[1]
+
+
+def test_camera_telemetry_updates_firmware_ver_when_changed(
+    fake_sb: MagicMock, published: list
+) -> None:
+    """heartbeat `fw`(2026-09-28) 가 DB firmware_ver 와 다르면 갱신 — 리플래시 여부 판별.
+    같은 값은 UPDATE 에서 뺀다(캐시), 구 펌웨어(fw 없음)는 건드리지 않는다."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_state_table_factory(updates, firmware_ver="fb2-p4 0.1.0")
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "fw": "fb2-p4 0.2.0-20260928"})
+    assert updates[0]["firmware_ver"] == "fb2-p4 0.2.0-20260928"
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 2, "fw": "fb2-p4 0.2.0-20260928"})
+    assert "firmware_ver" not in updates[1]
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 3})
+    assert "firmware_ver" not in updates[2]
+    assert published == []
 
 
 def test_camera_telemetry_backfills_hw_id_once(
@@ -770,10 +789,11 @@ def _missing_column_error(column: str) -> APIError:
 
 def _camera_factory_rejecting(
     updates: list[dict], reject: "callable", *, rotate_180: bool = False,
-    capabilities: dict | None = None,
+    capabilities: dict | None = None, firmware_ver: str | None = None,
 ) -> "callable":
     """cameras UPDATE 마다 `reject(payload)` 가 돌려준 예외를 던지는 mock (None 이면 성공)."""
-    base = _camera_state_table_factory(updates, rotate_180=rotate_180, capabilities=capabilities)
+    base = _camera_state_table_factory(
+        updates, rotate_180=rotate_180, capabilities=capabilities, firmware_ver=firmware_ver)
 
     def _table(name: str) -> MagicMock:
         t = base(name)
@@ -919,6 +939,26 @@ def test_camera_capabilities_cached_only_when_written(
     handlers.handle_telemetry(CAMERA_TEXT, {"ts": 2, "capabilities": caps})
 
     assert sum("capabilities" in u for u in updates) == 2  # 실패했으니 다음에도 다시 시도
+
+
+def test_camera_firmware_ver_cached_only_when_written(
+    fake_sb: MagicMock, published: list
+) -> None:
+    """firmware_ver 도 capabilities 와 같은 규칙 — 필수 필드만 저장된 heartbeat 뒤엔 다시 시도한다.
+
+    캐시에 먼저 넣으면 DB 는 구 버전인데 다음 heartbeat 가 "같은 값"으로 보고 빼버려,
+    앱이 리플래시된 카메라를 구 펌웨어로 계속 본다(재시작 버튼 숨김).
+    """
+    fw = "fb2-p4 0.2.0-20260928"
+    updates: list[dict] = []
+    bad = APIError({"message": "boom", "code": "XX000", "details": None, "hint": None})
+    fake_sb.table.side_effect = _camera_factory_rejecting(
+        updates, lambda p: bad if len(p) > 2 else None, firmware_ver="fb2-p4 0.1.0")
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "fw": fw})
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 2, "fw": fw})
+
+    assert sum("firmware_ver" in u for u in updates) == 2  # 실패했으니 다음에도 다시 시도
 
 
 def test_camera_capabilities_cached_when_saved_after_column_strip(
