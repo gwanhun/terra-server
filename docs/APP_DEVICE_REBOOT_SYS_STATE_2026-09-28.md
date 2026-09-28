@@ -145,7 +145,7 @@ Authorization: Bearer <사용자 JWT>
 | DB 마이그레이션 (`devices.sys_state`) | **운영 적용 완료** (2026-09-28, petcam 9/28 조회로도 확인) |
 | DB 마이그레이션 (`commands.source` 에 `restore`) | **운영 적용 완료** (2026-09-28) |
 | 서버 코드 | `main` 반영: `080dd8e`(reboot·sys_state) → PR #6 머지(기기 heartbeat 폴백) → 예약 복원(§2.4). pytest 344 passed |
-| 서버 운영 | **배포 예정** — 배포되면 이 줄 갱신. 배포 전엔 `POST /devices/{id}/reboot` 가 404(라우트 없음), `sys_state` 는 항상 `null`, 복원 없음 |
+| 서버 운영 | **반영 완료** (2026-09-28, terra-api·terra-bridge 재시작). reboot API · `sys_state` 저장 · 기기 heartbeat 폴백(PR #6) · 예약 상태 복원(§2.4) 모두 운영 중. **앱은 §2.3 의 임시 다이얼로그 문구를 빼도 됩니다** |
 | 펌웨어 | 빌드 완료(nano·supermini). **실기 검증 전** — 플래시 후 콘솔에서 재부팅 → `reset=SW:mqtt_reboot` 수신을 확인하고 이 줄 갱신 |
 
 앱 쪽 테스트는 신 펌웨어를 플래시한 기기 1대로 §2.2 재부팅 판정과 §3 필드 표시를 확인하고, 구 펌웨어 기기로 "없음 처리" 를 확인해 주세요. 어느 기기가 신 펌웨어인지는 별도 공지합니다.
