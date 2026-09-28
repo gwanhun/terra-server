@@ -229,7 +229,7 @@ def reset_device_cache() -> None:
         _rotation_resend_at.clear()
     _device_hw_id_done.clear()
     _hw_id_conflict.clear()
-    _camera_missing_columns.clear()
+    _missing_columns.clear()
     _device_caps_cache.clear()
 
 
@@ -377,11 +377,11 @@ def _hw_id_holders(sb: Client, table: str, id_col: str, entity_uuid: str, hw_id:
     return [str(r.get(id_col) or r.get("id")) for r in rows if isinstance(r, dict)]
 
 
-# heartbeat 가 "DB 에 없다"고 거부당한 cameras 컬럼 → 다시 시도할 monotonic 시각.
+# heartbeat 가 "DB 에 없다"고 거부당한 "table.column" → 다시 시도할 monotonic 시각.
 # 마이그레이션 누락은 사람이 SQL 을 적용하기 전엔 안 고쳐지므로, 그동안은 미리 빼서
-# 15초×N대 실패 쓰기·경고 스팸을 막는다. TTL 이라 적용 후엔 재시작 없이 다시 쓴다.
-CAMERA_MISSING_COLUMN_TTL_SEC = 600.0
-_camera_missing_columns: dict[str, float] = {}
+# 15초(카메라)/3초(기기)×N대 실패 쓰기·경고 스팸을 막는다. TTL 이라 적용 후엔 재시작 없이 다시 쓴다.
+MISSING_COLUMN_TTL_SEC = 600.0
+_missing_columns: dict[str, float] = {}
 
 # PGRST204: Could not find the 'x' column of 'cameras' in the schema cache
 # 42703:    column "x" of relation "cameras" does not exist
@@ -396,45 +396,46 @@ def _missing_column(exc: APIError) -> str | None:
     return (m.group(1) or m.group(2)) if m else None
 
 
-def _write_camera_heartbeat(
-    sb: Client, label: str, entity_uuid: str, update: dict[str, Any]
+def _write_heartbeat(
+    sb: Client, table: str, label: str, entity_uuid: str, update: dict[str, Any]
 ) -> dict[str, Any] | None:
-    """cameras heartbeat UPDATE. 실제로 DB 에 들어간 필드를 돌려준다(실패면 None).
+    """cameras/devices heartbeat UPDATE. 실제로 DB 에 들어간 필드를 돌려준다(실패면 None).
 
     평소엔 한 문장으로 쓴다(DB 쓰기·Realtime 이벤트 1회). 선택 필드 하나 때문에
     last_seen_at/is_online 까지 막히지 않게 — 2026-09-28 image_state 컬럼 누락으로 녹화 중인
     카메라가 전부 오프라인으로 보인 사고(9/21 hw_id 와 같은 구조):
     - 컬럼 누락(PGRST204/42703) → 그 컬럼만 빼고 다시 쓴다. 나머지 선택 필드는 산다.
     - 그 밖의 쿼리 거부(APIError: 타입·제약 위반 등) → 원인 필드를 모르니 필수 필드만.
-    - 네트워크/타임아웃 → 재시도 안 함. 같은 이유로 또 실패하고 부하만 늘린다(15초 뒤 다음 heartbeat).
+    - 네트워크/타임아웃 → 재시도 안 함. 같은 이유로 또 실패하고 부하만 늘린다(다음 heartbeat 에 맡김).
+    기기(devices.sys_state, 2026-09-28)도 같은 구조라 같은 함수를 쓴다.
     """
     now = time.monotonic()
     liveness = {"last_seen_at": update["last_seen_at"], "is_online": update["is_online"]}
-    payload = {k: v for k, v in update.items() if _camera_missing_columns.get(k, 0.0) <= now}
+    payload = {k: v for k, v in update.items() if _missing_columns.get(f"{table}.{k}", 0.0) <= now}
     while True:
         try:
-            sb.table("cameras").update(payload).eq("id", entity_uuid).execute()
+            sb.table(table).update(payload).eq("id", entity_uuid).execute()
             return payload
         except APIError as exc:
             col = _missing_column(exc)
             if col in payload and col not in liveness:
-                _camera_missing_columns[col] = now + CAMERA_MISSING_COLUMN_TTL_SEC
+                _missing_columns[f"{table}.{col}"] = now + MISSING_COLUMN_TTL_SEC
                 logger.warning(
-                    "cameras.%s 컬럼 없음 — 마이그레이션 누락? %d초간 heartbeat 에서 빼고 씀 (camera=%s)",
-                    col, CAMERA_MISSING_COLUMN_TTL_SEC, label,
+                    "%s.%s 컬럼 없음 — 마이그레이션 누락? %d초간 heartbeat 에서 빼고 씀 (%s)",
+                    table, col, MISSING_COLUMN_TTL_SEC, label,
                 )
                 payload = {k: v for k, v in payload.items() if k != col}
             elif payload != liveness:
                 logger.exception(
-                    "cameras heartbeat UPDATE 거부 (camera=%s, 필드=%s) — 필수 필드만 재시도",
-                    label, sorted(payload),
+                    "%s heartbeat UPDATE 거부 (%s, 필드=%s) — 필수 필드만 재시도",
+                    table, label, sorted(payload),
                 )
                 payload = liveness
             else:
-                logger.exception("cameras heartbeat UPDATE 실패 (camera=%s)", label)
+                logger.exception("%s heartbeat UPDATE 실패 (%s)", table, label)
                 return None
         except Exception:  # noqa: BLE001
-            logger.exception("cameras heartbeat UPDATE 실패 (camera=%s)", label)
+            logger.exception("%s heartbeat UPDATE 실패 (%s)", table, label)
             return None
 
 
@@ -683,10 +684,10 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
             if img.get("ae_frozen") is True:
                 logger.warning("camera %s: AE 진동 동결 중 img=%s", device_id_text, img)
 
-        # 선택 필드 실패가 온라인 표시를 막지 않게 — 정책은 _write_camera_heartbeat 참고.
+        # 선택 필드 실패가 온라인 표시를 막지 않게 — 정책은 _write_heartbeat 참고.
         # capabilities / firmware_ver 는 실제로 들어갔을 때만 캐시에 반영
         # (실패했는데 넣으면 캐시가 DB 와 어긋나 TTL 동안 다시 안 써진다).
-        written = _write_camera_heartbeat(sb, device_id_text, entity_uuid, update)
+        written = _write_heartbeat(sb, "cameras", device_id_text, entity_uuid, update)
         if written is not None and "capabilities" in written:
             _camera_state_patch(entity_uuid, capabilities=written["capabilities"])
         if written is not None and "firmware_ver" in written:
@@ -751,10 +752,8 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
     sys_state = _sys_state("device", device_id_text, device_uuid, payload)
     if sys_state:
         dev_update["sys_state"] = sys_state
-    try:
-        sb.table("devices").update(dev_update).eq("id", device_uuid).execute()
-    except Exception:  # noqa: BLE001
-        logger.exception("devices UPDATE 실패 (device=%s)", device_id_text)
+    # 선택 필드(sys_state) 실패가 온라인 표시를 막지 않게 — 카메라와 같은 정책(_write_heartbeat).
+    _write_heartbeat(sb, "devices", device_id_text, device_uuid, dev_update)
 
     # 하드웨어 ID(2026-09-21): 구 펌웨어로 등록돼 NULL 인 행을 채운다. heartbeat 와 분리한
     # 이유는 _backfill_hw_id 참고. 프로세스당 1회만 시도(3초 주기라 매 건 쓰면 낭비).
