@@ -610,9 +610,9 @@ def test_resolve_entity_unknown_returns_none(fake_sb: MagicMock) -> None:
 
 def _camera_state_table_factory(
     updates: list[dict], *, rotate_180: bool = False, capabilities: dict | None = None,
-    hw_id: str | None = None,
+    hw_id: str | None = None, firmware_ver: str | None = None,
 ) -> "callable":
-    """_camera_table_factory + cameras.select('rotate_180, capabilities, hw_id') 응답."""
+    """_camera_table_factory + cameras.select('rotate_180, capabilities, hw_id, firmware_ver') 응답."""
     def _table(name: str) -> MagicMock:
         t = MagicMock()
         if name == "devices":
@@ -622,7 +622,7 @@ def _camera_state_table_factory(
                 sel = MagicMock()
                 if "rotate_180" in cols:
                     data = [{"rotate_180": rotate_180, "capabilities": capabilities,
-                             "hw_id": hw_id}]
+                             "hw_id": hw_id, "firmware_ver": firmware_ver}]
                 else:
                     data = [{"id": CAMERA_UUID}]
                 sel.eq.return_value.limit.return_value.execute.return_value.data = data
@@ -675,6 +675,25 @@ def test_camera_telemetry_stores_capabilities_when_changed(
         CAMERA_TEXT, {"ts": 2, "rotate_180": False, "capabilities": {"rotate_180": True}}
     )
     assert "capabilities" not in updates[1]
+
+
+def test_camera_telemetry_updates_firmware_ver_when_changed(
+    fake_sb: MagicMock, published: list
+) -> None:
+    """heartbeat `fw`(2026-09-28) 가 DB firmware_ver 와 다르면 갱신 — 리플래시 여부 판별.
+    같은 값은 UPDATE 에서 뺀다(캐시), 구 펌웨어(fw 없음)는 건드리지 않는다."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_state_table_factory(updates, firmware_ver="fb2-p4 0.1.0")
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "fw": "fb2-p4 0.2.0-20260928"})
+    assert updates[0]["firmware_ver"] == "fb2-p4 0.2.0-20260928"
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 2, "fw": "fb2-p4 0.2.0-20260928"})
+    assert "firmware_ver" not in updates[1]
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 3})
+    assert "firmware_ver" not in updates[2]
+    assert published == []
 
 
 def test_camera_telemetry_backfills_hw_id_once(

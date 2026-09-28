@@ -18,6 +18,8 @@ from uuid import uuid4
 ROTATION_TTL_SEC = 60
 
 ACTION_SET_ROTATION = "set_rotation"
+ACTION_REBOOT = "reboot"
+REBOOT_TTL_SEC = 60
 
 
 def rotation_command(rotate_180: bool) -> dict[str, Any]:
@@ -28,4 +30,20 @@ def rotation_command(rotate_180: bool) -> dict[str, Any]:
         "ttl_sec": ROTATION_TTL_SEC,
         "action": ACTION_SET_ROTATION,
         "rotate_180": bool(rotate_180),
+    }
+
+
+def reboot_command() -> dict[str, Any]:
+    """`esp32/{camera_id}/command` 용 reboot 페이로드.
+
+    펌웨어(app_mqtt.c `reboot` action)는 ack 를 먼저 발행하고 1.5초 뒤 `SW:mqtt_reboot`
+    사유로 재부팅한다. 하트비트는 살아 있는데 녹화·업로드가 멈춘 카메라를 서버가
+    원격으로 되살리는 용도(2026-09-28 베타 멈춤 대응). WiFi 가 죽은 카메라에는 닿지
+    않는다(그쪽은 펌웨어 net_wd/boot_wifi 재시도가 담당).
+    """
+    return {
+        "msg_id": str(uuid4()),
+        "issued_at": int(time.time()),
+        "ttl_sec": REBOOT_TTL_SEC,
+        "action": ACTION_REBOOT,
     }
