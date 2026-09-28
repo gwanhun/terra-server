@@ -31,6 +31,7 @@ DB FK 는 각각 `devices.id` / `cameras.id` (UUID). 매 메시지마다 SELECT 
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -228,6 +229,7 @@ def reset_device_cache() -> None:
         _rotation_resend_at.clear()
     _device_hw_id_done.clear()
     _hw_id_conflict.clear()
+    _camera_missing_columns.clear()
     _device_caps_cache.clear()
 
 
@@ -374,19 +376,65 @@ def _hw_id_holders(sb: Client, table: str, id_col: str, entity_uuid: str, hw_id:
     return [str(r.get(id_col) or r.get("id")) for r in rows if isinstance(r, dict)]
 
 
-# 카메라가 "살아있다"는 표시. 이 두 필드는 어떤 선택 필드 실패에도 기록돼야 한다.
-_CAMERA_LIVENESS_FIELDS = ("last_seen_at", "is_online")
+# heartbeat 가 "DB 에 없다"고 거부당한 cameras 컬럼 → 다시 시도할 monotonic 시각.
+# 마이그레이션 누락은 사람이 SQL 을 적용하기 전엔 안 고쳐지므로, 그동안은 미리 빼서
+# 15초×N대 실패 쓰기·경고 스팸을 막는다. TTL 이라 적용 후엔 재시작 없이 다시 쓴다.
+CAMERA_MISSING_COLUMN_TTL_SEC = 600.0
+_camera_missing_columns: dict[str, float] = {}
+
+# PGRST204: Could not find the 'x' column of 'cameras' in the schema cache
+# 42703:    column "x" of relation "cameras" does not exist
+_MISSING_COLUMN_RE = re.compile(r"'(\w+)' column|column \"(\w+)\"")
 
 
-def _update_camera_liveness(
+def _missing_column(exc: APIError) -> str | None:
+    """컬럼 누락 에러면 그 컬럼명, 아니면 None."""
+    if exc.code not in ("PGRST204", "42703"):
+        return None
+    m = _MISSING_COLUMN_RE.search(exc.message or "")
+    return (m.group(1) or m.group(2)) if m else None
+
+
+def _write_camera_heartbeat(
     sb: Client, label: str, entity_uuid: str, update: dict[str, Any]
-) -> None:
-    """heartbeat 가 선택 필드 때문에 실패했을 때 필수 필드만 다시 쓴다."""
-    liveness = {k: update[k] for k in _CAMERA_LIVENESS_FIELDS}
-    try:
-        sb.table("cameras").update(liveness).eq("id", entity_uuid).execute()
-    except Exception:  # noqa: BLE001
-        logger.exception("cameras 필수 필드 UPDATE 도 실패 (camera=%s)", label)
+) -> dict[str, Any] | None:
+    """cameras heartbeat UPDATE. 실제로 DB 에 들어간 필드를 돌려준다(실패면 None).
+
+    평소엔 한 문장으로 쓴다(DB 쓰기·Realtime 이벤트 1회). 선택 필드 하나 때문에
+    last_seen_at/is_online 까지 막히지 않게 — 2026-09-28 image_state 컬럼 누락으로 녹화 중인
+    카메라가 전부 오프라인으로 보인 사고(9/21 hw_id 와 같은 구조):
+    - 컬럼 누락(PGRST204/42703) → 그 컬럼만 빼고 다시 쓴다. 나머지 선택 필드는 산다.
+    - 그 밖의 쿼리 거부(APIError: 타입·제약 위반 등) → 원인 필드를 모르니 필수 필드만.
+    - 네트워크/타임아웃 → 재시도 안 함. 같은 이유로 또 실패하고 부하만 늘린다(15초 뒤 다음 heartbeat).
+    """
+    now = time.monotonic()
+    liveness = {"last_seen_at": update["last_seen_at"], "is_online": update["is_online"]}
+    payload = {k: v for k, v in update.items() if _camera_missing_columns.get(k, 0.0) <= now}
+    while True:
+        try:
+            sb.table("cameras").update(payload).eq("id", entity_uuid).execute()
+            return payload
+        except APIError as exc:
+            col = _missing_column(exc)
+            if col in payload and col not in liveness:
+                _camera_missing_columns[col] = now + CAMERA_MISSING_COLUMN_TTL_SEC
+                logger.warning(
+                    "cameras.%s 컬럼 없음 — 마이그레이션 누락? %d초간 heartbeat 에서 빼고 씀 (camera=%s)",
+                    col, CAMERA_MISSING_COLUMN_TTL_SEC, label,
+                )
+                payload = {k: v for k, v in payload.items() if k != col}
+            elif payload != liveness:
+                logger.exception(
+                    "cameras heartbeat UPDATE 거부 (camera=%s, 필드=%s) — 필수 필드만 재시도",
+                    label, sorted(payload),
+                )
+                payload = liveness
+            else:
+                logger.exception("cameras heartbeat UPDATE 실패 (camera=%s)", label)
+                return None
+        except Exception:  # noqa: BLE001
+            logger.exception("cameras heartbeat UPDATE 실패 (camera=%s)", label)
+            return None
 
 
 def _backfill_hw_id(
@@ -624,22 +672,11 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
             if img.get("ae_frozen") is True:
                 logger.warning("camera %s: AE 진동 동결 중 img=%s", device_id_text, img)
 
-        # 평소엔 한 문장으로 쓴다(DB 쓰기·Realtime 이벤트 1회). 선택 필드 때문에 실패하면
-        # (마이그레이션 누락 컬럼 등) 필수 필드만으로 한 번 더 쓴다 — 2026-09-28 image_state
-        # 컬럼 누락으로 녹화 중인 카메라가 전부 오프라인으로 보인 사고(9/21 hw_id 와 같은 구조).
-        try:
-            sb.table("cameras").update(update).eq("id", entity_uuid).execute()
-        except Exception:  # noqa: BLE001
-            optional = sorted(set(update) - set(_CAMERA_LIVENESS_FIELDS))
-            logger.exception(
-                "cameras heartbeat UPDATE 실패 (camera=%s, 선택 필드=%s) — 필수 필드만 재시도",
-                device_id_text, optional,
-            )
-            if optional:
-                _update_camera_liveness(sb, device_id_text, entity_uuid, update)
-        else:
-            if "capabilities" in update:
-                _camera_state_patch(entity_uuid, capabilities=update["capabilities"])
+        # 선택 필드 실패가 온라인 표시를 막지 않게 — 정책은 _write_camera_heartbeat 참고.
+        # capabilities 는 실제로 들어갔을 때만 캐시에 반영(실패했는데 넣으면 영영 안 써진다).
+        written = _write_camera_heartbeat(sb, device_id_text, entity_uuid, update)
+        if written is not None and "capabilities" in written:
+            _camera_state_patch(entity_uuid, capabilities=written["capabilities"])
 
         # 하드웨어 ID(2026-09-21): 구 펌웨어로 등록돼 NULL 인 행을 새 펌웨어 하트비트가 한 번
         # 채운다. 보드가 바뀌지 않는 한 불변이라 성공 후엔 캐시에 반영해 다시 쓰지 않는다.

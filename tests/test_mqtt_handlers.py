@@ -768,44 +768,172 @@ def _missing_column_error(column: str) -> APIError:
                      "code": "PGRST204", "details": None, "hint": None})
 
 
-def _camera_factory_missing_column(updates: list[dict], column: str) -> "callable":
-    """`column` 이 담긴 UPDATE 를 PGRST204 로 거부하는 cameras 테이블 mock (마이그레이션 누락 재현)."""
-    base = _camera_state_table_factory(updates)
+def _camera_factory_rejecting(
+    updates: list[dict], reject: "callable", *, rotate_180: bool = False,
+    capabilities: dict | None = None,
+) -> "callable":
+    """cameras UPDATE 마다 `reject(payload)` 가 돌려준 예외를 던지는 mock (None 이면 성공)."""
+    base = _camera_state_table_factory(updates, rotate_180=rotate_180, capabilities=capabilities)
 
     def _table(name: str) -> MagicMock:
         t = base(name)
         if name == "cameras":
             def _update(payload: dict) -> MagicMock:
                 updates.append(payload)
-                if column in payload:
-                    raise _missing_column_error(column)
+                exc = reject(payload)
+                if exc is not None:
+                    raise exc
                 return t._upd
             t.update.side_effect = _update
         return t
     return _table
 
 
+def _reject_column(column: str) -> "callable":
+    """`column` 이 담긴 UPDATE 를 PGRST204 로 거부 (마이그레이션 누락 재현)."""
+    return lambda payload: _missing_column_error(column) if column in payload else None
+
+
 def test_camera_missing_optional_column_keeps_heartbeat(
     fake_sb: MagicMock, published: list, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """선택 필드 컬럼이 DB 에 없어도 last_seen_at/is_online 은 갱신된다.
+    """DB 에 없는 컬럼 하나만 빼고 다시 쓴다 — last_seen_at/is_online 과 나머지 선택 필드는 산다.
 
     2026-09-17~28: 펌웨어가 보낸 `img` 를 cameras.image_state 에 쓰는데 그 컬럼 마이그레이션이
     누락돼 heartbeat UPDATE 가 통째로 실패 → 녹화 중인 카메라가 전부 오프라인으로 보였다
-    (9/21 hw_id 와 같은 구조). 선택 필드가 실패하면 필수 필드만으로 한 번 더 쓴다.
+    (9/21 hw_id 와 같은 구조).
     """
     updates: list[dict] = []
-    fake_sb.table.side_effect = _camera_factory_missing_column(updates, "image_state")
+    fake_sb.table.side_effect = _camera_factory_rejecting(updates, _reject_column("image_state"))
     clips = {"rec": 3, "skip": 0, "up_fail": 0, "up_busy_s": -1}
 
-    with caplog.at_level(logging.ERROR):
+    with caplog.at_level(logging.WARNING):
         handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "clips": clips, "img": {"exp": 120}})
 
     assert len(updates) == 2
     assert "image_state" in updates[0]                   # 1차: 한 문장으로 시도
-    assert set(updates[1]) == {"last_seen_at", "is_online"}  # 2차: 필수 필드만
-    assert updates[1]["is_online"] is True
-    assert "image_state" in caplog.text                  # 어떤 필드가 문제였는지 로그에 남는다
+    assert set(updates[1]) == {"last_seen_at", "is_online", "clip_stats", "clip_stats_at"}
+    assert updates[1]["is_online"] is True               # 2차: 없는 컬럼만 뺐다
+    assert "image_state" in caplog.text                  # 어떤 컬럼이 문제였는지 로그에 남는다
+
+
+def test_camera_missing_column_is_remembered(
+    fake_sb: MagicMock, published: list, caplog: pytest.LogCaptureFixture
+) -> None:
+    """없는 컬럼은 기억해 다음 heartbeat 부터 미리 뺀다 — 15초×N대 실패 쓰기·경고 스팸 방지."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_factory_rejecting(updates, _reject_column("image_state"))
+
+    with caplog.at_level(logging.WARNING):
+        handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "img": {"exp": 120}})
+        handlers.handle_telemetry(CAMERA_TEXT, {"ts": 2, "img": {"exp": 121}})
+
+    assert len(updates) == 3                             # 1회차 2번(실패+재시도), 2회차 1번
+    assert "image_state" not in updates[2]
+    assert caplog.text.count("cameras.image_state") == 1  # 경고는 한 번만
+    assert "Traceback" not in caplog.text                # 스택트레이스 스팸 없음
+
+
+def test_camera_missing_column_is_retried_after_ttl(
+    fake_sb: MagicMock, published: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """마이그레이션을 적용하면 TTL 뒤엔 재시작 없이 다시 쓴다."""
+    updates: list[dict] = []
+    missing = {"image_state"}
+    fake_sb.table.side_effect = _camera_factory_rejecting(
+        updates, lambda p: next((_missing_column_error(c) for c in missing if c in p), None))
+    clock = [1000.0]
+    monkeypatch.setattr(handlers.time, "monotonic", lambda: clock[0])
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "img": {"exp": 120}})
+    missing.clear()                                      # 운영에서 마이그레이션 적용
+    clock[0] += handlers.CAMERA_MISSING_COLUMN_TTL_SEC + 1
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 2, "img": {"exp": 121}})
+
+    assert "image_state" in updates[-1]
+
+
+def test_camera_rejected_optional_value_falls_back_to_liveness(
+    fake_sb: MagicMock, published: list, caplog: pytest.LogCaptureFixture
+) -> None:
+    """컬럼 누락이 아닌 쿼리 거부(타입·제약 위반 등)는 원인 필드를 모르니 필수 필드만 다시 쓴다."""
+    updates: list[dict] = []
+    bad_json = APIError({"message": "invalid input syntax for type json", "code": "22P02",
+                         "details": None, "hint": None})
+    fake_sb.table.side_effect = _camera_factory_rejecting(
+        updates, lambda p: bad_json if "clip_stats" in p else None)
+
+    with caplog.at_level(logging.ERROR):
+        handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "clips": {"rec": 1}})
+
+    assert len(updates) == 2
+    assert set(updates[1]) == {"last_seen_at", "is_online"}
+    assert "clip_stats" in caplog.text
+
+
+def test_camera_transient_error_is_not_retried(
+    fake_sb: MagicMock, published: list, caplog: pytest.LogCaptureFixture
+) -> None:
+    """네트워크/타임아웃은 재시도해도 같은 이유로 실패하고 부하만 늘린다 — 다음 heartbeat 에 맡긴다."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_factory_rejecting(
+        updates, lambda p: ConnectionError("supabase down"))
+
+    with caplog.at_level(logging.ERROR):
+        handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "clips": {"rec": 1}})
+
+    assert len(updates) == 1
+    assert "cameras heartbeat UPDATE 실패" in caplog.text
+
+
+def test_camera_liveness_retry_failure_does_not_abort_telemetry(
+    fake_sb: MagicMock, published: list
+) -> None:
+    """필수 필드 재시도까지 실패해도 예외가 새지 않고 뒤 단계(rotate_180 동기화)는 돈다."""
+    updates: list[dict] = []
+    rejected = APIError({"message": "boom", "code": "XX000", "details": None, "hint": None})
+    fake_sb.table.side_effect = _camera_factory_rejecting(
+        updates, lambda p: rejected, rotate_180=True)
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "clips": {"rec": 1}, "rotate_180": False})
+
+    assert len(updates) == 2                             # 전체 1번 + 필수 필드 1번, 그 이상 없음
+    assert set(updates[1]) == {"last_seen_at", "is_online"}
+    assert len(published) == 1                           # DB(True) ≠ 보고(False) → 재발행
+
+
+def test_camera_capabilities_cached_only_when_written(
+    fake_sb: MagicMock, published: list
+) -> None:
+    """capabilities 는 실제로 DB 에 들어갔을 때만 캐시에 반영한다.
+
+    실패했는데 캐시에 넣으면 다음 heartbeat 가 "같은 값"으로 보고 빼버려 영영 저장되지 않는다.
+    """
+    caps = {"rotate_180": True}
+    updates: list[dict] = []
+    bad = APIError({"message": "boom", "code": "XX000", "details": None, "hint": None})
+    fake_sb.table.side_effect = _camera_factory_rejecting(
+        updates, lambda p: bad if len(p) > 2 else None)    # 필수 필드만일 때만 성공
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "capabilities": caps})
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 2, "capabilities": caps})
+
+    assert sum("capabilities" in u for u in updates) == 2  # 실패했으니 다음에도 다시 시도
+
+
+def test_camera_capabilities_cached_when_saved_after_column_strip(
+    fake_sb: MagicMock, published: list
+) -> None:
+    """없는 컬럼만 빼고 재시도해 capabilities 가 저장됐으면 캐시 반영 — 매 heartbeat 재기록 안 함."""
+    caps = {"rotate_180": True}
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_factory_rejecting(updates, _reject_column("image_state"))
+
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "capabilities": caps, "img": {"exp": 1}})
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 2, "capabilities": caps, "img": {"exp": 1}})
+
+    assert "capabilities" in updates[1]                  # 재시도에서 저장됨
+    assert "capabilities" not in updates[2]              # 같은 값이라 다음엔 안 씀
 
 
 def test_camera_heartbeat_writes_once_when_columns_exist(fake_sb: MagicMock, published: list) -> None:
