@@ -53,6 +53,7 @@ Content-Type: application/json
 | `PATCH` | `/cameras/{id}` | JWT | 카메라 수정 (name/resolution/fps/clip_sec/enclosure_id/**rotate_180**) |
 | `POST` | `/cameras/{id}/unlink` | JWT | **카메라 등록 해제 (소프트, 클립·R2 보존)** |
 | `DELETE` | `/cameras/{id}` | JWT | 카메라 hard delete (운영·탈퇴용, 앱 미사용) |
+| `POST` | `/cameras/{id}/reboot` | JWT | **카메라 원격 재부팅** (MQTT `reboot` 명령 1회 발행, 2026-09-28) |
 | `POST` | `/cameras/{id}/clips/upload-url` | **Camera Token** | R2 presigned PUT URL 발급 |
 | `POST` | `/cameras/{id}/clips` | **Camera Token** | 업로드 완료 후 모션 클립 메타 등록 |
 | `GET` | `/enclosures/{id}/clips` | JWT | 사육장의 모션 클립 목록 (cursor pagination) |
@@ -751,6 +752,31 @@ ICE candidate 추가.
 ```json
 { "session_id": "uuid" }
 ```
+
+---
+
+### 4.8 `POST /cameras/{id}/reboot` — 원격 재부팅 (2026-09-28)
+
+하트비트는 살아 있는데 녹화·업로드가 멈춘 카메라를 전원 재투입 없이 살리는 용도.
+
+```
+POST /cameras/{camera_uuid}/reboot        (본문 없음)
+→ 200 { "published": true,  "msg_id": "uuid" }   MQTT `reboot` 명령 발행됨 (TTL 60초, retain 없음)
+→ 200 { "published": false, "msg_id": null }      브로커 발행 실패 — 5xx 대신 이렇게. 앱은 잠시 후 재시도
+→ 404 { "detail": "camera not found" }            타인 카메라 / unlinked
+```
+
+- 신 펌웨어(`firmware_ver` ≥ `fb2-p4 0.2.0`): ack 후 1.5초 뒤 재부팅, `clip_stats.sys.reset = "SW:mqtt_reboot"`.
+  구 펌웨어: `rejected_unknown_action` — 아무 일 없음. 오프라인 카메라: TTL 안에 못 받으면 유실.
+- 앱은 ack 를 보지 않는다. 완료 판정은 `cameras` Realtime 에서 `clip_stats.sys.uptime_s` 감소 + `reset` 값.
+- 앱 안내: [APP_CAMERA_REBOOT_HEALTH_2026-09-28.md](APP_CAMERA_REBOOT_HEALTH_2026-09-28.md)
+
+### 4.9 `CameraOut.clip_stats` / `firmware_ver` (하트비트 반영 필드)
+
+- `clip_stats` (object | null): 15초 하트비트마다 갱신. `rec/skip/skip_lock/up_ok/up_fail/sd_ok/sd_fail/sd_backlog`(누적 건수),
+  `last_rec_s`/`up_busy_s`(초, -1=없음), `last_err{stage,err,http,age_s}`(신 펌웨어, 마지막 업로드 실패),
+  `sys{uptime_s,reset,heap,rssi}`(`rssi` dBm 은 신 펌웨어). `clip_stats_at` 은 마지막 갱신 시각.
+- `firmware_ver`: 페어링 값 + 신 펌웨어부터 하트비트 `fw` 로 갱신(값이 다를 때만 UPDATE). 구 펌웨어는 `"fb2-p4 0.1.0"`/null 고정.
 
 ---
 

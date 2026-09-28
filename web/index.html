@@ -1657,6 +1657,16 @@ async function pairDevice() {
 
 // 소프트 해제 — POST /devices|cameras/{id}/unlink. 앱의 "기기 삭제"가 부르는 경로와 동일.
 // 행·기록은 보존되고 목록에서만 사라진다. request_id 는 앱처럼 호출측이 생성(멱등 키).
+async function rebootCamera(id, label) {
+  // POST /cameras/{id}/reboot (2026-09-28). 앱 버튼과 같은 계약. 결과는 서버 로그의
+  // "reboot 발행 … msg_id" ↔ "camera ack … msg_id" 짝으로 확인.
+  if (!confirm(`${label} 재부팅?\n약 30초간 꺼졌다 켜짐 (라이브/녹화 중단). 구 펌웨어(0.1.0)는 무반응.`)) return;
+  const r = await api('/cameras/' + id + '/reboot', { method: 'POST' });
+  if (!r) return;
+  toast(r.published ? `reboot 발행 · msg_id ${r.msg_id}` : 'reboot 발행 실패(브로커) — 잠시 후 재시도',
+        r.published ? 'good' : 'bad');
+}
+
 async function unlinkDevice(kind, id) {
   if (!confirm('등록 해제? (기록은 보존, 목록에서만 사라짐)')) return;
   const r = await api('/' + kind + '/' + id + '/unlink', {
@@ -1928,7 +1938,7 @@ async function loadCameras() {
     CAM_LAST[r.id] = r;
     const tr = document.createElement('tr');
     tr.dataset.id = r.id;
-    tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td><select onchange="assignEnclosure('cameras','${r.id}',this.value)" style="max-width:130px">${enclosureOptions(r.enclosure_id)}</select></td><td class="cam-online">${onlineCellHtml(r)}</td><td class="cam-rotate">${rotateCellHtml(r)}</td><td class="cam-clips">${clipCellHtml(r)}</td><td style="white-space:nowrap"><button onclick="openLive('${r.id}', '${esc(r.camera_id)}')">라이브</button> <button onclick="unlinkDevice('cameras','${r.id}')" title="소프트 해제 — 클립·R2 보존">해제</button> <button class="danger" onclick="deleteCamera('${r.id}')" title="hard delete — 클립 메타까지 삭제(운영용)">삭제</button></td>`;
+    tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td><select onchange="assignEnclosure('cameras','${r.id}',this.value)" style="max-width:130px">${enclosureOptions(r.enclosure_id)}</select></td><td class="cam-online">${onlineCellHtml(r)}</td><td class="cam-rotate">${rotateCellHtml(r)}</td><td class="cam-clips">${clipCellHtml(r)}</td><td style="white-space:nowrap"><button onclick="openLive('${r.id}', '${esc(r.camera_id)}')">라이브</button> <button onclick="rebootCamera('${r.id}','${esc(r.camera_id)}')" title="MQTT reboot 명령 1회 발행 — 신 펌웨어(≥0.2.0)만 반응, 구 펌웨어는 rejected 로그만">재부팅</button> <button onclick="unlinkDevice('cameras','${r.id}')" title="소프트 해제 — 클립·R2 보존">해제</button> <button class="danger" onclick="deleteCamera('${r.id}')" title="hard delete — 클립 메타까지 삭제(운영용)">삭제</button></td>`;
     tbody.appendChild(tr);
   });
 }

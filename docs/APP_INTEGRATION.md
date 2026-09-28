@@ -502,6 +502,11 @@ R2 presigned URL TTL 1시간. 그 안에 재생/시크 가능. 만료 후 재호
 
 ---
 
+## 7.4-b 카메라 원격 재부팅 · 상태 진단 필드 (2026-09-28)
+
+`POST /cameras/{id}/reboot` 와 `clip_stats`(rssi/last_err/sys.reset), `firmware_ver` 하트비트 갱신은 별도 문서:
+**[docs/APP_CAMERA_REBOOT_HEALTH_2026-09-28.md](APP_CAMERA_REBOOT_HEALTH_2026-09-28.md)** (계약 정본 [API.md §4.8·4.9](API.md)).
+
 ## 7.5 카메라 라이브 스트리밍 (WebRTC)
 
 라이브는 별도 문서: **[docs/APP_WEBRTC.md](APP_WEBRTC.md)**.

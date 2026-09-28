@@ -788,6 +788,13 @@ def handle_ack(device_id_text: str, payload: dict[str, Any]) -> None:
         return
 
     if entity_type == "camera":
+        # 발행 로그("reboot 발행 camera=… msg_id=…")와 msg_id 로 짝을 맞춰 명령 도착·거부
+        # (구 펌웨어 rejected_unknown_action)를 서버 로그만으로 확인한다(앱팀 요청 2026-09-28).
+        # webrtc_answer/ice ack 는 payload 가 크므로 식별 필드만 남긴다.
+        logger.info(
+            "camera ack camera=%s msg_id=%s result=%s action=%s",
+            device_id_text, payload.get("msg_id"), payload.get("result"), payload.get("action"),
+        )
         try:
             sb = get_supabase_client()
             sb.table("cameras").update({

@@ -582,6 +582,17 @@ def test_handle_telemetry_camera_updates_last_seen_only(fake_sb: MagicMock) -> N
     assert "last_seen_at" in updates[0]
 
 
+def test_handle_ack_camera_logs_msg_id_and_result(
+    fake_sb: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """카메라 ack 는 commands 테이블이 없어 msg_id·result 를 info 로그로 남긴다(발행 로그와 대조)."""
+    fake_sb.table.side_effect = _camera_table_factory([])
+    with caplog.at_level(logging.INFO, logger="backend.mqtt.handlers"):
+        handlers.handle_ack(CAMERA_TEXT, {"msg_id": "m-reboot-1", "result": "rejected_unknown_action"})
+    line = next(r.getMessage() for r in caplog.records if "camera ack" in r.getMessage())
+    assert "msg_id=m-reboot-1" in line and "result=rejected_unknown_action" in line
+
+
 def test_handle_ack_camera_updates_last_seen_only(fake_sb: MagicMock) -> None:
     """카메라 ack: commands 매칭 안 하고 cameras.last_seen 만 갱신."""
     updates: list[dict] = []
