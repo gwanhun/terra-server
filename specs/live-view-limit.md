@@ -1,6 +1,6 @@
 # 라이브 시청 제한 — 15분 상한·5분 쉼·한 기기 (2026-09-30)
 
-> 상태: 🟡 구현 PR 제출, 앱 적용 대기 · 결정: owner 2026-09-29 · 근거: `specs/camera-reliability-2026-09.md` P4
+> 상태: 🟡 서버 PR #15 제출 · 앱 0.144.0+363 main 병합(09-30) · 서버 배포 대기 · 결정: owner 2026-09-29 · 근거: `specs/camera-reliability-2026-09.md` P4
 > 서버: `backend/live_session.py` · 앱 전달: `docs/APP_LIVE_VIEW_LIMIT_2026-09-30.md`
 
 ## 왜
@@ -49,5 +49,7 @@
 - [x] 서버 규칙 단위 테스트(시작·같은 기기·60초 재시작·쉼·만료 전 요청·다른 기기·가져오기·구버전·라벨·늦은 close·만료 스윕)
 - [x] 라우터 연결 테스트(409/429 매핑, 가져오기 close, 실패 시 해제, close 조건부)
 - [ ] migration 적용 (gwanhun, **배포 전**)
-- [ ] 앱 적용 (`docs/APP_LIVE_VIEW_LIMIT_2026-09-30.md`)
+- [x] 앱 적용 — 0.144.0+363 main 병합(09-30, 테스트 1334 통과·Android/iOS 빌드). 가져오기는 사용자 선택 1회 요청에만,
+      taken_over/time_limit 에서 close 미전송·자동 재연결 중단. 기기 이름: iOS "iPhone 15", Android "Samsung SM-S921N"(판매명 아님)
+- [ ] 배포 후 두 기기 실기기 확인(가져오기·15분 종료) — **10-03 전이면 현장 테스트 카메라 A·B·C 제외**
 - [ ] 적용 후 1주: webrtc_connect_logs 로 stalled·rtc_loop_stall 감소 확인
