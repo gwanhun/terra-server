@@ -287,3 +287,22 @@ def test_bridge_restart_same_boot_reset_alert_not_duplicated() -> None:
                       "triggered_at": datetime.fromtimestamp(boot + 10, tz=timezone.utc).isoformat()}])
     _hb(db, T0, uptime=40, reset="PANIC")
     assert db.inserts == []
+
+
+def test_late_heartbeat_is_not_a_new_boot() -> None:
+    """리뷰 지적: 브리지가 DB 지연으로 heartbeat 를 100초 늦게 처리해도(uptime 은 계속 증가) 새 부팅이 아니다.
+    reset 사유(PANIC)는 부팅 내내 그대로라, 오판하면 같은 크래시 알림이 또 생긴다."""
+    db = _Sb()
+    _hb(db, T0, uptime=10, reset="PANIC")                  # 크래시 부팅 → 알림 1
+    _hb(db, T0 + 15, uptime=25, reset="PANIC")
+    _hb(db, T0 + 130, uptime=40, reset="PANIC")            # 100초 늦게 처리된 heartbeat
+    _hb(db, T0 + 135, uptime=135, reset="PANIC")
+    assert len(db.inserts) == 1
+
+
+def test_late_heartbeat_does_not_reset_stall_window() -> None:
+    db = _Sb()
+    _hb(db, T0, uptime=1000, up_ok=5, up_fail=0)
+    _hb(db, T0 + 900, uptime=1850, up_ok=5, up_fail=2)     # 50초 늦게 처리
+    _hb(db, T0 + 1800, uptime=2800, up_ok=5, up_fail=5)
+    assert [r["kind"] for r in db.inserts] == ["camera_upload_stalled"]

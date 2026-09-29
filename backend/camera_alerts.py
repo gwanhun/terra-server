@@ -62,11 +62,12 @@ _MESSAGES = {
 
 
 class _Cam:
-    __slots__ = ("boot_ts", "ok_val", "ok_ts", "fail_base", "active", "resolve_checked",
+    __slots__ = ("boot_ts", "prev_uptime", "ok_val", "ok_ts", "fail_base", "active", "resolve_checked",
                  "pending_reset")
 
     def __init__(self) -> None:
-        self.boot_ts: float | None = None
+        self.boot_ts: float | None = None       # 현재 부팅 추정 시각 — DB 중복 확인(since)용
+        self.prev_uptime: float | None = None   # 직전 heartbeat uptime — 새 부팅 판정용
         self.ok_val: int | None = None
         self.ok_ts = 0.0
         self.fail_base = 0
@@ -146,13 +147,15 @@ def _evaluate(sb: Any, camera_uuid: str, label: str, sys_state: dict[str, Any] |
     reason = (sys_state or {}).get("reset")
     new_boot = False
     if isinstance(uptime, (int, float)):
-        boot_ts = now - float(uptime)
-        if st.boot_ts is None:
-            new_boot = uptime < FRESH_UPTIME_SEC
-        elif boot_ts > st.boot_ts + BOOT_TOLERANCE_SEC:
-            new_boot = True
+        # 새 부팅 = uptime 감소. 부팅 시각(now - uptime) 비교는 쓰지 않는다 — 브리지가 DB 지연으로
+        # heartbeat 를 늦게 처리하면 부팅 시각이 밀려 보여 새 부팅으로 오판한다(리뷰 09-29).
+        if st.prev_uptime is None:
+            new_boot = uptime < FRESH_UPTIME_SEC      # 브리지 재시작 직후 첫 관측
+        else:
+            new_boot = uptime < st.prev_uptime
+        st.prev_uptime = float(uptime)
         if st.boot_ts is None or new_boot:
-            st.boot_ts = boot_ts
+            st.boot_ts = now - float(uptime)
     if new_boot:
         st.ok_val = None                     # 카운터가 0 부터 다시 센다 — 창 재시작
         st.active.discard(KIND_RESET)        # 새 부팅의 크래시는 새 알림
