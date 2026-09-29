@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from backend.auth import get_current_user_id
 from backend.supabase_client import get_supabase_client
+from backend.webrtc_offer_guard import OfferRateLimiter, get_offer_limiter
 from backend.webrtc_relay import get_relay
 from backend.webrtc_signaling import (
     MqttWebRTCSignaling,
@@ -251,13 +252,26 @@ def get_webrtc_config(user_id: str = Depends(get_current_user_id)) -> WebRTCConf
     '/{camera_uuid}/webrtc/offer',
     response_model=WebRTCAnswerOut,
     summary='앱 SDP offer 를 카메라로 전달하고 answer 반환',
+    responses={429: {'description': '카메라당 시간당 offer 상한 초과. Retry-After(초) 뒤 재시도'}},
 )
 def create_webrtc_offer(
     camera_uuid: str,
     body: WebRTCOfferIn,
     user_id: str = Depends(get_current_user_id),
+    limiter: OfferRateLimiter = Depends(get_offer_limiter),
 ) -> WebRTCAnswerOut:
     camera = _owned_camera(camera_uuid, user_id)
+    # 시간당 안전망(2026-09-29 P4): 앱 재연결 루프가 카메라를 멈추게 한 사고 대응. 소유권 확인 뒤에 센다
+    # (남이 내 카메라 예산을 못 쓰게). 상세 근거는 backend/webrtc_offer_guard.py.
+    retry_after = limiter.check(camera_uuid)
+    if retry_after is not None:
+        logger.warning('webrtc offer 시간당 상한 초과 (camera=%s, retry_after=%ss)',
+                       camera['camera_id'], retry_after)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail='live offer rate limit exceeded for this camera',
+            headers={'Retry-After': str(retry_after)},
+        )
     session_id = body.session_id or str(uuid4())
     # 카메라(esp_peer)의 mbedtls DTLS 서버는 조각난 ClientHello 재조립을 못 함
     # (MBEDTLS_ERR_SSL_FEATURE_UNAVAILABLE). offer 의 setup:actpass → passive 로 바꿔
