@@ -28,7 +28,7 @@ DEVICE_UUID = "11111111-1111-1111-1111-aaaaaaaaaaaa"
 FULL_CAMERA_PAYLOAD = {
     "ts": 1, "uptime_sec": 10, "free_heap": 1000, "reset": "POWERON",
     "rotate_180": False, "capabilities": {"rotate_180": True}, "hw_id": "30EDA0E22E80",
-    "clips": {"rec": 1}, "img": {"exp": 120},
+    "clips": {"rec": 1}, "img": {"exp": 120}, "fw": "fb2-p4 0.2.0", "wifi_rssi": -40,
 }
 FULL_DEVICE_PAYLOAD = {
     "ts": 1_748_000_000, "dht22_a": {"ok": True, "t": 30, "h": 50},
@@ -106,7 +106,7 @@ def test_telemetry_writes_only_migrated_columns(
 ) -> None:
     handlers.handle_telemetry(entity_text, dict(payload))
 
-    tables = {t for t in writes if t in {"cameras", "devices", "telemetry"}}
+    tables = {t for t in writes if t in {"cameras", "devices", "telemetry", "camera_health_events"}}
     assert tables, "쓰기가 하나도 잡히지 않음 — mock 이 핸들러 경로와 어긋남"
     for table in tables:
         written = {k for p in writes[table] for k in p}

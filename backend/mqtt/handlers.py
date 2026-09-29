@@ -41,6 +41,7 @@ from typing import Any
 from postgrest.exceptions import APIError
 from supabase import Client
 
+from backend import camera_health
 from backend.mqtt.camera_commands import rotation_command
 from backend.supabase_client import get_supabase_client
 
@@ -232,6 +233,7 @@ def reset_device_cache() -> None:
     _missing_columns.clear()
     _device_caps_cache.clear()
     _uptime_prev.clear()
+    camera_health.reset()
     from backend import schedule_restore  # 지연 import (schedule_restore → command_service, handlers 미참조)
     schedule_restore.reset()
 
@@ -695,6 +697,15 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
             _camera_state_patch(entity_uuid, capabilities=written["capabilities"])
         if written is not None and "firmware_ver" in written:
             _camera_state_patch(entity_uuid, firmware_ver=written["firmware_ver"])
+
+        # 진단값 이력(2026-09-29): 재시작 이벤트 + 10분 스냅샷을 camera_health_events 에.
+        # heartbeat UPDATE 가 끝난 뒤 별도 INSERT — 여기 실패가 온라인 표시를 막지 않는다.
+        try:
+            camera_health.record(sb, entity_uuid, sys_state,
+                                 clips if isinstance(clips, dict) else None,
+                                 fw if fw_ok else None)
+        except Exception:  # noqa: BLE001
+            logger.exception("camera_health 기록 실패 (camera=%s)", device_id_text)
 
         # 하드웨어 ID(2026-09-21): 구 펌웨어로 등록돼 NULL 인 행을 새 펌웨어 하트비트가 한 번
         # 채운다. 보드가 바뀌지 않는 한 불변이라 성공 후엔 캐시에 반영해 다시 쓰지 않는다.

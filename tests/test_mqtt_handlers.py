@@ -999,6 +999,62 @@ def test_camera_heartbeat_writes_once_when_columns_exist(fake_sb: MagicMock, pub
     assert len(updates) == 1
 
 
+def _health_table_factory(
+    updates: list[dict], health_rows: list[dict], *, insert_exc: Exception | None = None,
+) -> "callable":
+    """_camera_state_table_factory + camera_health_events insert 캡처(또는 실패 주입)."""
+    base = _camera_state_table_factory(updates)
+
+    def _table(name: str) -> MagicMock:
+        if name != "camera_health_events":
+            return base(name)
+        t = MagicMock()
+        t.select.return_value.eq.return_value.order.return_value.limit.return_value \
+            .execute.return_value.data = []
+        def _insert(row: dict) -> MagicMock:
+            if insert_exc is not None:
+                raise insert_exc
+            health_rows.append(row)
+            return MagicMock()
+        t.insert.side_effect = _insert
+        return t
+    return _table
+
+
+def test_camera_heartbeat_records_health_snapshot(fake_sb: MagicMock, published: list) -> None:
+    """heartbeat 의 clips·sys·fw 가 camera_health_events 스냅샷으로 남는다(P1)."""
+    updates: list[dict] = []
+    health: list[dict] = []
+    fake_sb.table.side_effect = _health_table_factory(updates, health)
+
+    handlers.handle_telemetry(CAMERA_TEXT, {
+        "ts": 1, "uptime_sec": 11738, "reset": "PANIC", "free_heap": 18788896, "wifi_rssi": -38,
+        "fw": "fb2-p4 0.2.0-20260928", "clips": {"up_ok": 24, "up_fail": 84},
+    })
+
+    assert len(updates) == 1 and updates[0]["is_online"] is True
+    assert len(health) == 1
+    assert health[0]["camera_id"] == CAMERA_UUID
+    assert health[0]["kind"] == "snapshot"
+    assert health[0]["reset"] == "PANIC" and health[0]["up_fail"] == 84
+    assert health[0]["fw"] == "fb2-p4 0.2.0-20260928"
+
+
+def test_camera_health_failure_does_not_break_heartbeat(fake_sb: MagicMock, published: list) -> None:
+    """이력 INSERT 가 터져도 heartbeat(last_seen/is_online/clip_stats)는 그대로 — 9/17·9/21 사고 재발 방지."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _health_table_factory(
+        updates, [], insert_exc=RuntimeError("supabase down"))
+
+    handlers.handle_telemetry(CAMERA_TEXT, {
+        "ts": 1, "uptime_sec": 100, "reset": "PANIC", "clips": {"up_ok": 1},
+    })
+
+    assert len(updates) == 1
+    assert updates[0]["is_online"] is True
+    assert updates[0]["clip_stats"]["up_ok"] == 1
+
+
 def test_device_hw_id_conflict_does_not_break_heartbeat(
     fake_sb: MagicMock, caplog: pytest.LogCaptureFixture
 ) -> None:
