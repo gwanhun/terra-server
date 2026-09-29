@@ -10,6 +10,8 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
+from httpx import Response
+from postgrest.exceptions import APIError
 
 from backend.crypto import hash_token
 from tests.conftest import TEST_USER_ID
@@ -150,6 +152,91 @@ def test_create_clip_meta_ok(
     assert insert_payload["r2_key"] == key
     # 촬영 목적: terra-clips/clips/ key 에서 서버가 도출 → "production" (운영 승격)
     assert insert_payload["clip_purpose"] == "production"
+
+
+def _dup_pk_error() -> APIError:
+    return APIError({
+        "message": 'duplicate key value violates unique constraint "motion_clips_pkey"',
+        "code": "23505", "details": None, "hint": None,
+    })
+
+
+def _post_meta(app_client: TestClient, key: str) -> Response:
+    return app_client.post(
+        f"/cameras/{CAMERA_UUID}/clips",
+        headers={"Authorization": f"Bearer {CAMERA_TOKEN}"},
+        json={"key": key, "started_at": "2026-05-27T12:00:00Z", "duration_sec": 10.0},
+    )
+
+
+def test_create_clip_meta_replay_same_key_is_idempotent(
+    app_client: TestClient, fake_sb: MagicMock, authed_camera_row: dict
+) -> None:
+    """펌웨어가 응답을 못 받고 같은 메타를 재전송 → 기존 행 그대로 200 (예전엔 미처리 23505 → 500)."""
+    _setup_camera_lookup(fake_sb, authed_camera_row)
+    clip_id = "abcdef12-3456-7890-abcd-ef1234567890"
+    key = f"terra-clips/clips/{CAMERA_ID_TEXT}/2026-05-27/210000_{clip_id}.mp4"
+    fake_sb.table.return_value.insert.return_value.execute.side_effect = _dup_pk_error()
+    existing = fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value
+    existing.execute.return_value.data = [
+        {"id": clip_id, "camera_id": CAMERA_UUID, "r2_key": key}
+    ]
+
+    res = _post_meta(app_client, key)
+
+    assert res.status_code == 200, res.text
+    assert res.json()["id"] == clip_id
+
+
+def test_create_clip_meta_same_id_different_key_conflicts(
+    app_client: TestClient, fake_sb: MagicMock, authed_camera_row: dict
+) -> None:
+    """같은 clip_id 로 다른 key 가 오면 재전송이 아니다 → 409 (기존 행 덮어쓰지 않음)."""
+    _setup_camera_lookup(fake_sb, authed_camera_row)
+    clip_id = "abcdef12-3456-7890-abcd-ef1234567890"
+    key = f"terra-clips/clips/{CAMERA_ID_TEXT}/2026-05-27/210000_{clip_id}.mp4"
+    fake_sb.table.return_value.insert.return_value.execute.side_effect = _dup_pk_error()
+    existing = fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value
+    existing.execute.return_value.data = [
+        {"id": clip_id, "camera_id": CAMERA_UUID,
+         "r2_key": f"terra-clips/clips/{CAMERA_ID_TEXT}/2026-05-27/200000_{clip_id}.mp4"}
+    ]
+
+    res = _post_meta(app_client, key)
+
+    assert res.status_code == 409, res.text
+    fake_sb.table.return_value.update.assert_not_called()
+
+
+def test_create_clip_meta_unique_violation_without_row_is_not_swallowed(
+    app_client: TestClient, fake_sb: MagicMock, authed_camera_row: dict
+) -> None:
+    """23505 인데 그 id 행이 없으면 PK 충돌이 아니다(트리거 등) → 409 로 둔갑시키지 않고 원래 오류."""
+    _setup_camera_lookup(fake_sb, authed_camera_row)
+    clip_id = "abcdef12-3456-7890-abcd-ef1234567890"
+    key = f"terra-clips/clips/{CAMERA_ID_TEXT}/2026-05-27/210000_{clip_id}.mp4"
+    fake_sb.table.return_value.insert.return_value.execute.side_effect = _dup_pk_error()
+    existing = fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value
+    existing.execute.return_value.data = []
+
+    with pytest.raises(APIError):
+        _post_meta(app_client, key)
+
+
+def test_create_clip_meta_other_db_error_is_not_swallowed(
+    app_client: TestClient, fake_sb: MagicMock, authed_camera_row: dict
+) -> None:
+    """23505 가 아닌 DB 오류는 멱등 처리 대상이 아니다 — 그대로 올라가야 한다."""
+    _setup_camera_lookup(fake_sb, authed_camera_row)
+    clip_id = "abcdef12-3456-7890-abcd-ef1234567890"
+    key = f"terra-clips/clips/{CAMERA_ID_TEXT}/2026-05-27/210000_{clip_id}.mp4"
+    fake_sb.table.return_value.insert.return_value.execute.side_effect = APIError(
+        {"message": "new row violates check constraint", "code": "23514",
+         "details": None, "hint": None}
+    )
+
+    with pytest.raises(APIError):
+        _post_meta(app_client, key)
 
 
 def test_create_clip_meta_rejects_key_for_other_camera(
