@@ -43,12 +43,23 @@ _TARGETS: dict[str, tuple[str, str]] = {
 }
 
 _pending: dict[str, dict[str, dict[str, Any]]] = {}   # device_uuid → actuator → 실패 명령 정보
+# (device_uuid, actuator) → 마지막으로 발행 시도된 명령의 issued_at(epoch). no_ack 는 발행 30초 뒤
+# 스윕에서야 실패로 굳으므로, 그 사이 나간 더 새 명령(수동 등)을 여기서 알아본다.
+_last_dispatch: dict[tuple[str, str], float] = {}
 _lock = threading.Lock()
 
 
 def reset() -> None:
     with _lock:
         _pending.clear()
+        _last_dispatch.clear()
+
+
+def _epoch(ts: Any) -> float | None:
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
 
 
 def pending_for(device_uuid: str) -> dict[str, dict[str, Any]]:
@@ -68,15 +79,19 @@ def note_failure(row: dict[str, Any], result: str, now: float | None = None) -> 
     payload = row.get("payload")
     if isinstance(payload, dict) and payload.get("duration_ms"):
         return
-    try:
-        issued = datetime.fromisoformat(str(row["issued_at"]).replace("Z", "+00:00")).timestamp()
-    except (KeyError, ValueError):
+    issued = _epoch(row.get("issued_at"))
+    if issued is None:
         return
     deadline = issued + REDELIVER_GRACE_SEC
     if now > deadline:
         return
     actuator, desired = target
     with _lock:
+        later = _last_dispatch.get((row["device_id"], actuator))
+        if later is not None and later > issued:
+            logger.info("command %s(%s) %s — 이후 같은 액추에이터 명령이 이미 나가 재전달 안 함",
+                        row.get("id"), row["action"], result)
+            return
         _pending.setdefault(row["device_id"], {})[actuator] = {
             "id": row.get("id"), "action": row["action"], "desired": desired,
             "deadline": deadline, "result": result,
@@ -86,12 +101,16 @@ def note_failure(row: dict[str, Any], result: str, now: float | None = None) -> 
                 row.get("id"), row["action"], result, int(deadline - now))
 
 
-def note_dispatch(device_uuid: str, action: str) -> None:
-    """같은 액추에이터에 새 명령이 발행 시도되면 대기 중인 재전달을 취소한다."""
+def note_dispatch(device_uuid: str, action: str, issued_at: Any = None) -> None:
+    """같은 액추에이터에 새 명령이 발행 시도되면 대기 중인 재전달을 취소하고 발행 시각을 기억한다."""
     target = _TARGETS.get(action)
     if target is None:
         return
+    issued = _epoch(issued_at) if issued_at is not None else time.time()
     with _lock:
+        key = (device_uuid, target[0])
+        if issued is not None and issued > _last_dispatch.get(key, float("-inf")):
+            _last_dispatch[key] = issued
         per_dev = _pending.get(device_uuid)
         if per_dev and per_dev.pop(target[0], None) is not None:
             logger.info("device %s: %s 새 명령(%s) → 재전달 취소", device_uuid, target[0], action)

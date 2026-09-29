@@ -192,7 +192,7 @@ def _dispatch_one(bridge: "MqttBridge", row: dict[str, Any]) -> None:
     sb = get_supabase_client()
 
     # 0) 같은 액추에이터의 새 명령 = 최신 의도 → 대기 중인 재전달 취소(수동 조작 존중).
-    command_redeliver.note_dispatch(device_uuid, action)
+    command_redeliver.note_dispatch(device_uuid, action, row.get("issued_at"))
 
     # 1) TTL 만료 검증
     issued_at = _parse_iso(row["issued_at"])

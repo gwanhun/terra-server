@@ -154,3 +154,22 @@ def test_bad_issued_at_is_ignored(inserted: list) -> None:
     row["issued_at"] = "not-a-date"
     command_redeliver.note_failure(row, "expired", now=T0 + 15)
     assert command_redeliver.pending_for(DEV) == {}
+
+
+def test_manual_command_sent_before_no_ack_sweep_is_respected(inserted: list) -> None:
+    """리뷰 지적: 예약 fan2_off 발행(10:00:00) → 사용자가 fan2_on 수동(10:00:10) → 스윕이 예약을
+    no_ack 로 굳힘(10:00:40). 이미 더 새 명령이 나갔으니 예약을 재전달해 수동 조작을 덮으면 안 된다."""
+    command_redeliver.note_dispatch(DEV, "fan2_off", issued_at=_iso(T0))
+    command_redeliver.note_dispatch(DEV, "fan2_on", issued_at=_iso(T0 + 10))
+    command_redeliver.note_failure(_row("fan2_off", issued=T0), "no_ack", now=T0 + 40)
+
+    command_redeliver.on_telemetry(MagicMock(), DEV, {"fan2": "ON"}, now=T0 + 45)
+    assert inserted == []
+
+
+def test_own_dispatch_does_not_block_its_redelivery(inserted: list) -> None:
+    """실패한 명령 자신의 발행 기록은 재전달을 막지 않는다."""
+    command_redeliver.note_dispatch(DEV, "fan2_off", issued_at=_iso(T0))
+    command_redeliver.note_failure(_row("fan2_off", issued=T0), "no_ack", now=T0 + 40)
+    command_redeliver.on_telemetry(MagicMock(), DEV, {"fan2": "ON"}, now=T0 + 45)
+    assert [kw["action"] for kw in inserted] == ["fan2_off"]
