@@ -166,3 +166,13 @@ def test_missing_table_pauses_writes() -> None:
 def _iso(epoch: float) -> str:
     from datetime import datetime, timezone
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+
+
+def test_late_processed_heartbeat_is_not_a_reset() -> None:
+    """리뷰 지적: 브리지가 DB 지연으로 heartbeat 를 늦게 처리해도(uptime 은 계속 증가) 재시작이 아니다."""
+    sb = _sb()
+    camera_health.record(sb, CAM, _sys(1000), CLIPS, None, now=T0)
+    camera_health.record(sb, CAM, _sys(1015), CLIPS, None, now=T0 + 15)
+    camera_health.record(sb, CAM, _sys(1030), CLIPS, None, now=T0 + 130)   # 100초 늦게 처리
+    camera_health.record(sb, CAM, _sys(1135), CLIPS, None, now=T0 + 135)
+    assert [r["kind"] for r in _inserted(sb)] == ["snapshot"]

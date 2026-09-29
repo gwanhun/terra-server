@@ -9,9 +9,9 @@ cameras 행에 **최신값으로 덮어써진다.** 베타 카메라의 PANIC·�
 ## 동작
 camera_health_events 에 append-only 로 남긴다. 15초 heartbeat 를 전부 쓰지 않는다
 (23대 × 5,760/일 — petcam Supabase Disk IO 예산 소진 전례).
-- reset:    새 부팅을 보면 즉시 1행. 판정은 부팅 시각(now - uptime) 비교 — schedule_restore 와 같은 방식.
-            uptime 감소만 보면 브리지가 꺼진 동안의 재부팅을 놓치므로, 프로세스에서 카메라를 처음 볼 때
-            DB 마지막 행의 부팅 시각과 비교한다(카메라당 프로세스 1회 조회).
+- reset:    새 부팅을 보면 즉시 1행. 프로세스 안에서는 uptime 감소로 판정(늦게 처리된 heartbeat 에
+            흔들리지 않게). 브리지가 꺼진 동안의 재부팅은 카메라를 처음 볼 때 DB 마지막 행의 부팅 시각
+            (at - uptime_s)과 비교해 잡는다(카메라당 프로세스 1회 조회).
 - snapshot: 카메라당 SNAPSHOT_INTERVAL_SEC 마다 1행. reset 행도 한 번의 기록으로 쳐서 타이머를 다시 잰다.
 
 heartbeat UPDATE 와 분리된 별도 INSERT 이고 실패는 로그만 남긴다 — 선택 기록 때문에 온라인 표시가
@@ -40,11 +40,11 @@ _MISSING_TABLE_CODES = ("PGRST205", "42P01")
 
 
 class _CamState:
-    __slots__ = ("boot_ts", "last_write_ts")
+    __slots__ = ("prev_uptime", "last_write_ts")
 
-    def __init__(self, boot_ts: float | None, last_write_ts: float | None) -> None:
-        self.boot_ts = boot_ts
-        self.last_write_ts = last_write_ts
+    def __init__(self) -> None:
+        self.prev_uptime: float | None = None    # 직전 heartbeat uptime — 프로세스 안 재시작 판정
+        self.last_write_ts: float | None = None
 
 
 _state: dict[str, _CamState] = {}
@@ -126,21 +126,30 @@ def record(sb: Any, camera_uuid: str, sys_state: dict[str, Any] | None,
         return
 
     uptime = sys_state.get("uptime_s") if sys_state else None
-    boot_ts = now - float(uptime) if isinstance(uptime, (int, float)) else None
+    has_uptime = isinstance(uptime, (int, float))
 
     with _lock:
         st = _state.get(camera_uuid)
+    rebooted = False
     if st is None:
-        # 프로세스에서 처음 보는 카메라 — 직전 부팅은 DB 이력에서.
-        st = _CamState(_boot_from_history(sb, camera_uuid) if boot_ts is not None else None, None)
+        st = _CamState()
+        # 프로세스에서 처음 보는 카메라 — 브리지가 꺼진 동안의 재부팅은 DB 마지막 행의 부팅 시각과 비교.
+        if has_uptime:
+            hist_boot = _boot_from_history(sb, camera_uuid)
+            rebooted = (hist_boot is not None
+                        and now - float(uptime) > hist_boot + BOOT_TOLERANCE_SEC)
+    elif has_uptime and st.prev_uptime is not None:
+        # 프로세스 안에서는 uptime 감소만 재시작으로 본다. 부팅 시각 비교는 브리지가 heartbeat 를
+        # 늦게 처리하면(DB 지연) 밀려 보여 가짜 재시작을 쓴다(리뷰 09-29).
+        rebooted = uptime < st.prev_uptime
+    if has_uptime:
+        st.prev_uptime = float(uptime)
 
     kind: str | None = None
-    if boot_ts is not None and st.boot_ts is not None and boot_ts > st.boot_ts + BOOT_TOLERANCE_SEC:
+    if rebooted:
         kind = "reset"
     elif st.last_write_ts is None or now - st.last_write_ts >= SNAPSHOT_INTERVAL_SEC:
         kind = "snapshot"
-    if boot_ts is not None and (st.boot_ts is None or kind == "reset"):
-        st.boot_ts = boot_ts
     if kind is not None:
         # 실패해도 타이머는 넘긴다 — 지속 장애 때 15초마다 재시도하며 부하를 키우지 않게.
         st.last_write_ts = now
