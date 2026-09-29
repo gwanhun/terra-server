@@ -97,7 +97,7 @@
 2. P2 — **relay(펌프) 제외, 수동 조작 존중**(예약 구간 중 수동 조작은 그 구간 끝까지 안 덮음) ✅
 3. P3 — **alert 행만, 푸시 보류, 자동 재부팅 없음** ✅
 4. P4 — 동시 시청 상한·최대 시청 시간: **미정**("고객 사용 패턴을 모름, 더 오래 볼 수도 있음"). 아래 실측 후 **앱 백오프 문서 + 서버 시간당 안전망(60회/시)** 으로 결정 ✅
-5. P5 — 펌웨어 질문은 **이관훈님 Slack DM** — 09-29 발송 완료(재시도 시 upload-url 재발급·메타 재전송·201 vs 2xx 판정·err 28674/백오프)
+5. P5 — 펌웨어 질문은 **이관훈님 Slack DM** — 09-29 발송, **09-30 회신**(§9)
 
 ### P4 실측 (webrtc_connect_logs 09-22~29, 1,719행, 28대, 읽기만)
 | 창 | 현장 B(f36777f5) | 나머지 카메라 최대 |
@@ -117,7 +117,7 @@ B 09-29 13:15~17:20: 248건(streaming 89 / stalled 88 / no_video 58), 간격 p50
 - [x] P2-(b) → [#10](https://github.com/gwanhun/terra-server/pull/10) 재조정 (commands source CHECK migration 선적용 필요)
 - [x] P3 → [#11](https://github.com/gwanhun/terra-server/pull/11) `camera_alerts` (migration 적용 요청)
 - [x] P4 → [#12](https://github.com/gwanhun/terra-server/pull/12) 시간당 offer 안전망 + 앱 백오프 요청(`docs/APP_WEBRTC.md` §7.1)
-- [ ] P5-①③ 펌웨어 답변 반영 (09-29 DM 발송, 답 대기)
+- [x] P5-①③ 펌웨어 답변 반영 (09-30 회신) — **서버 추가 작업 없음**(§9). #7 은 방어용으로 유지
 - [x] 앱 전달 문서 — P4 429/재연결 백오프(#12 `APP_WEBRTC.md` §7.1). P3 푸시는 보류 결정
 - [ ] #8·#11 적용 후 쌓인 이력으로 P3 임계값(30분·3회) 재검토
 - [x] /code-review 지적 5건 반영(09-29): #8·#11 늦게 처리된 heartbeat 를 새 부팅으로 오판 → uptime 감소로,
@@ -146,3 +146,31 @@ origin/main `de9af0a` 에 아래 순서로 7개를 머지 → 충돌 4회, **전
 
 **migration 적용:** #10 `2026-09-29_commands_source_reconcile.sql` 은 **배포 전에**. #8 `camera_health_events`·#11 `camera_alerts` 는
 새 테이블이라 순서 무관(없으면 로그만). 적용 후 `MIGRATIONS_APPLIED.md` 기록.
+
+## 9. 펌웨어 회신 (이관훈 2026-09-29 밤~09-30, 원문: FIRMWARE_REPLY_CAMERA_UPLOAD_FAILURE_2026-09-29.md)
+
+### P5 질문 답 → 서버 결론
+| 질문 | 답 | 서버 결론 |
+|---|---|---|
+| ① 재시도 때 upload-url | 신규FW 는 재시도 없음(폐기). 구FW 는 **매번 새 upload-url·새 clip_id** | URL 만료(5분)는 원인 아님 → **P5-③(TTL 연장·같은 clip_id 재발급 API) 불필요** |
+| ② 메타 응답 유실 시 재전송 | 같은 clip_id 재전송 **없음**. 구FW 는 새 clip_id 로 처음부터(이전 mp4 는 R2 고아) | #7(중복 메타 200)은 펌웨어가 쓰는 경로 아님 — 무해한 방어로 유지. 고아 정리는 `scripts/reconcile_r2_orphans.py` |
+| ③ 성공 판정 | **2xx 전체** | #7 의 200 응답 문제없음 |
+| ④ 재시도 간격 | 신규FW 없음 / 구FW 60초 고정·백오프 없음·무제한·주기당 1건 | #11 정체 판정(성공=up_ok+sd_ok, 실패=up_fail+sd_fail) 과 일치 — `sd_fail` 은 **SD 백업 재업로드 실패**(SD 쓰기 실패 아님) |
+
+### 업로드 실패 60~78% 의 유력 원인 — R2 엔드포인트 IP 하나가 가정 회선에서 불통
+- R2 호스트가 IP 2개(172.64.190.1 / 172.64.66.1)로 풀리는데 **172.64.66.1 이 가정 회선(KT)에서 불통**. 펌웨어는
+  `CONFIG_LWIP_DNS_MAX_HOST_IP=1` 로 IP 하나만 쥐고 폴백이 없어, 그 IP 에 걸리면 DNS TTL 동안 연달아 `err 28674`.
+- AWS 서울(Lightsail)에서는 두 IP 정상 → Cloudflare 전역 장애 아님, 가정 회선 경로 문제.
+- **09-30 재현 (owner 맥북, 회선 확인 필요):** 172.64.66.1 **3/3 연결 실패**, 172.64.190.1 3/3 정상(connect 0.01s).
+- 실패는 두 종류: `err 28674`(연결 실패 — B) 와 `err -1`(연결 후 write 정체·SD 읽기 실패·바이트 불일치 — A, 카메라5).
+  A 의 78% 는 SD 쪽일 수 있음.
+- 서버가 우회할 방법은 없음(presigned PUT 은 R2 S3 엔드포인트 호스트로 서명됨) → **펌웨어 DNS 폴백이 해결책**.
+  서버는 #8(`camera_health_events.last_err` jsonb)이 펌웨어가 추가할 `last_err.detail`(dns/tcp/tls/write_stall/sd_read…)을
+  그대로 저장하므로 추가 작업 없이 집집마다 실패 유형이 쌓인다.
+
+### 펌웨어 후속 (관훈님 계획) — 서버 쪽 확인 포인트
+- 한 빌드로 묶음: ① DNS 폴백 ② `last_err.detail` ③ "녹화 0건 AND 라이브 프레임 없음" 워치독 ④ `sd_backlog` 버그(삭제 실패 무시·큐 풀 드롭 시 미삭제)
+- WebRTC 워치독 사유 `SW:rtc_send_stall`·`SW:rtc_lock_stall` 도 있음 → #11 은 `SW:rtc_` prefix 로 이미 포함
+- ⚠️ **플래시 시점**: 관훈님 제안은 "10/1 00시 1차 판정 뒤 A·B 부터". 그런데 1차 판정이 **hold 면 시험지 연장 규칙으로 10/3 00시까지
+  계속** → 10/1 에 A·B 를 리플래시하면 연장 구간이 오염된다. 1차 판정이 adopt/reject 로 끝났을 때만 10/1, hold 면 10/3 이후. owner 결정.
+- 문범석 4738(p4cam-ac5cd849)은 업로드 정체가 아니라 프레임·모션 파이프라인 정지 유형 — #11 업로드 정체 알림으로는 안 잡힘(③ 워치독 대상)
