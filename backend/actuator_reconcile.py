@@ -14,6 +14,7 @@
 안 건드리는 경우 (owner 결정 09-29: 수동 조작 존중, relay 제외):
 - 이벤트 후 SETTLE_SEC 이내 — 예약 명령·재전달(5분)이 아직 진행 중일 수 있다.
 - 그 이벤트 이후 같은 액추에이터에 수동·타이머 명령이 있었거나 가드가 스킵했다 → 그 구간 끝까지 존중.
+- duration_ms 타이머(예약 one-shot 포함)가 아직 도는 중 — 타이머가 끝나면 펌웨어가 끈다(리뷰 09-29).
 - 최근 SETTLE_SEC 안에 어떤 명령이든 나갔다(restore 등 진행 중) → 이번엔 보류, 다음 확인 때 다시.
 - 최근 명령 조회 실패 — 사용자 조작 여부를 모르면 교정하지 않는다(fail-safe).
 - ON 교정인데 stop_when_* 가드 → 펌웨어가 조건 도달 시 스스로 끈 것일 수 있어 다시 켜지 않는다.
@@ -44,6 +45,9 @@ CHECK_INTERVAL_SEC = 300.0       # 기기당 확인 주기 (3초 telemetry 마�
 SETTLE_SEC = 360                 # 이벤트·최근 명령 후 대기 — 재전달 유예(5분)보다 길게
 # 이 source 의 명령이 이벤트 이후 있으면 사용자(또는 가드)의 의도 → 그 구간은 교정 안 함
 RESPECT_SOURCES = frozenset({"manual", "timer", "guard"})
+# duration_ms 타이머(one-shot)는 예약 상태 계산에서 빠지므로, 도는 중이면 따로 알아봐야 한다.
+# 이벤트 전에 시작한 타이머도 보려고 최근 명령을 이만큼 더 거슬러 조회한다.
+TIMER_LOOKBACK_SEC = 6 * 3600
 
 _next_check: dict[str, float] = {}                 # device_uuid → 다음 확인 monotonic
 _done: dict[tuple[str, str], str] = {}             # (device_uuid, actuator) → 교정 끝난 이벤트 시각
@@ -67,15 +71,23 @@ def _recent_commands(sb: Any, device_uuid: str, actions: tuple[str, str],
                      since: datetime) -> list[dict[str, Any]]:
     res = (
         sb.table("commands")
-        .select("source, issued_at, action")
+        .select("source, issued_at, action, payload")
         .eq("device_id", device_uuid)
         .in_("action", list(actions))
         .gte("issued_at", since.isoformat())
         .order("issued_at", desc=True)
-        .limit(20)
+        .limit(50)
         .execute()
     )
     return [r for r in (res.data or []) if isinstance(r, dict)]
+
+
+def _timer_running(row: dict[str, Any], issued: datetime, now: datetime) -> bool:
+    payload = row.get("payload")
+    dur = payload.get("duration_ms") if isinstance(payload, dict) else None
+    if not isinstance(dur, (int, float)) or isinstance(dur, bool) or dur <= 0:
+        return False
+    return issued + timedelta(milliseconds=dur) > now
 
 
 def maybe_reconcile(
@@ -123,11 +135,15 @@ def maybe_reconcile(
                 continue
 
         try:
-            recent = _recent_commands(sb, device_uuid, (on_action, off_action), prev)
+            recent = _recent_commands(sb, device_uuid, (on_action, off_action),
+                                      min(prev, now - timedelta(seconds=TIMER_LOOKBACK_SEC)))
         except Exception:  # noqa: BLE001 — 모르면 교정하지 않는다
             logger.warning("reconcile %s: %s 최근 명령 조회 실패 — 교정 보류", label, act, exc_info=True)
             continue
-        if any(r.get("source") in RESPECT_SOURCES for r in recent):
+        timed = [(r, _parse(r.get("issued_at"))) for r in recent]
+        if any(ts is not None and _timer_running(r, ts, now) for r, ts in timed):
+            continue  # 예약·수동 팬 타이머가 도는 중 — 끝나면 펌웨어가 끈다. 다음 확인 때 다시 본다
+        if any(r.get("source") in RESPECT_SOURCES and ts is not None and ts >= prev for r, ts in timed):
             logger.info("reconcile %s: %s 이벤트(%s) 뒤 수동/가드 조작 있음 — 존중", label, act, event)
             with _lock:
                 _done[key] = event

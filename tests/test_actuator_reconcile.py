@@ -129,7 +129,7 @@ def test_check_is_rate_limited_per_device() -> None:
 def test_user_or_guard_action_since_event_is_respected(source: str) -> None:
     """예약 구간 중 사용자가 직접 바꿨거나(수동·타이머) 가드가 스킵했으면 그 구간 끝까지 덮지 않는다."""
     inserts: list[dict] = []
-    recent = [{"source": source, "issued_at": _kst(8, 30).isoformat(), "action": "fan2_on"}]
+    recent = [{"source": source, "issued_at": _kst(9, 15).isoformat(), "action": "fan2_on"}]
     sb = _sb(FAN2_SPAN, inserts, recent=recent)
     _run(sb, {"fan2": "ON"}, _kst(9, 30), mono=0)
     _run(sb, {"fan2": "ON"}, _kst(10), mono=actuator_reconcile.CHECK_INTERVAL_SEC + 1)
@@ -220,4 +220,43 @@ def test_insert_failure_retries_next_check(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(actuator_reconcile, "insert_pending_command", _flaky)
     _run(sb, {"fan2": "ON"}, _kst(9, 30), mono=0)
     _run(sb, {"fan2": "ON"}, _kst(9, 40), mono=actuator_reconcile.CHECK_INTERVAL_SEC + 1)
+    assert [c["action"] for c in inserts] == ["fan2_off"]
+
+
+def test_running_fan_timer_is_not_cut_short() -> None:
+    """리뷰 지적: 12:00 예약 팬 타이머(fan_on 20분, one-shot 이라 예약 상태 계산에서 빠짐)가 도는 중인데
+    최근 이벤트가 08:00 fan_off 라서 12:07 에 교정 fan_off 로 타이머를 끊으면 안 된다."""
+    inserts: list[dict] = []
+    rows = [_sched("off", "fan_off", "08:00")]
+    now = _kst(12, 7)
+    recent = [{"source": "schedule", "action": "fan_on", "payload": {"duration_ms": 1_200_000},
+               "issued_at": _kst(12).isoformat()}]
+    _run(_sb(rows, inserts, recent=recent), {"fan": "ON"}, now)
+    assert inserts == []
+
+
+def test_finished_timer_does_not_block_correction() -> None:
+    inserts: list[dict] = []
+    rows = [_sched("off", "fan_off", "08:00")]
+    recent = [{"source": "schedule", "action": "fan_on", "payload": {"duration_ms": 600_000},
+               "issued_at": _kst(12).isoformat()}]
+    _run(_sb(rows, inserts, recent=recent), {"fan": "ON"}, _kst(12, 30))
+    assert [c["action"] for c in inserts] == ["fan_off"]
+
+
+def test_timer_started_before_event_still_counts() -> None:
+    """이벤트(09:00 off) 직전에 시작한 20분 타이머도 도는 중이면 존중."""
+    inserts: list[dict] = []
+    recent = [{"source": "schedule", "action": "fan2_on", "payload": {"duration_ms": 3_600_000},
+               "issued_at": _kst(8, 55).isoformat()}]
+    _run(_sb(FAN2_SPAN, inserts, recent=recent), {"fan2": "ON"}, _kst(9, 30))
+    assert inserts == []
+
+
+def test_manual_command_before_event_is_not_respected_for_new_segment() -> None:
+    """수동 조작 존중은 '그 이벤트 이후' 조작만 — 이전 구간의 수동 조작이 새 구간 교정을 막으면 안 된다."""
+    inserts: list[dict] = []
+    recent = [{"source": "manual", "action": "fan2_on", "payload": None,
+               "issued_at": _kst(8, 30).isoformat()}]
+    _run(_sb(FAN2_SPAN, inserts, recent=recent), {"fan2": "ON"}, _kst(9, 30))
     assert [c["action"] for c in inserts] == ["fan2_off"]
