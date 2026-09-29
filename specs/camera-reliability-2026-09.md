@@ -124,6 +124,7 @@ B 09-29 13:15~17:20: 248건(streaming 89 / stalled 88 / no_video 58), 간격 p50
       #9 no_ack 스윕 전 수동 명령을 재전달이 덮음 → 액추에이터별 마지막 발행 시각, #10 예약 팬 타이머를 교정이 끊음 →
       도는 중인 duration_ms 타이머 보류, petcam 리포트 부팅 시각 기준 clip_stats_at
 - [x] 같은 결함이 운영 중인 `schedule_restore.note_uptime` 에도 있음 → [#13](https://github.com/gwanhun/terra-server/pull/13)
+- [x] P4 후속: owner 결정(09-29) 라이브 15분·5분 쉼·한 기기(가져오기) → [#15](https://github.com/gwanhun/terra-server/pull/15), 설계 `specs/live-view-limit.md`
 
 ## 8. 머지 가이드 (09-29 로컬 합본 리허설 결과)
 origin/main `de9af0a` 에 아래 순서로 7개를 머지 → 충돌 4회, **전부 "양쪽 블록 모두 유지"** 로 해결 → `uv run pytest -q` **463 passed**
@@ -138,6 +139,7 @@ origin/main `de9af0a` 에 아래 순서로 7개를 머지 → 충돌 4회, **전
 | 5 | #9 재전달 | `test_mqtt_handlers.py` 파일 끝 | 둘 다 유지 |
 | 6 | #10 재조정 | `handlers.py` `reset_device_cache`, `API.md`, `test_mqtt_handlers.py` 끝 | 둘 다 유지 |
 | 7 | #12 offer 안전망 | 없음 | |
+| 8 | #15 라이브 시청 제한(15분·5분·한 기기) | #12 위에 쌓음 — #12 머지 후 base 를 main 으로 | **migration `2026-09-30_cameras_live_session.sql` 배포 전 적용 필수**(없으면 라이브가 안 열림) |
 
 기기 telemetry 처리 순서는 자동으로 **재전달(#9) → 재부팅 복원 → 재조정(#10)** 이 된다. 같은 telemetry 에서 재전달·복원이
 명령을 넣으면 재조정은 그 명령을 "진행 중"으로 보고 보류한다(중복 교정 없음).
