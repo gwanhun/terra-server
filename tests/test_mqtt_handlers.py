@@ -1296,3 +1296,46 @@ def test_camera_telemetry_stores_image_state(fake_sb: MagicMock, published: list
         handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "img": img})
     assert updates[0]["image_state"] == img
     assert "AE 진동 동결" in " ".join(r.getMessage() for r in caplog.records)
+
+
+# ---------- 카메라 부분 멈춤 알림 (2026-09-29 P3) ----------
+
+
+def _camera_alerts_factory(updates: list[dict], alerts: list[dict], *, fail: bool = False):
+    base = _camera_state_table_factory(updates)
+
+    def _table(name: str) -> MagicMock:
+        if name != "camera_alerts":
+            return base(name)
+        if fail:
+            raise RuntimeError("camera_alerts down")
+        t = MagicMock()
+        t.select.return_value.eq.return_value.eq.return_value.is_.return_value.limit.return_value \
+            .execute.return_value.data = []
+        t.insert.side_effect = lambda row: alerts.append(row) or MagicMock()
+        return t
+    return _table
+
+
+def test_camera_crash_boot_raises_camera_alert(fake_sb: MagicMock, published: list) -> None:
+    updates: list[dict] = []
+    alerts: list[dict] = []
+    fake_sb.table.side_effect = _camera_alerts_factory(updates, alerts)
+
+    handlers.handle_telemetry(CAMERA_TEXT, {
+        "ts": 1, "uptime_sec": 12, "reset": "SW:rtc_loop_stall", "clips": {"up_ok": 0, "up_fail": 0},
+    })
+
+    assert updates[0]["is_online"] is True
+    assert [(a["camera_id"], a["kind"]) for a in alerts] == [(CAMERA_UUID, "camera_abnormal_reset")]
+
+
+def test_camera_alert_failure_does_not_break_heartbeat(fake_sb: MagicMock, published: list) -> None:
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_alerts_factory(updates, [], fail=True)
+
+    handlers.handle_telemetry(CAMERA_TEXT, {
+        "ts": 1, "uptime_sec": 12, "reset": "PANIC", "clips": {"up_ok": 0, "up_fail": 0},
+    })
+
+    assert len(updates) == 1 and updates[0]["is_online"] is True
