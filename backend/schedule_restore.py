@@ -16,7 +16,8 @@ schedule_runner 는 next_run_at 이 된 순간에만 명령을 큐잉한다. 조
 - 가드: 예약의 skip_when_* 를 복원에도 적용한다. 원래 시각에 스킵됐을 조건이면 지금도 켜지 않는다.
 - source='restore' — 예약 푸시(source='schedule' 만)가 나가지 않게 별도 값. commands_source_check
   제약에 'restore' 추가 필요(migrations/2026-09-28_commands_source_restore.sql).
-- 부팅 1회당 1번만: boot 시각(now - uptime)을 기억해 같은 부팅의 후속 telemetry 는 무시한다.
+- 부팅 1회당 1번만: 직전 uptime 을 기억해 uptime 이 줄었을 때만 새 부팅으로 본다(늦게 처리된
+  telemetry 에 흔들리지 않게 — 2026-09-29 부팅 시각 비교에서 변경).
   브리지 재시작 직후엔 직전 값이 없으므로 uptime 이 REBOOT_FRESH_UPTIME_SEC 미만인 첫 telemetry 만
   재부팅으로 본다(오래 켜져 있던 기기는 복원하지 않음).
 """
@@ -25,7 +26,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -46,30 +46,30 @@ ON_OFF_ACTIONS: dict[str, tuple[str, str]] = {
 RESTORABLE_ACTIONS: frozenset[str] = frozenset(a for pair in ON_OFF_ACTIONS.values() for a in pair)
 
 REBOOT_FRESH_UPTIME_SEC = 60      # 직전 값 없을 때(브리지 재시작) 이보다 짧은 uptime 만 재부팅으로
-BOOT_TOLERANCE_SEC = 30           # boot 시각 추정 오차(telemetry 지연·시계 드리프트) 허용
 
-_last_boot: dict[str, float] = {}   # device_uuid → 마지막으로 본 boot epoch
+_last_uptime: dict[str, float] = {}   # device_uuid → 직전 telemetry uptime
 _lock = threading.Lock()
 
 
 def reset() -> None:
     with _lock:
-        _last_boot.clear()
+        _last_uptime.clear()
 
 
 def note_uptime(device_uuid: str, uptime_s: int | float, now: float | None = None) -> bool:
-    """uptime 을 기록하고, 새 부팅으로 판단되면 True (호출자가 복원 실행)."""
-    now = time.time() if now is None else now
-    boot_ts = now - float(uptime_s)
+    """uptime 을 기록하고, 새 부팅으로 판단되면 True (호출자가 복원 실행).
+
+    새 부팅 = 직전 uptime 보다 줄었을 때. 부팅 시각(now - uptime) 비교는 쓰지 않는다 — 브리지가
+    DB 지연으로 telemetry 를 늦게 처리하면 부팅 시각이 밀려 보여 재부팅으로 오판하고, 복원 ON 이
+    예약 구간 중 사용자가 수동으로 끈 액추에이터를 다시 켠다(2026-09-29). now 는 호환용으로 남긴다.
+    """
+    del now
     with _lock:
-        last = _last_boot.get(device_uuid)
-        if last is None:
-            _last_boot[device_uuid] = boot_ts
-            return uptime_s < REBOOT_FRESH_UPTIME_SEC
-        if boot_ts > last + BOOT_TOLERANCE_SEC:
-            _last_boot[device_uuid] = boot_ts
-            return True
-        return False
+        last = _last_uptime.get(device_uuid)
+        _last_uptime[device_uuid] = float(uptime_s)
+    if last is None:
+        return uptime_s < REBOOT_FRESH_UPTIME_SEC
+    return uptime_s < last
 
 
 def _actuator_of(action: str) -> str | None:
@@ -154,7 +154,6 @@ def maybe_restore(sb: Any, device_uuid: str, label: str, uptime_s: int | float) 
 
 
 __all__ = [
-    "BOOT_TOLERANCE_SEC",
     "ON_OFF_ACTIONS",
     "REBOOT_FRESH_UPTIME_SEC",
     "RESTORABLE_ACTIONS",

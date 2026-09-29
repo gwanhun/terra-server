@@ -149,6 +149,17 @@ def test_note_uptime_detects_reboot_once_per_boot() -> None:
     assert schedule_restore.note_uptime(DEVICE_UUID, 11, now=t0 + 66) is False
 
 
+def test_note_uptime_late_processed_telemetry_is_not_a_reboot() -> None:
+    """브리지가 DB 지연으로 telemetry 를 늦게 처리해도(uptime 은 계속 증가) 재부팅이 아니다.
+    예전엔 부팅 시각(now - uptime)이 30초 넘게 밀려 보여 복원 ON 이 나가, 예약 구간 중 사용자가
+    수동으로 끈 조명·팬이 다시 켜질 수 있었다(2026-09-29 카메라 리뷰에서 같은 결함 발견)."""
+    t0 = 1_000_000.0
+    assert schedule_restore.note_uptime(DEVICE_UUID, 3600, now=t0) is False
+    assert schedule_restore.note_uptime(DEVICE_UUID, 3603, now=t0 + 3) is False
+    assert schedule_restore.note_uptime(DEVICE_UUID, 3606, now=t0 + 66) is False     # 60초 늦게 처리
+    assert schedule_restore.note_uptime(DEVICE_UUID, 3669, now=t0 + 69) is False
+
+
 def test_note_uptime_bridge_restart_fresh_boot_only() -> None:
     """브리지 재시작 직후(직전 값 없음): uptime 이 짧을 때만 재부팅으로 본다."""
     assert schedule_restore.note_uptime("dev-a", 20, now=100.0) is True
