@@ -653,3 +653,102 @@ def test_future_issued_at_stays_pending(fake_sb: MagicMock, fake_bridge: MagicMo
     assert dispatcher.poll_and_dispatch(fake_bridge) == 0
     fake_bridge.publish_command.assert_not_called()
     assert updates == []
+
+
+# ---------- 예약 on/off 재전달 등록 (2026-09-29 P2-(a)) ----------
+
+
+def _single_cmd_tables(cmd: dict, device_text: str | None = DEVICE_TEXT):
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        if name == "commands":
+            t.select.return_value.eq.return_value.order.return_value.limit.return_value \
+                .execute.return_value.data = [cmd]
+            t.update.return_value.eq.return_value.execute.return_value.data = [{"id": cmd["id"]}]
+            t.update.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+                {"id": cmd["id"]}]
+        elif name == "devices":
+            t.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = (
+                [{"device_id": device_text}] if device_text else [])
+        return t
+    return _table
+
+
+@pytest.fixture
+def _no_push(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend import push_events
+    monkeypatch.setattr(push_events, "enqueue_command_failure", lambda *a, **k: None)
+
+
+def _sched_cmd(action: str = "fan2_off", **over) -> dict:
+    cmd = {"id": "cmd-s", "device_id": DEVICE_UUID, "action": action, "payload": None,
+           "issued_at": _now_iso(-60), "ttl_sec": 10, "issued_by": "owner-1",
+           "source": "schedule", "source_id": "sch-1"}
+    cmd.update(over)
+    return cmd
+
+
+def test_expired_schedule_onoff_is_queued_for_redelivery(
+    fake_sb: MagicMock, fake_bridge: MagicMock, _no_push: None
+) -> None:
+    from backend import command_redeliver
+
+    fake_sb.table.side_effect = _single_cmd_tables(_sched_cmd())
+    dispatcher.poll_and_dispatch(fake_bridge)
+
+    assert command_redeliver.pending_for(DEVICE_UUID)["fan2"]["action"] == "fan2_off"
+
+
+def test_unknown_device_schedule_onoff_is_queued_for_redelivery(
+    fake_sb: MagicMock, fake_bridge: MagicMock, _no_push: None
+) -> None:
+    """기기 조회 실패(unknown_device — DB 일시 장애도 여기로 떨어짐)도 재전달 후보."""
+    from backend import command_redeliver
+
+    fake_sb.table.side_effect = _single_cmd_tables(
+        _sched_cmd(issued_at=_now_iso(), ttl_sec=30), device_text=None)
+    dispatcher.poll_and_dispatch(fake_bridge)
+
+    assert "fan2" in command_redeliver.pending_for(DEVICE_UUID)
+
+
+def test_expired_manual_command_is_not_redelivered(
+    fake_sb: MagicMock, fake_bridge: MagicMock, _no_push: None
+) -> None:
+    from backend import command_redeliver
+
+    fake_sb.table.side_effect = _single_cmd_tables(_sched_cmd(source="manual"))
+    dispatcher.poll_and_dispatch(fake_bridge)
+
+    assert command_redeliver.pending_for(DEVICE_UUID) == {}
+
+
+def test_no_ack_schedule_onoff_is_queued_for_redelivery(
+    monkeypatch: pytest.MonkeyPatch, _no_push: None
+) -> None:
+    from backend import command_redeliver
+
+    updates: list[dict] = []
+    monkeypatch.setattr(
+        dispatcher, "get_supabase_client",
+        lambda: _sb_for_sweep([_sent_row(action="led_off")], updates))
+    assert dispatcher.sweep_unacked() == 1
+    assert command_redeliver.pending_for(DEVICE_UUID)["led"]["result"] == "no_ack"
+
+
+def test_new_command_on_same_actuator_cancels_redelivery(
+    fake_sb: MagicMock, fake_bridge: MagicMock, _no_push: None
+) -> None:
+    """예약 fan2_off 실패 뒤 사용자가 fan2_on 을 누르면 그게 최신 의도 — 재전달 취소."""
+    from backend import command_redeliver
+
+    fake_sb.table.side_effect = _single_cmd_tables(_sched_cmd())
+    dispatcher.poll_and_dispatch(fake_bridge)
+    assert "fan2" in command_redeliver.pending_for(DEVICE_UUID)
+
+    fake_sb.table.side_effect = _single_cmd_tables(
+        _sched_cmd("fan2_on", id="cmd-manual", source="manual", issued_at=_now_iso()))
+    dispatcher.poll_and_dispatch(fake_bridge)
+
+    fake_bridge.publish_command.assert_called_once()
+    assert command_redeliver.pending_for(DEVICE_UUID) == {}
