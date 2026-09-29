@@ -21,6 +21,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from backend import live_session
 from backend.auth import get_current_user_id
 from backend.supabase_client import get_supabase_client
 from backend.webrtc_offer_guard import OfferRateLimiter, get_offer_limiter
@@ -47,6 +48,12 @@ class WebRTCOfferIn(BaseModel):
     session_id: str | None = Field(None, min_length=1, max_length=128)
     timeout_sec: float = Field(default=15.0, ge=1.0, le=30.0)
     ttl_sec: int = Field(default=30, ge=1, le=120)
+    # 라이브 시청 제한(2026-09-29). 구버전 앱은 안 보냄 → 한 기기 제한 없이 15분·5분 쉼만 적용.
+    viewer_id: str | None = Field(None, min_length=1, max_length=64,
+                                  description='앱 설치별 고정 ID(앱이 UUID 생성·저장). 한 기기 판정용')
+    viewer_label: str | None = Field(None, max_length=64,
+                                     description='다른 기기에 보여줄 이름. 기기 종류+모델, 예: "iPhone 15"')
+    takeover: bool = Field(False, description='다른 기기가 보는 중이면 그쪽을 끊고 가져오기')
 
 
 class WebRTCAnswerOut(BaseModel):
@@ -67,6 +74,8 @@ class WebRTCAnswerOut(BaseModel):
         default=0,
         description='첫 offer 발행부터 answer 수신까지 걸린 ms(재시도 대기 포함).',
     )
+    live_until: str | None = Field(
+        None, description='이 시각(ISO8601 UTC)에 서버가 라이브를 끝낸다(15분 상한). 앱 카운트다운용.')
 
 
 class WebRTCIceIn(BaseModel):
@@ -151,6 +160,15 @@ def _owned_camera(camera_uuid: str, user_id: str) -> dict[str, Any]:
     if not row or row.get('owner_id') != user_id:
         raise HTTPException(status_code=404, detail='camera not found')
     return row
+
+
+def close_camera_session(camera_id_text: str, session_id: str) -> None:
+    """카메라에 세션 종료(best-effort) + ICE 버퍼 정리. 가져오기·15분 만료에서 쓴다."""
+    try:
+        MqttWebRTCSignaling().publish(camera_id_text, _command('webrtc_close', session_id, 10))
+    except WebRTCSignalingError:
+        logger.warning('webrtc_close 발행 실패 (camera=%s session=%s)', camera_id_text, session_id)
+    get_relay().drop_session(session_id)
 
 
 def _command(action: str, session_id: str, ttl_sec: int, **extra: Any) -> dict[str, Any]:
@@ -261,6 +279,7 @@ def create_webrtc_offer(
     limiter: OfferRateLimiter = Depends(get_offer_limiter),
 ) -> WebRTCAnswerOut:
     camera = _owned_camera(camera_uuid, user_id)
+    session_id = body.session_id or str(uuid4())
     # 시간당 안전망(2026-09-29 P4): 앱 재연결 루프가 카메라를 멈추게 한 사고 대응. 소유권 확인 뒤에 센다
     # (남이 내 카메라 예산을 못 쓰게). 상세 근거는 backend/webrtc_offer_guard.py.
     retry_after = limiter.check(camera_uuid)
@@ -269,10 +288,30 @@ def create_webrtc_offer(
                        camera['camera_id'], retry_after)
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail='live offer rate limit exceeded for this camera',
+            detail={'code': 'rate_limited', 'retry_after': retry_after,
+                    'message': 'live offer rate limit exceeded for this camera'},
             headers={'Retry-After': str(retry_after)},
         )
-    session_id = body.session_id or str(uuid4())
+
+    # 시청 제한(2026-09-29): 15분 상한·5분 쉼·한 기기. 카메라에 offer 를 보내기 전에 판정.
+    sb = get_supabase_client()
+    try:
+        live = live_session.claim(sb, camera_uuid, user_id, session_id=session_id,
+                                  viewer_id=body.viewer_id, viewer_label=body.viewer_label,
+                                  takeover=body.takeover)
+    except live_session.LiveCooldown as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={'code': 'live_cooldown', 'retry_after': exc.retry_after},
+            headers={'Retry-After': str(exc.retry_after)},
+        ) from exc
+    except live_session.LiveBusy as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={'code': 'live_in_use', 'viewer': exc.viewer, 'since': exc.since},
+        ) from exc
+    if live.previous_session:
+        close_camera_session(camera['camera_id'], live.previous_session)
     # 카메라(esp_peer)의 mbedtls DTLS 서버는 조각난 ClientHello 재조립을 못 함
     # (MBEDTLS_ERR_SSL_FEATURE_UNAVAILABLE). offer 의 setup:actpass → passive 로 바꿔
     # 카메라가 DTLS active(클라이언트)가 되게 강제 → 카메라가 작은 ClientHello 를 보내고
@@ -311,32 +350,30 @@ def create_webrtc_offer(
                            i + 1, attempts, camera['camera_id'])
         except WebRTCSignalingError as exc:
             # MQTT 인프라 오류는 재시도해도 의미 없음 → 즉시 502.
+            live_session.release(sb, camera_uuid, user_id, session_id, 'failed')
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
     else:
+        live_session.release(sb, camera_uuid, user_id, session_id, 'failed')
         raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                             detail=str(last_timeout) if last_timeout else 'camera WebRTC answer timed out')
 
     sdp = _extract_answer_sdp(answer)
     if not sdp:
+        live_session.release(sb, camera_uuid, user_id, session_id, 'failed')
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail='camera answer has no SDP')
 
     answer_ms = int((time.monotonic() - offer_started) * 1000)
     logger.info('webrtc answer 수신 (camera=%s attempts=%d %dms)',
                 camera['camera_id'], used_attempts, answer_ms)
 
-    until = datetime.now(timezone.utc) + timedelta(minutes=5)
-    sb = get_supabase_client()
-    sb.table('cameras').update({
-        'stream_mode': 'webrtc',
-        'stream_until': until.isoformat(),
-    }).eq('id', camera_uuid).eq('owner_id', user_id).execute()
-
+    # stream_mode/stream_until 은 claim 이 이미 기록(stream_until = 시청 시작 + 15분, 서버가 그때 끊는다).
     return WebRTCAnswerOut(
         session_id=session_id,
         sdp=sdp,
         raw=answer,
         offer_attempts=used_attempts,
         answer_ms=answer_ms,
+        live_until=live.live_until.isoformat(),
     )
 
 
@@ -424,11 +461,8 @@ def close_webrtc(
         logger.warning("webrtc_close publish 실패 (camera=%s session=%s) — 서버 측 정리만 진행",
                        camera.get('camera_id'), body.session_id)
 
-    sb = get_supabase_client()
-    sb.table('cameras').update({
-        'stream_mode': None,
-        'stream_until': None,
-    }).eq('id', camera_uuid).eq('owner_id', user_id).execute()
+    # 이 세션이 활성일 때만 정리 — 가져오기 당한 기기의 늦은 close 가 새 시청자 세션을 지우면 안 된다.
+    live_session.release(get_supabase_client(), camera_uuid, user_id, body.session_id, 'closed')
 
     # ICE candidate buffer 정리 (메모리 누수 방지 + 대기 중 long-poll 깨움)
     get_relay().drop_session(body.session_id)
