@@ -1,6 +1,6 @@
 # 카메라·예약 안정성 개선 — 실행 계획
 
-> 진행 상태는 설계 §7 이 SOT (2026-09-29: PR1~PR6 → #7~#12 제출).
+> 진행 상태는 설계 §7 이 SOT (2026-09-29: PR1~PR6 → #7~#12 제출, 추가 #13, 머지 가이드 §8).
 
 > 설계: [`specs/camera-reliability-2026-09.md`](../../specs/camera-reliability-2026-09.md) · 작성 2026-09-29 · 실행 레포 `/Users/baek/terra-server-camera-reliability` (worktree, 브랜치 `docs/camera-reliability-plan`)
 

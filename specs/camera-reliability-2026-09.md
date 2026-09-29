@@ -1,6 +1,6 @@
 # 카메라·예약 안정성 개선 (2026-09 베타 멈춤 대응) — 설계
 
-> 상태: 🟢 PR #7~#12 제출(2026-09-29) — 리뷰·머지·migration 적용·배포는 gwanhun, 펌웨어 답변 대기 · 작성 2026-09-29 · 근거 데이터: petcam-lab 세션 분석 + 현장 A/B/C 테스트(`petcam-lab/experiments/camera-hang-ab-2026-09/`)
+> 상태: 🟢 PR #7~#13 제출·/code-review 반영(2026-09-29) — 리뷰·머지·migration 적용·배포는 gwanhun, 펌웨어 답변 대기 · 작성 2026-09-29 · 근거 데이터: petcam-lab 세션 분석 + 현장 A/B/C 테스트(`petcam-lab/experiments/camera-hang-ab-2026-09/`)
 > 코드 참조는 **main `de9af0a` 기준**. 착수 전 반드시 재확인(다른 세션·gwanhun이 main에 직접 커밋함).
 
 ## 0. 배경 — 무엇을 봤나
@@ -120,4 +120,27 @@ B 09-29 13:15~17:20: 248건(streaming 89 / stalled 88 / no_video 58), 간격 p50
 - [ ] P5-①③ 펌웨어 답변 반영 (09-29 DM 발송, 답 대기)
 - [x] 앱 전달 문서 — P4 429/재연결 백오프(#12 `APP_WEBRTC.md` §7.1). P3 푸시는 보류 결정
 - [ ] #8·#11 적용 후 쌓인 이력으로 P3 임계값(30분·3회) 재검토
-- 머지 충돌 주의: #9↔#10 (handlers 기기 분기·reset_device_cache), #8↔#11 (handlers 카메라 분기)
+- [x] /code-review 지적 5건 반영(09-29): #8·#11 늦게 처리된 heartbeat 를 새 부팅으로 오판 → uptime 감소로,
+      #9 no_ack 스윕 전 수동 명령을 재전달이 덮음 → 액추에이터별 마지막 발행 시각, #10 예약 팬 타이머를 교정이 끊음 →
+      도는 중인 duration_ms 타이머 보류, petcam 리포트 부팅 시각 기준 clip_stats_at
+- [x] 같은 결함이 운영 중인 `schedule_restore.note_uptime` 에도 있음 → [#13](https://github.com/gwanhun/terra-server/pull/13)
+
+## 8. 머지 가이드 (09-29 로컬 합본 리허설 결과)
+origin/main `de9af0a` 에 아래 순서로 7개를 머지 → 충돌 4회, **전부 "양쪽 블록 모두 유지"** 로 해결 → `uv run pytest -q` **463 passed**
+(346 + 각 PR 신규 테스트 합 117 과 일치).
+
+| 순서 | PR | 충돌 | 해결 |
+|---|---|---|---|
+| 1 | #7 clip 메타 멱등 | 없음 | |
+| 2 | #13 restore uptime 감소 | 없음 | |
+| 3 | #8 camera_health_events | 없음 | |
+| 4 | #11 camera_alerts | `handlers.py`(import·reset·카메라 분기), `DATABASE.md`, `test_migration_coverage.py` | 둘 다 유지. coverage 테이블 목록은 `camera_health_events`·`camera_alerts` 합집합 |
+| 5 | #9 재전달 | `test_mqtt_handlers.py` 파일 끝 | 둘 다 유지 |
+| 6 | #10 재조정 | `handlers.py` `reset_device_cache`, `API.md`, `test_mqtt_handlers.py` 끝 | 둘 다 유지 |
+| 7 | #12 offer 안전망 | 없음 | |
+
+기기 telemetry 처리 순서는 자동으로 **재전달(#9) → 재부팅 복원 → 재조정(#10)** 이 된다. 같은 telemetry 에서 재전달·복원이
+명령을 넣으면 재조정은 그 명령을 "진행 중"으로 보고 보류한다(중복 교정 없음).
+
+**migration 적용:** #10 `2026-09-29_commands_source_reconcile.sql` 은 **배포 전에**. #8 `camera_health_events`·#11 `camera_alerts` 는
+새 테이블이라 순서 무관(없으면 로그만). 적용 후 `MIGRATIONS_APPLIED.md` 기록.
