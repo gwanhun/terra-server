@@ -423,6 +423,11 @@ POST /devices/{device_uuid}/reboot        (본문 없음)
   "지금 켜져 있어야 할" ON 명령을 1회 큐잉한다(`commands.source="restore"`, `reason="reboot_restore"`,
   `source_id=schedules.id`). mist·펌프·toggle·`duration_ms` one-shot 은 제외, `skip_when_*` 가드는 복원에도 적용.
   원격 reboot 뿐 아니라 브라운아웃·크래시 재부팅에도 동작. 상세: [APP_DEVICE_REBOOT_SYS_STATE_2026-09-28.md §2.4](APP_DEVICE_REBOOT_SYS_STATE_2026-09-28.md).
+- **예약 상태 재조정** (2026-09-29): 브리지가 기기당 5분마다 telemetry 의 `led`/`fan`/`fan2` 실제 상태와 예약상
+  "지금 있어야 할 상태"를 비교해 어긋나면 교정 명령 1회를 큐잉한다(`commands.source="reconcile"`,
+  `source_id=schedules.id`, `reason="reconcile <액추에이터> <실제>→<예약> …"`). 예약 이벤트 후 6분 이내,
+  그 이벤트 이후 수동·타이머 조작이나 가드 스킵이 있었던 구간, `stop_when_*` 가드 예약, 상태를 보고하지 않는
+  구 펌웨어는 건드리지 않는다. 한 예약 이벤트당 최대 1회. 예약 푸시는 나가지 않는다.
 - 구 펌웨어의 `reboot` ack 는 `status=acked` + `result=unknown_action` 이다. 성공 판정은 `result == "ok"` 로.
 - `DeviceOut.sys_state` (object | null, 2026-09-28+ 펌웨어): 3초 telemetry 마다 갱신.
   `{ "uptime_s": 300, "reset": "POWERON"|"BROWNOUT"|"SW:mqtt_reboot"|…, "heap": <bytes>, "rssi": <dBm> }`.

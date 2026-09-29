@@ -79,11 +79,14 @@ def _actuator_of(action: str) -> str | None:
     return None
 
 
-def restore_after_reboot(
-    sb: Any, device_uuid: str, label: str, now_utc: datetime | None = None
-) -> list[dict[str, Any]]:
-    """예약 기준으로 지금 켜져 있어야 할 액추에이터의 ON 명령을 큐잉. 큐잉한 command 행 목록 반환."""
-    now = now_utc or datetime.now(timezone.utc)
+def latest_schedule_events(
+    sb: Any, device_uuid: str, now: datetime
+) -> dict[str, tuple[datetime, dict[str, Any]]]:
+    """액추에이터(led/fan/fan2)별로 now 이전 가장 최근 예약 이벤트 (시각, schedules 행).
+
+    enabled 예약 중 on/off 절대 상태만 본다 — duration_ms one-shot(팬 타이머)은 상태가 아니라 제외.
+    restore(재부팅 복원)와 actuator_reconcile(상태 재조정)이 같은 "지금 있어야 할 상태" 계산을 쓴다.
+    """
     res = (
         sb.table("schedules")
         .select("id, device_id, owner_id, action, payload, kind, time_of_day, days_of_week, guard")
@@ -112,6 +115,15 @@ def restore_after_reboot(
         cur = latest.get(act)
         if cur is None or prev > cur[0]:
             latest[act] = (prev, row)
+    return latest
+
+
+def restore_after_reboot(
+    sb: Any, device_uuid: str, label: str, now_utc: datetime | None = None
+) -> list[dict[str, Any]]:
+    """예약 기준으로 지금 켜져 있어야 할 액추에이터의 ON 명령을 큐잉. 큐잉한 command 행 목록 반환."""
+    now = now_utc or datetime.now(timezone.utc)
+    latest = latest_schedule_events(sb, device_uuid, now)
 
     queued: list[dict[str, Any]] = []
     for act, (prev, row) in latest.items():
@@ -160,6 +172,7 @@ __all__ = [
     "RESTORABLE_ACTIONS",
     "RESTORE_REASON",
     "RESTORE_SOURCE",
+    "latest_schedule_events",
     "maybe_restore",
     "note_uptime",
     "reset",

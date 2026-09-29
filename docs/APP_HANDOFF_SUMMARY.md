@@ -155,7 +155,7 @@ POST /devices/{device_uuid}/lcd/clear    (기본값으로 복귀)
 `commands` 에 출처 컬럼이 추가됐다. 앱 감사 로그 화면에서 "누가·왜 냈나" 필터/표시에 사용.
 | 컬럼 | 값 |
 |---|---|
-| `source` | `manual`(수동) \| `schedule`(예약) \| `timer` \| `guard`(가드) \| `restore`(재부팅 후 예약 상태 복원, 2026-09-28) |
+| `source` | `manual`(수동) \| `schedule`(예약) \| `timer` \| `guard`(가드) \| `restore`(재부팅 후 예약 상태 복원, 2026-09-28) \| `reconcile`(예약 상태 재조정 — 실제 상태가 예약과 어긋날 때 교정, 2026-09-29) |
 | `source_id` | 연결된 `schedules.id` 등 (nullable) |
 | `reason` | 가드 사유 등 (nullable, 예: "습도 72% > 70% → 스킵") |
 ```sql

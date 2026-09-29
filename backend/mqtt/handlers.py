@@ -234,6 +234,8 @@ def reset_device_cache() -> None:
     _uptime_prev.clear()
     from backend import schedule_restore  # 지연 import (schedule_restore → command_service, handlers 미참조)
     schedule_restore.reset()
+    from backend import actuator_reconcile
+    actuator_reconcile.reset()
 
 
 # ---------- 카메라 설정 상태 캐시 (rotate_180 / capabilities) ----------
@@ -766,6 +768,14 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
             schedule_restore.maybe_restore(sb, device_uuid, device_id_text, sys_state["uptime_s"])
         except Exception:  # noqa: BLE001
             logger.exception("예약 상태 복원 실패 (device=%s)", device_id_text)
+
+    # 예약 상태 재조정(2026-09-29 P2-(b)): 실제 fan/fan2/led 가 예약상 있어야 할 상태와 어긋나면
+    # 교정 1회. 기기당 5분에 한 번만 조회. 실패해도 telemetry 처리는 계속.
+    try:
+        from backend import actuator_reconcile  # 지연 import — schedule_restore 와 같은 관례
+        actuator_reconcile.maybe_reconcile(sb, device_uuid, device_id_text, row)
+    except Exception:  # noqa: BLE001
+        logger.exception("예약 상태 재조정 실패 (device=%s)", device_id_text)
 
     # 하드웨어 ID(2026-09-21): 구 펌웨어로 등록돼 NULL 인 행을 채운다. heartbeat 와 분리한
     # 이유는 _backfill_hw_id 참고. 프로세스당 1회만 시도(3초 주기라 매 건 쓰면 낭비).
