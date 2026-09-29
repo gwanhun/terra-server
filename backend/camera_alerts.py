@@ -8,7 +8,8 @@ heartbeat 가 끊긴 경우만 본다.
 
 ## 동작 (서버가 이미 받는 heartbeat 값만 사용)
 - camera_abnormal_reset: 새 부팅의 reset 사유가 크래시·워치독·펌웨어 자가 복구
-  (PANIC · WDT · INT_WDT · TASK_WDT · SW:rtc_loop_stall · SW:upload_stuck). 부팅당 1건.
+  (PANIC · WDT · INT_WDT · TASK_WDT · SW:rtc_* · SW:mqtt_stuck · SW:net_wd · SW:boot_net_wd ·
+  SW:upload_stuck · SW:cam_stall — 펌웨어 워치독은 이관훈 회신 09-29). 부팅당 1건.
   POWERON · BROWNOUT · SW:rotate · SW:mqtt_reboot 같은 정상/의도된 재시작은 제외.
 - camera_upload_stalled: 업로드 성공이 STALL_SEC 넘게 멈춘 채 실패만 STALL_MIN_FAILS 이상 늘었다.
   성공 = up_ok + sd_ok(SD 적체 재업로드 성공), 실패 = up_fail + sd_fail. 구 펌웨어(fb2-p4 0.1.0,
@@ -34,9 +35,21 @@ logger = logging.getLogger(__name__)
 TABLE = "camera_alerts"
 KIND_RESET = "camera_abnormal_reset"
 KIND_STALL = "camera_upload_stalled"
+# 칩 크래시·워치독 + 펌웨어 자체 워치독(이관훈 회신 2026-09-29, 0.1.0/0.2.0 합집합).
+# 0.1.0: rtc_loop_stall·mqtt_stuck·cam_stall / 0.2.0 추가: net_wd·boot_net_wd·upload_stuck.
+# TASK_WDT 는 현 빌드에서 재부팅 안 하지만(PANIC 옵션 off) 켜지면 크래시라 포함.
 ABNORMAL_RESETS = frozenset({
-    "PANIC", "WDT", "INT_WDT", "TASK_WDT", "SW:rtc_loop_stall", "SW:upload_stuck",
+    "PANIC", "WDT", "INT_WDT", "TASK_WDT",
+    "SW:rtc_loop_stall", "SW:mqtt_stuck", "SW:net_wd", "SW:boot_net_wd",
+    "SW:upload_stuck", "SW:cam_stall",
 })
+# WebRTC 루프/송신/락 정지는 "rtc_loop_stall 등" 여러 사유라 이름이 확정 안 됨 → prefix 로.
+ABNORMAL_RESET_PREFIXES = ("SW:rtc_",)
+
+
+def is_abnormal_reset(reason: object) -> bool:
+    return isinstance(reason, str) and (
+        reason in ABNORMAL_RESETS or reason.startswith(ABNORMAL_RESET_PREFIXES))
 STALL_SEC = 1800.0          # 업로드 성공이 이만큼 없고
 STALL_MIN_FAILS = 3         # 그동안 실패가 이만큼 늘면 정체
 FRESH_UPTIME_SEC = 120      # 브리지 재시작 후 첫 관측: 이보다 짧은 uptime 만 새 부팅으로 본다
@@ -144,7 +157,7 @@ def _evaluate(sb: Any, camera_uuid: str, label: str, sys_state: dict[str, Any] |
         st.ok_val = None                     # 카운터가 0 부터 다시 센다 — 창 재시작
         st.active.discard(KIND_RESET)        # 새 부팅의 크래시는 새 알림
         st.pending_reset = ({"reset": reason, "uptime_s": uptime}
-                            if reason in ABNORMAL_RESETS else None)
+                            if is_abnormal_reset(reason) else None)
     if st.pending_reset is not None:
         _raise_alert(sb, st, camera_uuid, label, KIND_RESET, st.pending_reset, now,
                      since=st.boot_ts)
@@ -186,6 +199,7 @@ def evaluate(sb: Any, camera_uuid: str, label: str, sys_state: dict[str, Any] | 
 
 __all__ = [
     "ABNORMAL_RESETS",
+    "is_abnormal_reset",
     "KIND_RESET",
     "KIND_STALL",
     "STALL_MIN_FAILS",

@@ -7,7 +7,8 @@
 -- alerts 를 Realtime 구독 중이라 스키마를 바꾸면 앱 계약이 흔들린다. 같은 모양의 카메라 전용 테이블.
 --
 -- 쓰기: 브리지(service_role)만. backend/camera_alerts.py
---   kind = 'camera_abnormal_reset'  새 부팅의 reset 이 PANIC/WDT/INT_WDT/TASK_WDT/SW:rtc_loop_stall/SW:upload_stuck
+--   kind = 'camera_abnormal_reset'  새 부팅의 reset 이 크래시·워치독(PANIC/WDT/INT_WDT/TASK_WDT) 또는 펌웨어
+--                                    자체 워치독(SW:rtc_*/mqtt_stuck/net_wd/boot_net_wd/upload_stuck/cam_stall)
 --          'camera_upload_stalled'  업로드 성공이 30분+ 멈춘 채 실패만 3회+ 증가
 --   resolved_at = 업로드가 다시 성공한 시각. NULL = 활성.
 -- 조회: 본인 카메라 SELECT(앱이 나중에 쓸 수 있게 alerts 와 같은 방식) + service_role.

@@ -85,8 +85,13 @@ def _hb(db: _Sb, now: float, *, uptime: int, reset: str = "POWERON",
 # ---------- 비정상 재시작 ----------
 
 
-@pytest.mark.parametrize("reason", ["PANIC", "INT_WDT", "TASK_WDT", "WDT",
-                                    "SW:rtc_loop_stall", "SW:upload_stuck"])
+@pytest.mark.parametrize("reason", [
+    "PANIC", "INT_WDT", "TASK_WDT", "WDT",
+    # 펌웨어 자체 워치독 (이관훈 회신 09-29 — 0.1.0 은 rtc/mqtt/cam, 0.2.0 은 net/boot_net/upload 추가)
+    "SW:rtc_loop_stall", "SW:mqtt_stuck", "SW:net_wd", "SW:boot_net_wd", "SW:upload_stuck",
+    "SW:cam_stall",
+    "SW:rtc_send_stall",   # WebRTC 계열은 "rtc_loop_stall 등" — 송신/락 정지 사유 이름 미확정이라 prefix 로
+])
 def test_abnormal_reset_raises_alert(reason: str) -> None:
     db = _Sb()
     _hb(db, T0, uptime=5000)
