@@ -1,6 +1,6 @@
 # 카메라·예약 안정성 개선 (2026-09 베타 멈춤 대응) — 설계
 
-> 상태: 🟢 구현 중 — PR #7~#11 제출(2026-09-29), P4 owner 결정 대기 · 작성 2026-09-29 · 근거 데이터: petcam-lab 세션 분석 + 현장 A/B/C 테스트(`petcam-lab/experiments/camera-hang-ab-2026-09/`)
+> 상태: 🟢 PR #7~#12 제출(2026-09-29) — 리뷰·머지·migration 적용·배포는 gwanhun, 펌웨어 답변 대기 · 작성 2026-09-29 · 근거 데이터: petcam-lab 세션 분석 + 현장 A/B/C 테스트(`petcam-lab/experiments/camera-hang-ab-2026-09/`)
 > 코드 참조는 **main `de9af0a` 기준**. 착수 전 반드시 재확인(다른 세션·gwanhun이 main에 직접 커밋함).
 
 ## 0. 배경 — 무엇을 봤나
@@ -96,7 +96,7 @@
 1. P1 — **스냅샷 10분 · 보존 30일** ✅
 2. P2 — **relay(펌프) 제외, 수동 조작 존중**(예약 구간 중 수동 조작은 그 구간 끝까지 안 덮음) ✅
 3. P3 — **alert 행만, 푸시 보류, 자동 재부팅 없음** ✅
-4. P4 — 동시 시청 상한·최대 시청 시간: **미정**("고객 사용 패턴을 모름, 더 오래 볼 수도 있음"). rate limit 임계값도 아래 실측 때문에 결정 대기
+4. P4 — 동시 시청 상한·최대 시청 시간: **미정**("고객 사용 패턴을 모름, 더 오래 볼 수도 있음"). 아래 실측 후 **앱 백오프 문서 + 서버 시간당 안전망(60회/시)** 으로 결정 ✅
 5. P5 — 펌웨어 질문은 **이관훈님 Slack DM** — 09-29 발송 완료(재시도 시 upload-url 재발급·메타 재전송·201 vs 2xx 판정·err 28674/백오프)
 
 ### P4 실측 (webrtc_connect_logs 09-22~29, 1,719행, 28대, 읽기만)
@@ -116,8 +116,8 @@ B 09-29 13:15~17:20: 248건(streaming 89 / stalled 88 / no_video 58), 간격 p50
 - [x] P2-(a) → [#9](https://github.com/gwanhun/terra-server/pull/9) 재전달 (migration 없음, restore source 재사용)
 - [x] P2-(b) → [#10](https://github.com/gwanhun/terra-server/pull/10) 재조정 (commands source CHECK migration 선적용 필요)
 - [x] P3 → [#11](https://github.com/gwanhun/terra-server/pull/11) `camera_alerts` (migration 적용 요청)
-- [ ] P4 → PR6 — owner 결정 대기(§6-4 실측)
+- [x] P4 → [#12](https://github.com/gwanhun/terra-server/pull/12) 시간당 offer 안전망 + 앱 백오프 요청(`docs/APP_WEBRTC.md` §7.1)
 - [ ] P5-①③ 펌웨어 답변 반영 (09-29 DM 발송, 답 대기)
-- [ ] 앱 전달 문서(P3 푸시 — 보류 결정, P4 429/재연결 백오프 — P4 결정 후)
+- [x] 앱 전달 문서 — P4 429/재연결 백오프(#12 `APP_WEBRTC.md` §7.1). P3 푸시는 보류 결정
 - [ ] #8·#11 적용 후 쌓인 이력으로 P3 임계값(30분·3회) 재검토
 - 머지 충돌 주의: #9↔#10 (handlers 기기 분기·reset_device_cache), #8↔#11 (handlers 카메라 분기)
