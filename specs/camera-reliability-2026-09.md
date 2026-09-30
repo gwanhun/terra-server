@@ -162,8 +162,8 @@ origin/main `de9af0a` 에 아래 순서로 7개를 머지 → 충돌 4회, **전
   `CONFIG_LWIP_DNS_MAX_HOST_IP=1` 로 IP 하나만 쥐고 폴백이 없어, 그 IP 에 걸리면 DNS TTL 동안 연달아 `err 28674`.
 - AWS 서울(Lightsail)에서는 두 IP 정상 → Cloudflare 전역 장애 아님, 가정 회선 경로 문제.
 - **09-30 테스터 집(A·B·C 설치 집) 회선에서 재현:** 172.64.66.1 **3/3 연결 실패**, 172.64.190.1 3/3 정상(connect 0.01s) → B 계열 err 28674 원인 확정 방향. 관훈님께 DM 공유(09-30).
-- 실패는 두 종류: `err 28674`(연결 실패 — B) 와 `err -1`(연결 후 write 정체·SD 읽기 실패·바이트 불일치 — A, 카메라5).
-  A 의 78% 는 SD 쪽일 수 있음.
+- 실패는 두 종류: `err 28674`(연결 실패) 와 `err -1`(연결 후 write 정체·SD 읽기 실패·바이트 불일치).
+  B 는 28674, A 는 시점에 따라 -1·28674 둘 다(09-30 관훈 정정: A = `p4cam-1e671d88` = 카메라5. 전날 A 로 본 `p4cam-1eda91af` 는 테스트 외 카메라).
 - 서버가 우회할 방법은 없음(presigned PUT 은 R2 S3 엔드포인트 호스트로 서명됨) → **펌웨어 DNS 폴백이 해결책**.
   서버는 #8(`camera_health_events.last_err` jsonb)이 펌웨어가 추가할 `last_err.detail`(dns/tcp/tls/write_stall/sd_read…)을
   그대로 저장하므로 추가 작업 없이 집집마다 실패 유형이 쌓인다.
@@ -174,3 +174,24 @@ origin/main `de9af0a` 에 아래 순서로 7개를 머지 → 충돌 4회, **전
 - ⚠️ **플래시 시점**: 관훈님 제안은 "10/1 00시 1차 판정 뒤 A·B 부터". 그런데 1차 판정이 **hold 면 시험지 연장 규칙으로 10/3 00시까지
   계속** → 10/1 에 A·B 를 리플래시하면 연장 구간이 오염된다. 1차 판정이 adopt/reject 로 끝났을 때만 10/1, hold 면 10/3 이후. owner 결정.
 - 문범석 4738(p4cam-ac5cd849)은 업로드 정체가 아니라 프레임·모션 파이프라인 정지 유형 — #11 업로드 정체 알림으로는 안 잡힘(③ 워치독 대상)
+
+## 10. 09-30 진행
+
+### 배포 (관훈 09-30 12:25 KST)
+- #12 → #15 main 머지(a6c8d67, ce5c9fe), `2026-09-30_cameras_live_session.sql` 선적용·MIGRATIONS_APPLIED 기록(c876597), terra-api 재시작.
+  구버전 앱은 15분·5분 쉼만, 한 기기 제한은 앱 0.144.0+363(viewer_id) 부터. 웹 콘솔은 viewer_id 미전송 → "이전 버전 앱".
+- 검증: 관훈 카메라10(p4cam-2a98822b)으로 가져오기·15분 종료 (A·B·C 미사용).
+- #15 PR 은 base 가 #12 브랜치라 GitHub 에선 OPEN 으로 남음(내용은 main 반영).
+
+### owner 결정 — 15분 시계 재시작 간격 (09-30)
+- 관훈 질의: 14분 보고 닫고 61초 뒤 다시 켜면 시계 초기화 → 쉼 없이 또 14분. "누적 15분" 으로 바꿀지.
+- **결정: 지금 그대로(`CONTINUE_GAP_SEC = 60`)** — 꽉 채운 15분에만 쉼. 사용자 편의 우선.
+
+### 세 대 모두 PANIC (관훈 09-30)
+- A 23:12 · B 07:29 · C 06:11 부팅, 전부 `reset=PANIC`. C(구FW)는 **iOS 라이브 3.5시간 + 연속 녹화 3건 한가운데서** 사망.
+- 공통 의심 지점(우선순위): ① 라이브+녹화 동시 경로(`clip_mp4_live_sink`→esp_peer) ② ESP-Hosted SDIO DMA ③ 내부 RAM 고갈 ④ 스택 부족.
+- `WDT`(ESP_RST_WDT)는 패닉 처리 중 RTC 워치독이 먼저 리셋한 것일 수 있음 — 코어덤프 전엔 PANIC 과 못 가름.
+- 펌웨어 다음 빌드: coredump 파티션 + 부팅 첫 하트비트에 `crash{}`(태스크·PC·백트레이스 16). **서버 후속 필요:** 지금 handler 는
+  `sys` 에 uptime/reset/heap/rssi 만 담아 `crash` 를 버린다 → 형식 확정 후 `clip_stats.sys.crash` + #8 `camera_health_events` reset 행에 저장.
+- 팀 요청: 시리얼 백트레이스 수집(테스트 집 노트북, `idf.py monitor --no-reset`), 1분 기록기에 `up_busy_s`·라이브 여부 추가
+  (petcam-lab `scripts/camera_hang_power_poll.py` — 다른 세션 소유), C 3.5시간 라이브 경위 확인, 문범석 4738 전원 재투입(구FW 원격 재부팅 불가).
