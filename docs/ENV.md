@@ -60,6 +60,7 @@
   앱은 재연결마다 config 를 새로 받으므로 만료돼도 자연히 갱신된다.
 - `WEBRTC_TURN_TTL_SEC` — 단기 자격증명 유효기간(초). 기본 21600(6시간), 300~86400 으로 클램프.
 - `WEBRTC_TURN_USERNAME` / `WEBRTC_TURN_CREDENTIAL` — 정적 자격증명(개발/임시). `SECRET` 이 있으면 무시.
+- `WEBRTC_OFFER_LIMIT_PER_HOUR` — 카메라당 최근 1시간 `/webrtc/offer` 상한(초과 시 429 + `Retry-After`). 기본 60, `0` 이면 끔. 근거: `backend/webrtc_offer_guard.py` (2026-09-29).
 
 #### 언제 TURN 이 필요?
 대칭 NAT (양쪽 모두) 환경에서 P2P 가 직접 연결 못 함. 보통 모바일 셀룰러 → 카메라 (가정 IP) 시나리오. STUN 만으로 80% 정도는 통과, 안 되면 TURN relay 가 받쳐줌.
