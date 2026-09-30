@@ -316,7 +316,9 @@ await http.post(
 | 상황 | 코드 | 대응 |
 |------|-----|-----|
 | 카메라가 webrtc_offer 처리 안 함 | 504 (`/webrtc/offer`) | "카메라 응답 없음" 안내. 카메라 재부팅 권장. |
-| 카메라당 시간당 offer 상한 초과 | 429 (`/webrtc/offer`) + `Retry-After` | **자동 재연결 중단.** "잠시 후 다시 시도" 안내, `Retry-After` 초 전엔 재시도 금지. §7.1 |
+| 카메라당 시간당 offer 상한 초과 | 429 `rate_limited` + `Retry-After` | **자동 재연결 중단.** "잠시 후 다시 시도" 안내, `Retry-After` 초 전엔 재시도 금지. §7.1 |
+| 15분 시청 후 쉼 | 429 `live_cooldown` + `Retry-After` | 절전 안내 + 카운트다운. [APP_LIVE_VIEW_LIMIT](APP_LIVE_VIEW_LIMIT_2026-09-30.md) |
+| 다른 기기가 시청 중 | 409 `live_in_use` | "○○에서 시청 중입니다. 연결할까요?" → `takeover: true`. [APP_LIVE_VIEW_LIMIT](APP_LIVE_VIEW_LIMIT_2026-09-30.md) |
 | MQTT 인프라 문제 | 502 (`/webrtc/offer`) | 잠시 후 재시도. 빈번하면 서버 로그 확인. |
 | 권한 없는 카메라 UUID | 404 | 본인 소유 카메라만 가능. |
 | 미인증 | 401 | JWT 갱신 후 재시도. |
@@ -338,7 +340,9 @@ await http.post(
 5. 같은 카메라를 한 기기에서 동시에 두 세션으로 열지 않기(시뮬레이터+폰 동시 시청 때 카메라 40초 먹통 관찰).
 
 **서버 안전망:** 카메라별 최근 1시간 offer 60회 초과 시 `429` + `Retry-After`. 정상 사용(7일 최대 38회/시)에는
-걸리지 않게 잡았고, 운영에서 `WEBRTC_OFFER_LIMIT_PER_HOUR` 로 조정한다. 동시 시청 상한·최대 시청 시간은 아직 없다.
+걸리지 않게 잡았고, 운영에서 `WEBRTC_OFFER_LIMIT_PER_HOUR` 로 조정한다. 429 body 의 `detail.code` 는 `rate_limited`.
+
+**시청 제한(2026-09-30):** 한 번에 15분·5분 쉼·한 기기 — [APP_LIVE_VIEW_LIMIT_2026-09-30.md](APP_LIVE_VIEW_LIMIT_2026-09-30.md).
 
 ## 8. 트러블슈팅
 

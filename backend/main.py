@@ -26,6 +26,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 
 from backend.health import register_health
+from backend.live_session import LiveSessionReaper
 from backend.routers import (
     cameras,
     clips,
@@ -37,6 +38,8 @@ from backend.routers import (
     settings,
     webrtc,
 )
+from backend.routers.webrtc import close_camera_session
+from backend.supabase_client import get_supabase_client
 from backend.webrtc_relay import get_relay
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -109,9 +112,13 @@ async def _lifespan(_app: FastAPI):
     relay = get_relay()
     loop = asyncio.get_running_loop()
     relay.start(loop)
+    # 라이브 15분 상한 집행(2026-09-29): 만료 세션을 카메라에서 닫고 5분 쉼을 건다(backend/live_session.py).
+    reaper = LiveSessionReaper(get_supabase_client, close_camera_session)
+    reaper.start()
     try:
         yield
     finally:
+        reaper.stop()
         relay.stop()
 
 
