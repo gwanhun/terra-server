@@ -35,6 +35,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
+from backend import command_redeliver
 from backend.command_service import MIST_ACTION, insert_pending_command
 from backend.mqtt import handlers
 from backend.push_events import NO_ACK_RESULT
@@ -95,6 +96,11 @@ def _enqueue_failure(row: dict[str, Any], device_uuid: str, result: str) -> None
         )
     except Exception:  # noqa: BLE001
         logger.exception("실패 푸시 이벤트 적재 실패 (command_id=%s)", row.get("id"))
+    # 예약 on/off 는 기기 복귀 시 재전달 후보로 기억 (2026-09-29 P2-(a), command_redeliver 참고)
+    try:
+        command_redeliver.note_failure(row, result)
+    except Exception:  # noqa: BLE001
+        logger.exception("재전달 등록 실패 (command_id=%s)", row.get("id"))
 
 
 def sweep_unacked(threshold_sec: float = NO_ACK_THRESHOLD_SEC, batch: int = DEFAULT_BATCH) -> int:
@@ -184,6 +190,9 @@ def _dispatch_one(bridge: "MqttBridge", row: dict[str, Any]) -> None:
     ttl = row.get("ttl_sec") or DEFAULT_TTL_SEC
 
     sb = get_supabase_client()
+
+    # 0) 같은 액추에이터의 새 명령 = 최신 의도 → 대기 중인 재전달 취소(수동 조작 존중).
+    command_redeliver.note_dispatch(device_uuid, action, row.get("issued_at"))
 
     # 1) TTL 만료 검증
     issued_at = _parse_iso(row["issued_at"])

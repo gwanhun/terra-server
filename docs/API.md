@@ -423,6 +423,11 @@ POST /devices/{device_uuid}/reboot        (본문 없음)
   "지금 켜져 있어야 할" ON 명령을 1회 큐잉한다(`commands.source="restore"`, `reason="reboot_restore"`,
   `source_id=schedules.id`). mist·펌프·toggle·`duration_ms` one-shot 은 제외, `skip_when_*` 가드는 복원에도 적용.
   원격 reboot 뿐 아니라 브라운아웃·크래시 재부팅에도 동작. 상세: [APP_DEVICE_REBOOT_SYS_STATE_2026-09-28.md §2.4](APP_DEVICE_REBOOT_SYS_STATE_2026-09-28.md).
+- **예약 on/off 재전달** (2026-09-29): 조명·팬·냉각팬 예약 명령(`source="schedule"`)이 `expired`/`no_ack`/
+  `unknown_device` 로 실패하면, 원래 시각 5분 안에 그 기기 telemetry 가 다시 들어올 때 1회 재큐잉한다
+  (`source="restore"`, `reason="redeliver of <원 명령 id> (<실패 사유>)"`, `source_id=schedules.id`). 원 명령의
+  실패 푸시는 그대로 나가고, 재전달 명령은 예약 푸시를 내지 않는다. telemetry 가 이미 목표 상태거나, 그 사이
+  같은 액추에이터에 다른 명령(수동 포함)이 나갔으면 재전달하지 않는다. mist·펌프(relay)·toggle·수동 명령은 제외.
 - 구 펌웨어의 `reboot` ack 는 `status=acked` + `result=unknown_action` 이다. 성공 판정은 `result == "ok"` 로.
 - `DeviceOut.sys_state` (object | null, 2026-09-28+ 펌웨어): 3초 telemetry 마다 갱신.
   `{ "uptime_s": 300, "reset": "POWERON"|"BROWNOUT"|"SW:mqtt_reboot"|…, "heap": <bytes>, "rssi": <dBm> }`.

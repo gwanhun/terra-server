@@ -234,6 +234,8 @@ def reset_device_cache() -> None:
     _uptime_prev.clear()
     from backend import schedule_restore  # 지연 import (schedule_restore → command_service, handlers 미참조)
     schedule_restore.reset()
+    from backend import command_redeliver
+    command_redeliver.reset()
 
 
 # ---------- 카메라 설정 상태 캐시 (rotate_180 / capabilities) ----------
@@ -763,6 +765,14 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
         dev_update["temp_offset_c"] = round(float(t_off), 2)
     # 선택 필드(sys_state/temp_offset_c) 실패가 온라인 표시를 막지 않게 — 카메라와 같은 정책(_write_heartbeat).
     _write_heartbeat(sb, "devices", device_id_text, device_uuid, dev_update)
+
+    # 예약 on/off 재전달(2026-09-29 P2-(a)): 기기 오프라인·무응답으로 실패한 예약 명령을, 기기가
+    # 살아 돌아온 지금(이 telemetry) 1회 재큐잉. 대기 건이 없으면 dict 조회 1번뿐.
+    try:
+        from backend import command_redeliver  # 지연 import — schedule_restore 와 같은 관례
+        command_redeliver.on_telemetry(sb, device_uuid, row)
+    except Exception:  # noqa: BLE001
+        logger.exception("예약 명령 재전달 실패 (device=%s)", device_id_text)
 
     # 재부팅 후 예약 상태 복원(2026-09-28, 앱 회신 §2): 부팅 직후 첫 telemetry 에서 조명·팬 예약의
     # "지금 켜져 있어야 할" 상태를 ON 명령으로 1회 큐잉. 실패해도 telemetry 처리는 계속.

@@ -1321,3 +1321,45 @@ def test_camera_telemetry_stores_image_state(fake_sb: MagicMock, published: list
         handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "img": img})
     assert updates[0]["image_state"] == img
     assert "AE 진동 동결" in " ".join(r.getMessage() for r in caplog.records)
+
+
+# ---------- 예약 on/off 재전달 (2026-09-29 P2-(a)) ----------
+
+
+def test_device_telemetry_triggers_pending_redelivery(fake_sb: MagicMock) -> None:
+    """오프라인 중 실패한 예약 fan2_off 가 있으면, 기기 telemetry(fan2=ON) 수신 시 commands 에 1회 재큐잉."""
+    from datetime import datetime, timezone
+
+    from backend import command_redeliver
+
+    updates: list[dict] = []
+    commands: list[dict] = []
+    base = _device_table_factory(updates, db_caps=None)
+
+    def _table(name: str) -> MagicMock:
+        if name != "commands":
+            return base(name)
+        t = MagicMock()
+        def _insert(row: dict) -> MagicMock:
+            commands.append(row)
+            res = MagicMock()
+            res.execute.return_value.data = [{"id": "redeliver-1", **row}]
+            return res
+        t.insert.side_effect = _insert
+        return t
+
+    fake_sb.table.side_effect = _table
+    command_redeliver.note_failure({
+        "id": "cmd-fan2-off", "device_id": DEVICE_UUID, "action": "fan2_off", "payload": None,
+        "issued_at": datetime.now(timezone.utc).isoformat(), "issued_by": "owner-1",
+        "source": "schedule", "source_id": "sch-1",
+    }, "expired")
+
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 1, "fan2": "ON"})
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 2, "fan2": "ON"})
+
+    assert len(commands) == 1
+    assert commands[0]["action"] == "fan2_off"
+    assert commands[0]["source"] == "restore"
+    assert commands[0]["status"] == "pending"
+    assert "cmd-fan2-off" in commands[0]["reason"]
