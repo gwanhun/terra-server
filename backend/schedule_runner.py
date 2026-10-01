@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_INTERVAL_SEC = 30.0
 DEFAULT_BATCH = 100
+OFFLINE_SKIPPED_RESULT = "device_offline"
 
 
 def _now() -> datetime:
@@ -133,6 +134,68 @@ def _record_skipped(sb: Any, row: dict[str, Any], skip: dict[str, Any]) -> None:
         logger.exception("skipped 푸시 적재 실패 (schedule=%s)", row.get("id"))
 
 
+def _is_device_offline(sb: Any, device_uuid: str) -> bool:
+    """devices.is_online 이 **명시적으로 false** 일 때만 True.
+
+    조회 실패·행 없음·NULL 은 판단 불가 → 기존대로 발화 (오판으로 예약을 삼키는 쪽이 더 나쁨).
+    """
+    try:
+        res = (
+            sb.table("devices")
+            .select("is_online")
+            .eq("id", device_uuid)
+            .limit(1)
+            .execute()
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("기기 온라인 조회 실패 (device=%s) → 정상 발화", device_uuid)
+        return False
+    rows = res.data or []
+    return bool(rows) and rows[0].get("is_online") is False
+
+
+def _record_offline_skipped(sb: Any, row: dict[str, Any]) -> None:
+    """오프라인이라 건너뛴 예약 감사 기록 — status='skipped', result='device_offline'.
+
+    발행은 안 하지만(어차피 30초 뒤 no_ack) 사용자에겐 "기기가 꺼져 있어 실행 못함"을
+    알린다. 이벤트는 기존 계약인 device.action.failed + result='device_offline' —
+    앱이 expired/no_ack 와 같은 경로로 받고 result 로 문구만 분기하면 된다.
+    source='schedule' 이라 기존 CHECK 그대로.
+    """
+    try:
+        res = sb.table("commands").insert({
+            "device_id": row["device_id"],
+            "action": row["action"],
+            "payload": row.get("payload"),
+            "issued_by": row.get("owner_id"),
+            "status": "skipped",
+            "result": OFFLINE_SKIPPED_RESULT,
+            "source": "schedule",
+            "source_id": row["id"],
+            "reason": "기기 오프라인 → 스킵",
+        }).execute()
+    except Exception:  # noqa: BLE001
+        logger.exception("오프라인 스킵 감사 기록 실패 (schedule=%s)", row.get("id"))
+        return
+
+    inserted = (res.data or [None])[0]
+    if not inserted:
+        return
+    try:
+        from backend import push_events
+        from backend.mqtt import handlers
+
+        device_uuid = row["device_id"]
+        push_events.enqueue_command_failure(
+            inserted,
+            handlers._cached_device_text(device_uuid) or "",
+            handlers.device_meta(device_uuid),
+            OFFLINE_SKIPPED_RESULT,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("오프라인 스킵 푸시 적재 실패 (schedule=%s)", row.get("id"))
+
+
 def _fire_one(sb: Any, row: dict[str, Any], now: datetime) -> None:
     """예약 1건 발화: next_run_at 갱신(먼저) → (가드 통과 시) commands INSERT."""
     tod = parse_time_of_day(row["time_of_day"])
@@ -143,6 +206,12 @@ def _fire_one(sb: Any, row: dict[str, Any], now: datetime) -> None:
         "next_run_at": next_run.isoformat(),
         "last_run_at": now.isoformat(),
     }).eq("id", row["id"]).execute()
+
+    # 1.5) 기기 오프라인 — 발행하지 않고 스킵 기록 + '꺼져 있어 실행 못함' 실패 푸시
+    if _is_device_offline(sb, row["device_id"]):
+        _record_offline_skipped(sb, row)
+        logger.info("schedule %s 오프라인 스킵 (device=%s)", row.get("id"), row["device_id"])
+        return
 
     # 2) 스마트 조건(가드) — skip 형이면 발행 안 하고 감사 기록만
     guard = row.get("guard")
