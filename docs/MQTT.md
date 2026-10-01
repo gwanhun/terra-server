@@ -59,7 +59,8 @@
   "uptime_sec": 300,
   "free_heap": 190000,
   "reset": "SW:mqtt_reboot",
-  "wifi_rssi": -40
+  "wifi_rssi": -40,
+  "temp_offset_c": -1.5
 }
 ```
 
@@ -80,6 +81,11 @@
   uptime 이 직전보다 줄면 "재부팅 감지 reset=…" 경고 로그. `reset` 은 `POWERON`/`BROWNOUT`/`PANIC`/
   `TASK_WDT` 등 `esp_reset_reason()` 이름 또는 펌웨어 자체 재부팅 `SW:<why>` (`SW:mqtt_reboot` = 원격 재부팅).
   `wifi_rssi` 는 미연결/조회 실패 시 키 없음. 콘솔 기기 행 `sys` 셀에 `up · reset · heap · rssi` 표시.
+- `temp_offset_c` (2026-10-01+): 기기가 **지금 적용 중인** 온도 보정(℃, NVS `terra/t_off`, 없으면 빌드 기본
+  `CONFIG_APP_TEMP_OFFSET_MDEG` = -1.5). 서버는 최신값을 `devices.temp_offset_c` 에 저장(telemetry 행에는 안 넣음),
+  ±10 밖·숫자 아님은 무시. `set_temp_offset` 이력(commands)은 "보냈다" 일 뿐 보드 교체·flash erase 뒤엔 NVS 와
+  어긋나므로 이 보고값만 진실로 친다. 콘솔은 온도 셀에 `🌡보정 -1.5` 로 표시하고, 구 펌웨어(NULL)는 commands 의
+  마지막 `set_temp_offset` 값을 `🌡명령 -2.0 2026-09-20` 처럼 구분해 보여준다.
 
 카메라 워커 telemetry (15초 주기, heartbeat 성격 — 서버는 `telemetry` 행을 INSERT 하지 않음):
 
@@ -284,3 +290,4 @@ topic read  esp32/picam-b2c3d4e5/command
 | 2026-09-23 | 0.5.4 | `mist` duration 5000/10000 (호환 7000) + 기기 상한 초과 시 **분할 발행**(`source=timer` 후속, 미래 `issued_at` 예약 발행), 기기 telemetry `capabilities` 수신 |
 | 2026-09-20 | 0.5.4 | IoT `set_temp_offset` action 추가 (온도 보정, NVS 영속, LCD/telemetry 공통 적용) |
 | 2026-09-28 | 0.6.1 | IoT telemetry `uptime_sec`/`free_heap`/`reset`/`wifi_rssi` → `devices.sys_state`, IoT `reboot` action + `POST /devices/{id}/reboot` (카메라와 동일 진단·원격 재부팅) |
+| 2026-10-01 | 0.6.2 | IoT telemetry `temp_offset_c`(지금 적용 중인 온도 보정) → `devices.temp_offset_c`. 콘솔 온도 셀·보정 입력칸에 현재값 표시, 구 펌웨어는 commands 마지막 `set_temp_offset` 값으로 폴백 |

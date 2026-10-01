@@ -755,7 +755,13 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
     sys_state = _sys_state("device", device_id_text, device_uuid, payload)
     if sys_state:
         dev_update["sys_state"] = sys_state
-    # 선택 필드(sys_state) 실패가 온라인 표시를 막지 않게 — 카메라와 같은 정책(_write_heartbeat).
+    # 온도 보정값(2026-10-01): 기기가 지금 적용 중인 오프셋. set_temp_offset 이력은 "보냈다"일 뿐
+    # 보드 교체·flash erase 뒤엔 NVS 기본값으로 돌아가므로, 기기 보고값만 진실로 친다.
+    # 범위(±10℃)는 펌웨어 set 과 동일 — 밖이면 깨진 값으로 보고 무시. 구 펌웨어(키 없음)는 건드리지 않음.
+    t_off = payload.get("temp_offset_c")
+    if isinstance(t_off, (int, float)) and not isinstance(t_off, bool) and -10.0 <= t_off <= 10.0:
+        dev_update["temp_offset_c"] = round(float(t_off), 2)
+    # 선택 필드(sys_state/temp_offset_c) 실패가 온라인 표시를 막지 않게 — 카메라와 같은 정책(_write_heartbeat).
     _write_heartbeat(sb, "devices", device_id_text, device_uuid, dev_update)
 
     # 재부팅 후 예약 상태 복원(2026-09-28, 앱 회신 §2): 부팅 직후 첫 telemetry 에서 조명·팬 예약의

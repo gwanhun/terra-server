@@ -38,6 +38,7 @@ Supabase 에 적용한 마이그레이션 기록(SOT). `migrations/*.sql` 을 SQ
 | ✅ | `2026-09-28_commands_source_restore.sql` | 2026-09-28 | `commands.source` CHECK 에 `'restore'` 추가 — 재부팅 후 예약 상태 복원 명령(schedule_restore). 코드(236c8e6)보다 먼저 적용됨 |
 | ✅ | `2026-09-28_devices_sys_state.sql` | 2026-09-28 | `devices.sys_state` JSONB — IoT 펌웨어 2026-09-28+ 의 uptime/reset/heap/rssi 최신값. 코드(080dd8e)보다 먼저 적용됨 |
 | ✅ | `2026-09-30_cameras_live_session.sql` | 2026-09-30 | `cameras.live_*` 7컬럼 — 라이브 시청 제한 15분 상한·5분 쉼·한 기기(#15, `backend/live_session.py`). 코드(ce5c9fe)보다 먼저 적용, 적용 직후 7컬럼 조회 확인 |
+| ✅ | `2026-10-01_devices_temp_offset.sql` | 2026-10-01 | `devices.temp_offset_c` REAL — 펌웨어 2026-10-01+ 가 telemetry 로 보고하는 현재 온도 보정값. 코드보다 먼저 적용됨 |
 
 ## 규칙
 - 새 마이그레이션은 `migrations/YYYY-MM-DD_설명.sql` 로 추가하고, 적용 후 이 표에 행 추가.

@@ -9,7 +9,7 @@
 | 테이블 | 도메인 | 용도 | 키 |
 |--------|--------|------|---|
 | `enclosures` | 공통 | 사육장 (상위 묶음) | UUID, owner_id FK |
-| `devices` | IoT | ESP32-S3 등록 | UUID, owner_id + enclosure_id FK |
+| `devices` | IoT | ESP32-S3 등록. `sys_state`(진단 최신값, 2026-09-28) + `temp_offset_c`(지금 적용 중인 온도 보정, 펌웨어 보고, NULL=구 펌웨어 — 2026-10-01) | UUID, owner_id + enclosure_id FK |
 | `device_settings` | IoT | 사용자별 목표/임계값 | device_id PK (1:1) |
 | `telemetry` | IoT | 시계열 원본 (3초) | (device_id, ts) |
 | `telemetry_1m` | IoT | 분 단위 다운샘플 | (device_id, bucket) |

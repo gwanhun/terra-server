@@ -836,9 +836,49 @@ async function ledBrightness(deviceUuid, pct) {
   setTimeout(loadRecentCommands, 1500);
 }
 
+// 기기별 마지막 set_temp_offset 명령 { offset_c, status, issued_at } — devices.temp_offset_c 가 NULL 인
+// 구 펌웨어(2026-10-01 이전)에서 "마지막으로 보낸 보정값" 을 대신 보여주기 위한 캐시.
+// 보드 교체·flash erase 뒤엔 실제 NVS 와 다를 수 있어 '명령' 이라고 표시한다.
+let LAST_TOFF_CMD = {};
+
+async function loadLastTempOffsetCmds(deviceIds) {
+  LAST_TOFF_CMD = {};
+  if (!deviceIds.length) return;
+  const { data, error } = await sb
+    .from('commands')
+    .select('device_id, payload, status, issued_at')
+    .in('device_id', deviceIds)
+    .eq('action', 'set_temp_offset')
+    .order('issued_at', { ascending: false })
+    .limit(200);                      // 기기당 최신 1건만 쓰지만 한 기기 이력이 길면 다른 기기 건이 밀릴 수 있어 넉넉히
+  if (error) { log({ last_temp_offset: error.message }); return; }
+  (data || []).forEach(c => {
+    if (LAST_TOFF_CMD[c.device_id]) return;   // 최신순이라 첫 건이 마지막 명령
+    const v = c.payload && Number(c.payload.offset_c);
+    if (!isNaN(v)) LAST_TOFF_CMD[c.device_id] = { offset_c: v, status: c.status, issued_at: c.issued_at };
+  });
+}
+
+// 온도 셀 보정 표기. 펌웨어 보고값(진실) 우선, 없으면 마지막 명령값(구 펌웨어·'명령' 표기), 둘 다 없으면 빈 문자열.
+function tempOffsetHtml(deviceUuid) {
+  const d = DEVICES.find(x => x.id === deviceUuid);
+  const fmt = v => (v > 0 ? '+' : '') + Number(v).toFixed(1);
+  if (d && d.temp_offset_c != null) {
+    return `<br><small class="muted" title="기기가 보고한 현재 보정값(NVS) — 2026-10-01+ 펌웨어">🌡보정 ${fmt(d.temp_offset_c)}</small>`;
+  }
+  const c = LAST_TOFF_CMD[deviceUuid];
+  if (c) {
+    const when = (c.issued_at || '').slice(0, 10);
+    const st = c.status === 'acked' ? '' : ' ' + c.status;
+    return `<br><small class="muted" title="구 펌웨어라 현재값 미보고 — commands 의 마지막 set_temp_offset(${c.issued_at})${st}. 보드 교체·flash 후엔 실제와 다를 수 있음(빌드 기본 -1.5)" style="opacity:.7">🌡명령 ${fmt(c.offset_c)} <span style="opacity:.6">${when}${st}</span></small>`;
+  }
+  return '';
+}
+
 async function loadDevices() {
   const rows = await api('/devices');
   DEVICES = rows || [];             // 예약/LCD/설정 패널 디바이스 드롭다운용 캐시
+  await loadLastTempOffsetCmds(DEVICES.map(r => r.id));
   refreshScheduleDeviceOptions();
   refreshLcdDeviceOptions();
   refreshSettingsDeviceOptions();
@@ -902,7 +942,7 @@ function telValueHtml(deviceUuid, value, unit) {
 }
 
 function formatDeviceTemp(deviceUuid) {
-  return telValueHtml(deviceUuid, TEL_GOOD[deviceUuid]?.t_a, '°C');
+  return telValueHtml(deviceUuid, TEL_GOOD[deviceUuid]?.t_a, '°C') + tempOffsetHtml(deviceUuid);
 }
 
 function formatDeviceHumid(deviceUuid) {
@@ -1376,7 +1416,7 @@ async function checkAccount(email, resultEl, btns) {
       const test = document.createElement('button');
       test.textContent = '테스트'; test.style.fontSize = '10px'; test.style.padding = '1px 6px';
       test.onclick = isCam ? () => toggleCameraTest(obj, div, test)
-                           : () => toggleDeviceTest(email, obj.id, ident, div, test);
+                           : () => toggleDeviceTest(email, obj, div, test);
       div.appendChild(test);
       const unl = document.createElement('button');
       unl.textContent = '해제'; unl.style.fontSize = '10px'; unl.style.padding = '1px 6px'; unl.style.marginLeft = '4px';
@@ -1450,7 +1490,8 @@ async function unlinkRegistered(email, kind, id, ident, done) {
 
 // 기기 전체 기능 테스트 — [테스트] 누르면 아래 줄에 제어 버튼(펌프·팬·LED·분무 등)이 펼쳐지고
 // 그 계정 JWT 로 실제 명령을 보낸다. 프로덕션에서만 실제 전달(브리지). 다시 누르면 닫힘.
-async function toggleDeviceTest(email, deviceUuid, deviceId, hostDiv, btn) {
+async function toggleDeviceTest(email, dev, hostDiv, btn) {
+  const deviceUuid = dev.id;
   const open = hostDiv.querySelector('.dev-test-panel');
   if (open) { open.remove(); btn.textContent = '테스트'; return; }
   const client = getBatchClient(); if (!client) return;
@@ -1488,6 +1529,36 @@ async function toggleDeviceTest(email, deviceUuid, deviceId, hostDiv, btn) {
       if (isNaN(v)) { status.className = 'bad'; status.textContent = ' 보정값(숫자) 입력'; return; }
       sendTestCmd(token, uid, deviceUuid, 'set_temp_offset', { offset_c: v }, status);
     }));
+    // 현재 보정값 표시·미리채움. 펌웨어 보고값(devices.temp_offset_c, 2026-10-01+)이 진실.
+    // 구 펌웨어는 NULL → commands 의 마지막 set_temp_offset 을 보여주되 '명령' 으로 구분
+    // (보드 교체·flash 뒤엔 NVS 가 빌드 기본 -1.5 로 돌아가 이력과 어긋날 수 있음).
+    const cur = document.createElement('small'); cur.className = 'muted'; cur.style.marginLeft = '4px';
+    const fmt = v => (v > 0 ? '+' : '') + Number(v).toFixed(1) + '℃';
+    if (dev.temp_offset_c != null) {
+      offIn.value = dev.temp_offset_c;
+      cur.textContent = '(기기 보고: ' + fmt(dev.temp_offset_c) + ')';
+      cur.title = '기기가 telemetry 로 보고한 현재 NVS 보정값';
+    } else {
+      cur.textContent = '(현재값 미보고 — 구 펌웨어)';
+      cur.title = '2026-10-01+ 펌웨어만 현재 보정값을 보고. 마지막 명령값을 조회 중…';
+      fetch(CONFIG.supabaseUrl + '/rest/v1/commands?select=payload,status,issued_at&device_id=eq.' + deviceUuid
+            + '&action=eq.set_temp_offset&order=issued_at.desc&limit=1',
+            { cache: 'no-store', headers: { apikey: CONFIG.supabasePublishable, Authorization: 'Bearer ' + token } })
+        .then(r => r.ok ? r.json() : [])
+        .then(rows => {
+          const c = rows && rows[0];
+          const v = c && c.payload && Number(c.payload.offset_c);
+          if (c && !isNaN(v)) {
+            if (!offIn.value) offIn.value = v;
+            cur.textContent = '(마지막 명령 ' + fmt(v) + ' · ' + (c.issued_at || '').slice(0, 10) + ' ' + c.status + ' · 현재값 미보고)';
+            cur.title = '구 펌웨어라 현재값을 모름. 보드 교체·flash 후엔 빌드 기본(-1.5℃)으로 돌아갔을 수 있음';
+          } else {
+            cur.textContent = '(보정 명령 이력 없음 · 현재값 미보고 → 빌드 기본 -1.5℃ 추정)';
+          }
+        })
+        .catch(() => { cur.textContent = '(마지막 명령 조회 실패)'; });
+    }
+    panel.appendChild(cur);
     panel.appendChild(status);
     hostDiv.appendChild(panel);
     btn.textContent = '닫기';
@@ -1816,7 +1887,7 @@ function subscribeRealtime() {
           if (cell) cell.innerHTML = sysCellHtml(n.sys_state);
           // is_online 은 offline_monitor 가 180초 무응답 시 false 로 바꾼다 → 온습도 셀을 오프라인 표시로.
           const d = DEVICES.find(x => x.id === n.id);
-          if (d) { d.is_online = n.is_online; d.last_seen_at = n.last_seen_at; }
+          if (d) { d.is_online = n.is_online; d.last_seen_at = n.last_seen_at; d.temp_offset_c = n.temp_offset_c; }
           updateDeviceTempCell(n.id);
         })
     .subscribe();

@@ -1111,6 +1111,31 @@ def test_device_telemetry_saves_sys_state(fake_sb: MagicMock, caplog: pytest.Log
     assert all("sys_state" not in row and "uptime_sec" not in row for row in inserts)
 
 
+def test_device_telemetry_saves_temp_offset(fake_sb: MagicMock) -> None:
+    """2026-10-01 펌웨어의 temp_offset_c(지금 적용 중인 보정)는 devices.temp_offset_c 로(telemetry 행 X).
+    구 펌웨어(키 없음)·범위 밖(±10 초과)·숫자 아님은 안 쓴다 — NULL 이 '미보고' 를 뜻하므로."""
+    updates: list[dict] = []
+    inserts: list[dict] = []
+    base = _device_table_factory(updates, db_caps=None)
+
+    def _table(name: str) -> MagicMock:
+        t = base(name)
+        if name == "telemetry":
+            t.insert.side_effect = lambda p: inserts.append(p) or t.insert.return_value
+        return t
+    fake_sb.table.side_effect = _table
+
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 1, "temp_offset_c": -1.5})
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 2, "temp_offset_c": 0})
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 3})                         # 구 펌웨어
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 4, "temp_offset_c": 42})    # 범위 밖
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 5, "temp_offset_c": "-1"})  # 숫자 아님
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 6, "temp_offset_c": True})  # bool 은 숫자 취급 X
+
+    assert [u.get("temp_offset_c") for u in updates] == [-1.5, 0.0, None, None, None, None]
+    assert all("temp_offset_c" not in row for row in inserts)
+
+
 def _device_factory_rejecting(updates: list[dict], reject: "callable") -> "callable":
     """devices UPDATE 마다 `reject(payload)` 가 돌려준 예외를 던지는 mock (None 이면 성공)."""
     base = _device_table_factory(updates, db_caps=None)

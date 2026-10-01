@@ -36,6 +36,7 @@ FULL_DEVICE_PAYLOAD = {
     "heater": {"state": "OFF", "locked": False}, "led": "ON", "led_brightness": 75,
     "hw_id": "30EDA0E22E81", "capabilities": {"board": "mosfet"},
     "uptime_sec": 300, "free_heap": 190000, "reset": "SW:mqtt_reboot", "wifi_rssi": -40,
+    "temp_offset_c": -1.5,
 }
 
 
