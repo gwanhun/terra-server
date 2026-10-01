@@ -273,3 +273,74 @@ def test_guard_skip_enqueues_skipped_event_when_enabled(
         "reason": captured[0][2]["reason"], "kind": "skip_when_humidity_above",
         "metric": "humidity", "threshold": 60, "value": 72.0,
     })]
+
+
+def _fire_with_device(fake_sb: MagicMock, device_rows: list[dict]) -> list[dict]:
+    row = _due_row()
+    inserts: list[dict] = []
+
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        if name == "schedules":
+            t.select.return_value.eq.return_value.lte.return_value.order.return_value.limit.return_value.execute.return_value.data = [row]
+            t.update.return_value.eq.return_value.execute.return_value.data = [{"id": "sch-1"}]
+        elif name == "devices":
+            t.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = device_rows
+        elif name == "commands":
+            def _ins(payload: dict) -> MagicMock:
+                inserts.append(payload)
+                c = MagicMock()
+                c.execute.return_value.data = [{"id": "cmd-1"}]
+                return c
+            t.insert.side_effect = _ins
+        return t
+
+    fake_sb.table.side_effect = _table
+    assert schedule_runner.run_once() == 1
+    return inserts
+
+
+def test_offline_device_records_skipped_and_pushes_failure(
+    fake_sb: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from backend import push_events
+    from backend.mqtt import handlers
+
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        push_events, "enqueue_command_failure",
+        lambda row, key, meta, result: calls.append((row, result)) or True,
+    )
+    monkeypatch.setattr(handlers, "_cached_device_text", lambda _u: "terra-abc")
+    monkeypatch.setattr(handlers, "device_meta", lambda _u: {"owner_id": OWNER_UUID})
+
+    inserts = _fire_with_device(fake_sb, [{"is_online": False}])
+
+    assert len(inserts) == 1
+    cmd = inserts[0]
+    assert cmd["status"] == "skipped"
+    assert cmd["result"] == "device_offline"
+    assert cmd["source"] == "schedule"
+    assert cmd["source_id"] == "sch-1"
+    assert len(calls) == 1 and calls[0][1] == "device_offline"
+
+
+def test_offline_failure_event_shape() -> None:
+    from backend import push_events
+
+    ev = push_events.build_command_event(
+        {"id": "cmd-1", "device_id": DEVICE_UUID, "action": "mist", "issued_by": OWNER_UUID,
+         "source": "schedule", "source_id": "sch-1", "result": "device_offline"},
+        "terra-abc", {},
+    )
+    assert ev is not None
+    assert ev["type"] == push_events.EVENT_FAILED
+    assert ev["payload"]["result"] == "device_offline"
+    assert ev["payload"]["outcome"] == "failed"
+
+
+@pytest.mark.parametrize("device_rows", [[{"is_online": True}], [{"is_online": None}], []])
+def test_online_or_unknown_device_fires_normally(fake_sb: MagicMock, device_rows: list[dict]) -> None:
+    inserts = _fire_with_device(fake_sb, device_rows)
+    assert len(inserts) == 1
+    assert inserts[0]["status"] == "pending"
