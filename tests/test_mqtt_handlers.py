@@ -1321,3 +1321,56 @@ def test_camera_telemetry_stores_image_state(fake_sb: MagicMock, published: list
         handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "img": img})
     assert updates[0]["image_state"] == img
     assert "AE 진동 동결" in " ".join(r.getMessage() for r in caplog.records)
+
+
+# ---------- 예약 상태 재조정 (2026-09-29 P2-(b)) ----------
+
+
+def test_device_telemetry_reconciles_fan2_left_on(fake_sb: MagicMock) -> None:
+    """예약상 OFF 구간(1시간 전 fan2_off)인데 telemetry fan2=ON → 교정 fan2_off 1회, 3초 뒤 telemetry 엔 조회도 안 함."""
+    from datetime import datetime, timedelta
+
+    from backend.scheduling import KST
+
+    now_kst = datetime.now(KST)
+    tod = lambda d: (now_kst - d).strftime("%H:%M")  # noqa: E731
+    schedules = [
+        {"id": "on", "device_id": DEVICE_UUID, "owner_id": "owner-1", "action": "fan2_on",
+         "payload": None, "kind": "daily", "time_of_day": tod(timedelta(hours=2)),
+         "days_of_week": None, "guard": None},
+        {"id": "off", "device_id": DEVICE_UUID, "owner_id": "owner-1", "action": "fan2_off",
+         "payload": None, "kind": "daily", "time_of_day": tod(timedelta(hours=1)),
+         "days_of_week": None, "guard": None},
+    ]
+    updates: list[dict] = []
+    commands: list[dict] = []
+    schedule_queries: list[str] = []
+    base = _device_table_factory(updates, db_caps=None)
+
+    def _table(name: str) -> MagicMock:
+        if name == "schedules":
+            schedule_queries.append(name)
+            t = MagicMock()
+            t.select.return_value.eq.return_value.eq.return_value.in_.return_value \
+                .execute.return_value.data = schedules
+            return t
+        if name == "commands":
+            t = MagicMock()
+            t.select.return_value.eq.return_value.in_.return_value.gte.return_value \
+                .order.return_value.limit.return_value.execute.return_value.data = []
+            def _insert(row: dict) -> MagicMock:
+                commands.append(row)
+                res = MagicMock()
+                res.execute.return_value.data = [{"id": "rc-1", **row}]
+                return res
+            t.insert.side_effect = _insert
+            return t
+        return base(name)
+
+    fake_sb.table.side_effect = _table
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 1, "fan2": "ON"})
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 2, "fan2": "ON"})
+
+    assert [(c["action"], c["source"], c["source_id"]) for c in commands] == [
+        ("fan2_off", "reconcile", "off")]
+    assert len(schedule_queries) == 1
