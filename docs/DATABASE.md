@@ -17,6 +17,7 @@
 | `alerts` | IoT | 알림 이력 | UUID, device_id FK |
 | `cameras` | 영상 | 카메라 워커 등록 (ESP32-P4 / RPi). `rotate_180`(180° 회전 설정, 진실) + `capabilities`(펌웨어 보고, NULL=구 펌웨어) — 2026-09-08 | UUID, owner_id + enclosure_id FK |
 | `motion_clips` | 영상 | 모션 영상 메타 (R2 키, H.264 mp4) | UUID, camera_id FK |
+| `camera_alerts` | 영상 | 카메라 부분 멈춤 알림 — 비정상 재시작·업로드 정체 (alerts 는 devices FK 라 별도). 2026-09-29 | UUID, camera_id FK |
 
 ## ERD (ASCII)
 
@@ -59,6 +60,7 @@ auth.users (Supabase Auth)
 | `alerts` | 본인 | service_role only (bridge) | 본인 (resolved_at) | - |
 | `cameras` | 본인 | **service_role only** (페어링 API) | 본인 | 본인 |
 | `motion_clips` | 본인 | service_role only (terra-api 업로드 콜백) | - | 본인 |
+| `camera_alerts` | 본인 | service_role only (bridge) | service_role only (resolved_at) | - |
 
 > "본인" = `auth.uid() = owner_id` 또는 cascade로 매핑
 

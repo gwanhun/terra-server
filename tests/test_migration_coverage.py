@@ -26,7 +26,7 @@ DEVICE_UUID = "11111111-1111-1111-1111-aaaaaaaaaaaa"
 
 # 펌웨어가 보낼 수 있는 선택 필드를 전부 채운 payload — 새 필드를 추가하면 여기에도 넣는다.
 FULL_CAMERA_PAYLOAD = {
-    "ts": 1, "uptime_sec": 10, "free_heap": 1000, "reset": "POWERON",
+    "ts": 1, "uptime_sec": 10, "free_heap": 1000, "reset": "PANIC",   # PANIC → camera_alerts 쓰기도 검사
     "rotate_180": False, "capabilities": {"rotate_180": True}, "hw_id": "30EDA0E22E80",
     "clips": {"rec": 1}, "img": {"exp": 120},
 }
@@ -107,7 +107,7 @@ def test_telemetry_writes_only_migrated_columns(
 ) -> None:
     handlers.handle_telemetry(entity_text, dict(payload))
 
-    tables = {t for t in writes if t in {"cameras", "devices", "telemetry"}}
+    tables = {t for t in writes if t in {"cameras", "devices", "telemetry", "camera_alerts"}}
     assert tables, "쓰기가 하나도 잡히지 않음 — mock 이 핸들러 경로와 어긋남"
     for table in tables:
         written = {k for p in writes[table] for k in p}
