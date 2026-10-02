@@ -1589,6 +1589,22 @@ function toggleCameraTest(cam, hostDiv, btn) {
   const note = document.createElement('div'); note.className = 'muted'; note.style.marginTop = '4px';
   note.textContent = '라이브 영상은 메인 콘솔(그 계정 로그인) 카메라 [라이브]에서 확인.';
   panel.appendChild(note);
+  // 에러 로그(펌웨어 ESP_LOGE, 하트비트 errs → camera_logs). 재부팅 전 줄은 [이전 부팅] 표시.
+  const logBtn = document.createElement('button'); logBtn.type = 'button'; logBtn.textContent = '에러 로그';
+  logBtn.style.marginTop = '6px';
+  const logBox = document.createElement('pre');
+  logBox.style.cssText = 'margin:4px 0 0;max-height:260px;overflow:auto;font-size:10.5px;white-space:pre-wrap;display:none';
+  logBtn.onclick = async () => {
+    logBox.style.display = 'block'; logBox.textContent = '불러오는 중…';
+    try {
+      const rows = await api('/cameras/' + cam.id + '/logs?limit=100');
+      logBox.textContent = rows.length ? rows.map(r =>
+        (r.created_at || '').slice(5, 19).replace('T', ' ') + (r.prev_boot ? ' [이전 부팅]' : '') +
+        ' up' + (r.uptime_s ?? '?') + 's ' + r.msg + (r.count > 1 ? '  x' + r.count : '')).join('\n')
+        : '(에러 로그 없음)';
+    } catch (e) { logBox.textContent = '조회 실패: ' + e; }
+  };
+  panel.appendChild(logBtn); panel.appendChild(logBox);
   hostDiv.appendChild(panel); btn.textContent = '닫기';
 }
 
@@ -2048,7 +2064,7 @@ function sysStateText(sy) {
   const up = sy.uptime_s >= 0 ? (sy.uptime_s < 3600 ? Math.round(sy.uptime_s/60)+'m' : (sy.uptime_s/3600).toFixed(1)+'h') : '?';
   const resetBad = sy.reset && !/^(POWERON|SW:(rotate|ble_reprov|http_restart|mqtt_reboot))$/.test(sy.reset);
   const rssiTxt = typeof sy.rssi === 'number' ? ` · <span class="${sy.rssi <= -75 ? 'bad' : ''}" title="WiFi RSSI(dBm), -75 이하 = 약함">rssi ${sy.rssi}</span>` : '';
-  return `<span class="${resetBad ? 'bad' : 'muted'}" title="마지막 재부팅 사유 · 가동시간 · 남은 힙">up ${up} · reset ${esc(sy.reset || '?')}${sy.heap ? ' · heap ' + Math.round(sy.heap/1024) + 'K' : ''}${rssiTxt}</span>`;
+  return `<span class="${resetBad ? 'bad' : 'muted'}" title="마지막 재부팅 사유 · 가동시간 · 남은 힙">up ${up} · reset ${esc(sy.reset || '?')}${sy.heap ? ' · heap ' + Math.round(sy.heap/1024) + 'K' : ''}${typeof sy.int_free === 'number' ? ` · <span class="${sy.int_free < 80*1024 ? 'bad' : ''}" title="내부 RAM 여유/최대 블록(KB), 80K 미만 빨강">int ${Math.round(sy.int_free/1024)}K/${Math.round((sy.int_largest||0)/1024)}K</span>` : ''}${rssiTxt}</span>`;
 }
 
 function clipCellHtml(r) {
@@ -2060,7 +2076,7 @@ function clipCellHtml(r) {
   const sy = c.sys;
   const syTxt = sy ? `<br>${sysStateText(sy)}` : '';
   const le = c.last_err;
-  const leTxt = le ? `<br><span class="bad" title="마지막 업로드 실패: stage 1=upload-url 2=R2 PUT 3=meta · esp_err · HTTP 상태(0=전송 실패) · 경과초">last_err stage${le.stage} err${le.err} http${le.http} ${Math.round((le.age_s||0)/60)}m ago</span>` : '';
+  const leTxt = le ? `<br><span class="bad" title="마지막 업로드 실패: stage 1=upload-url 2=R2 PUT 3=meta 4=SD읽기 · esp_err · HTTP 상태(0=전송 실패) · 경과초">last_err stage${le.stage} err${le.err} http${le.http} ${Math.round((le.age_s||0)/60)}m ago</span>` : '';
   const im = r.image_state;
   const imTxt = im ? `<br><span class="${im.ae_frozen ? 'bad' : 'muted'}" title="${esc(JSON.stringify(im))}">exp ${im.exp} · luma ${im.luma} · ${im.night ? 'NIGHT' : 'DAY'}${im.ae_frozen ? ' · AE동결' : ''}</span>` : '';
   return `<small class="${bad ? 'bad' : 'muted'}" title="${esc(JSON.stringify(c))}">rec ${c.rec} · skip ${(c.skip||0)+(c.skip_lock||0)} · fail ${(c.up_fail||0)+(c.sd_fail||0)} · sd ${c.sd_backlog||0} · ${age}${stuck}${syTxt}${leTxt}${imTxt}</small>`;

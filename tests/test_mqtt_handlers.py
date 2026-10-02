@@ -1321,3 +1321,33 @@ def test_camera_telemetry_stores_image_state(fake_sb: MagicMock, published: list
         handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "img": img})
     assert updates[0]["image_state"] == img
     assert "AE 진동 동결" in " ".join(r.getMessage() for r in caplog.records)
+
+
+# ---------- camera_logs (2026-10-01 펌웨어 errs) ----------
+
+
+def test_camera_telemetry_stores_errs(fake_sb: MagicMock, published: list) -> None:
+    """errs 배열 → camera_logs INSERT (줄당 200자 제한, prev/count 반영). 없으면 INSERT 안 함."""
+    updates: list[dict] = []
+    inner = _camera_state_table_factory(updates, rotate_180=True)
+    logs_tbl = MagicMock()
+
+    def _table(name: str) -> MagicMock:
+        return logs_tbl if name == "camera_logs" else inner(name)
+
+    fake_sb.table.side_effect = _table
+
+    handlers.handle_telemetry(CAMERA_TEXT, {
+        "ts": 1_748_000_000, "uptime_sec": 60,
+        "errs": [
+            {"up": 12, "n": 3, "prev": True, "m": "E (12000) terra_uploader: R2 PUT failed: ESP_FAIL"},
+            {"up": 40, "n": 1, "prev": False, "m": "x" * 300},
+            "garbage",
+        ],
+    })
+
+    assert logs_tbl.insert.called, "camera_logs INSERT 없음"
+    rows = logs_tbl.insert.call_args.args[0]
+    assert len(rows) == 2
+    assert rows[0]["prev_boot"] is True and rows[0]["count"] == 3 and rows[0]["uptime_s"] == 12
+    assert rows[1]["prev_boot"] is False and rows[1]["count"] == 1 and len(rows[1]["msg"]) == 200

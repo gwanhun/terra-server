@@ -451,6 +451,46 @@ def _publish_rotation(camera_id_text: str, rotate_180: bool) -> None:
         )
 
 
+class CameraLogOut(BaseModel):
+    id: int
+    created_at: str
+    uptime_s: int | None = None
+    prev_boot: bool = False
+    count: int = 1
+    msg: str
+
+
+@router.get(
+    "/{camera_uuid}/logs",
+    response_model=list[CameraLogOut],
+    summary="카메라 펌웨어 에러 로그 (최근순)",
+    responses={**_AUTH_REQUIRED, **_NOT_FOUND},
+)
+def list_camera_logs(
+    camera_uuid: str,
+    limit: int = 100,
+    user_id: str = Depends(get_current_user_id),
+) -> list[CameraLogOut]:
+    """하트비트 `errs` 로 올라온 ESP_LOGE 줄. prev_boot=true 는 재부팅 전 줄(원인 추적용)."""
+    sb = get_supabase_client()
+    cam = (
+        sb.table("cameras").select("id, owner_id, unlinked_at")
+        .eq("id", camera_uuid).single().execute()
+    ).data
+    if not cam or cam["owner_id"] != user_id or cam.get("unlinked_at"):
+        raise HTTPException(status_code=404, detail="camera not found")
+    limit = max(1, min(int(limit), 500))
+    res = (
+        sb.table("camera_logs")
+        .select("id, created_at, uptime_s, prev_boot, count, msg")
+        .eq("camera_id", camera_uuid)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return [CameraLogOut.model_validate(r) for r in (res.data or [])]
+
+
 class RebootOut(BaseModel):
     published: bool = Field(..., description="MQTT command 발행 성공 여부(best-effort)")
     msg_id: str | None = Field(None, description="발행한 명령의 msg_id (ack 대조용)")

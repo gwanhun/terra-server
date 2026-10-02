@@ -35,7 +35,7 @@ import re
 import threading
 import time
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from postgrest.exceptions import APIError
@@ -497,12 +497,55 @@ def _sys_state(kind: str, id_text: str, entity_uuid: str, payload: dict[str, Any
     rssi = payload.get("wifi_rssi")          # 2026-09-28 펌웨어부터(dBm). 약한 WiFi 설치 판별
     if isinstance(rssi, (int, float)):
         sys_state["rssi"] = int(rssi)
+    for k in ("int_free", "int_largest"):   # 2026-10-01: 내부 RAM(바이트). 라이브 반복 후 누수 추적
+        v = payload.get(k)
+        if isinstance(v, (int, float)):
+            sys_state[k] = int(v)
     prev = _uptime_prev.get(entity_uuid)
     _uptime_prev[entity_uuid] = uptime
     if prev is not None and uptime < prev:
         logger.warning("%s %s: 재부팅 감지 reset=%s (이전 uptime %ss → %ss)",
                        kind, id_text, reset, prev, uptime)
     return sys_state
+
+
+CAMERA_LOG_MAX_LINES = 8
+CAMERA_LOG_RETENTION_DAYS = 14
+_camera_log_prune_counter: dict[str, int] = {}
+
+
+def _store_camera_errs(sb: Client, camera_id_text: str, camera_uuid: str, errs: list) -> None:
+    """하트비트 `errs` (펌웨어 ESP_LOGE 줄) → camera_logs INSERT. 각 줄은
+    {"up": 부팅후초, "n": 반복횟수, "prev": 재부팅전여부, "m": "E (ts) tag: msg"}.
+    한 번에 최대 CAMERA_LOG_MAX_LINES, 줄당 200자. 50회 저장마다 14일 넘은 행을 지운다."""
+    rows = []
+    for e in errs[:CAMERA_LOG_MAX_LINES]:
+        if not isinstance(e, dict):
+            continue
+        msg = e.get("m")
+        if not isinstance(msg, str) or not msg:
+            continue
+        up = e.get("up")
+        n = e.get("n")
+        rows.append({
+            "camera_id": camera_uuid,
+            "uptime_s": int(up) if isinstance(up, (int, float)) else None,
+            "prev_boot": bool(e.get("prev")),
+            "count": int(n) if isinstance(n, (int, float)) and n >= 1 else 1,
+            "msg": msg[:200],
+        })
+    if not rows:
+        return
+    sb.table("camera_logs").insert(rows).execute()
+    for r in rows:
+        logger.warning("camera %s 에러로그%s: %s%s", camera_id_text,
+                       " (재부팅 전)" if r["prev_boot"] else "", r["msg"],
+                       f" x{r['count']}" if r["count"] > 1 else "")
+    cnt = _camera_log_prune_counter.get(camera_uuid, 0) + 1
+    _camera_log_prune_counter[camera_uuid] = cnt
+    if cnt % 50 == 1:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=CAMERA_LOG_RETENTION_DAYS)).isoformat()
+        sb.table("camera_logs").delete().eq("camera_id", camera_uuid).lt("created_at", cutoff).execute()
 
 
 def _warn_clip_regression(camera_id_text: str, camera_uuid: str, clips: dict[str, Any]) -> None:
@@ -708,6 +751,13 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
                 _sync_camera_rotation(sb, device_id_text, entity_uuid, reported)
             except Exception:  # noqa: BLE001
                 logger.exception("rotate_180 동기화 실패 (camera=%s)", device_id_text)
+
+        errs = payload.get("errs")
+        if isinstance(errs, list) and errs:
+            try:
+                _store_camera_errs(sb, device_id_text, entity_uuid, errs)
+            except Exception:  # noqa: BLE001
+                logger.exception("camera_logs 저장 실패 (camera=%s)", device_id_text)
         return
 
     device_uuid = entity_uuid

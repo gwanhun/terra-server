@@ -441,3 +441,26 @@ def test_reboot_camera_publish_failure_is_not_5xx(
     res = app_client.post("/cameras/cam-uuid/reboot")
     assert res.status_code == 200
     assert res.json() == {"published": False, "msg_id": None}
+
+
+# ---------- camera logs (2026-10-01) ----------
+
+
+def test_list_camera_logs_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
+    sel = fake_sb.table.return_value.select.return_value
+    sel.eq.return_value.single.return_value.execute.return_value.data = _camera_row()
+    sel.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = [
+        {"id": 1, "created_at": "2026-10-01T05:00:00+00:00", "uptime_s": 12, "prev_boot": True,
+         "count": 2, "msg": "E (12000) terra_uploader: R2 PUT failed"},
+    ]
+    res = app_client.get("/cameras/cam-uuid/logs?limit=10")
+    assert res.status_code == 200
+    body = res.json()
+    assert len(body) == 1 and body[0]["prev_boot"] is True and body[0]["count"] == 2
+
+
+def test_list_camera_logs_not_owner_404(app_client: TestClient, fake_sb: MagicMock) -> None:
+    sel = fake_sb.table.return_value.select.return_value
+    sel.eq.return_value.single.return_value.execute.return_value.data = _camera_row(owner_id="other")
+    res = app_client.get("/cameras/cam-uuid/logs")
+    assert res.status_code == 404
