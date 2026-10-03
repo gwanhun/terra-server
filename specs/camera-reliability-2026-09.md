@@ -1,0 +1,197 @@
+# 카메라·예약 안정성 개선 (2026-09 베타 멈춤 대응) — 설계
+
+> 상태: 🟢 PR #7~#13 제출·/code-review 반영(2026-09-29) — 리뷰·머지·migration 적용·배포는 gwanhun, 펌웨어 답변 대기 · 작성 2026-09-29 · 근거 데이터: petcam-lab 세션 분석 + 현장 A/B/C 테스트(`petcam-lab/experiments/camera-hang-ab-2026-09/`)
+> 코드 참조는 **main `de9af0a` 기준**. 착수 전 반드시 재확인(다른 세션·gwanhun이 main에 직접 커밋함).
+
+## 0. 배경 — 무엇을 봤나
+
+베타 카메라(esp32-p4, `fb2-p4 0.1.0`)가 **하트비트는 살아있는데 녹화·라이브가 멈추고, 사람이 재부팅해야 회복**되는 현상이 9/23~ 반복됐다. 서버 데이터로 확인한 사실:
+
+| 관찰 | 수치 |
+|---|---|
+| 멈추기 직전 업로드 재시도 적체 | 멈춤 8건 중 7건. 영상이 찍힌 뒤 수십 분~수 시간 늦게 등록 |
+| 밀린 영상 대기 중에도 새 영상은 정상 업로드 | 밀린 804건 중 73% (네트워크 자체는 살아있음) |
+| 베타 카메라 5분+ 지연 비율 | 56~70%, 최대 지연 47~1,029분 |
+| 카메라 `clip_stats.last_err` | `stage 2`(영상 PUT) · `http 0` · `err 28674`(=0x7002 `ESP_ERR_HTTP_CONNECT`) — **연결 실패**, 403(URL 만료) 아님 |
+| 현장 테스트 A(신규FW 0.2.0) | 09-29 15:00 `sys.reset=PANIC` 자동 재부팅, 부팅 후 up_ok 24 / up_fail 84 |
+| 현장 테스트 B(신규FW 0.2.0) | 3시간 연속 라이브 재연결(100회+) 중 15:46~16:48 영상 없음 → 16:49 `sys.reset=SW:rtc_loop_stall` 자가 재시작 |
+| 현장 테스트 C(기존FW 0.1.0) | 5분+ 지연 58~67%, 최대 68분. 12:14 `SW:rotate` 재시작 |
+| 예약 명령 누락 | 09-29 07:30~10:00 3개 사육장 8건(`unknown_device`/`expired`), 08:10 B·C 동시 expired. B `fan2_off` 거부로 냉각팬 1시간 초과 가동, B 10:00 분무 누락 |
+| 동시 시청 | 폰+시뮬레이터 동시 시청 시 B가 40초 stalled→unresponsive |
+
+→ 카메라 멈춤의 근본 원인은 **펌웨어**(업로드 재시도 처리·라이브 처리) 쪽이 유력하다. 하지만 **서버가 ① 그 사실을 기록하지 못하고, ② 감지·알림하지 못하고, ③ 예약 명령을 잃어버리고, ④ 라이브 요청 폭주를 막지 못하는** 문제는 서버에서 고칠 수 있다.
+
+## 1. 개선 항목 (우선순위 순)
+
+### P1. 카메라 진단값 이력 저장 — 가장 시급
+- **현재:** `mqtt/handlers.py` `handle_telemetry` 카메라 분기 → `_write_heartbeat`(≈:402)가 `clip_stats`(= `rec/up_ok/up_fail/sd_*/last_rec_s/last_err/sys{uptime_s,reset,heap,rssi}`)를 **cameras 행에 최신값으로 덮어씀.** 이력 없음. `sys`는 `clips` dict 가 있을 때만 저장(≈:677-679).
+- **문제:** A의 PANIC, B의 자가 재시작을 우연히 조회해서 알았다. 베타 카메라들의 재시작 이력·업로드 실패 추세는 전부 유실.
+- **설계안:**
+  - 새 테이블 `camera_health_events`(append-only): `camera_id`, `at`, `kind`(`reset`|`snapshot`), `uptime_s`, `reset`, `up_ok`, `up_fail`, `sd_backlog`, `last_rec_s`, `last_err` jsonb, `heap`, `rssi`, `fw`.
+  - **재시작 이벤트:** 직전 저장값 대비 `uptime_s`가 줄면(또는 `reset` 문자열이 바뀌면) `kind=reset` 1행.
+  - **스냅샷:** 카메라당 N분(제안 10분)마다 1행. 15초 하트비트 전부 저장 금지(18대×5,760/일 — petcam Supabase Disk IO 예산 사고 전례).
+  - 보존 기간 제안 30일(owner 결정).
+- **완료 조건:** 재시작 1회 → reset 행 1개, 10분 스냅샷, 기존 heartbeat UPDATE 경로 실패 시에도 이벤트 기록이 heartbeat를 깨지 않음(선택 필드를 필수 UPDATE에 묶었다가 heartbeat 전체가 죽은 9/17·9/21 사고 재발 금지).
+
+### P2. 예약·명령 전달 신뢰성
+- **현재 (`mqtt/dispatcher.py`, `command_service.py`, `schedule_runner.py`):**
+  - `DEFAULT_CMD_TTL_SEC = 10`. 기기가 오프라인이어도 `bridge.publish_command`는 로컬 paho 성공이면 `sent` → 30초 뒤 `no_ack`, **재시도 없이 버림.** handlers 캐시에 없으면 `rejected/unknown_device`.
+  - `schedule_runner`는 `next_run_at`을 먼저 넘기고 명령 1건만 넣고 결과를 안 봄(이중 분무 방지 의도).
+  - 상태 재조정 없음. `schedule_restore.py`는 **재부팅 감지 시 ON만** 복원(OFF 복원 없음).
+- **설계안:**
+  - **(a) on/off 계열 재전달:** `*_on/*_off`(led/fan/fan2/relay 제외 여부는 §6)가 `unknown_device`/`no_ack`/`expired`면 **짧은 유예(제안 5분) 동안 기기 재접속 시 재발행**. mist는 재발행 금지 유지(이중 분무 > 누락).
+  - **(b) 상태 재조정 루프:** 기기 telemetry의 fan/fan2/led 실제 상태 vs 예약상 "지금 있어야 할 상태"(`compute_prev_run` 재사용 — `schedule_restore`와 같은 계산)를 주기 비교 → 어긋나면 교정 명령 1회(`source='reconcile'`, CHECK 제약 migration 필요). 사용자 수동 조작과 충돌 규칙은 §6.
+  - **(c) 원인 조사:** 08:10 B·C 동시 `expired` — 브리지/브로커 단 연결 끊김 가능성. 운영 로그(gwanhun 서버)에서 그 시각 MQTT 재연결 여부 확인.
+- **완료 조건:** 오프라인→복귀 시나리오 테스트에서 fan_off가 복귀 후 전달됨, 재조정 루프가 켜진 채 남은 팬을 1회 끔, mist는 재발행 안 됨.
+
+### P3. 카메라 "부분 멈춤" 감지 + 알림 (+ 선택: 자동 재부팅)
+- **현재:** `offline_monitor.py`는 기기만 alert, 카메라는 `is_online=false`만. 푸시는 `device.action.*`만(`push_events.py`). 부분 멈춤 감지 없음(handlers의 warning 로그뿐, ≈:508-521). 카메라 원격 재부팅 API는 있음(`POST /cameras/{id}/reboot`, `routers/cameras.py` ≈:459-493, fire-and-forget).
+- **설계안:** 하트비트 기반 판정(서버가 이미 받는 값만 사용)
+  - `last_rec_s`가 크면서 같은 기간 `up_fail`만 증가, 또는 `sys.reset ∈ {PANIC, WDT, INT_WDT, TASK_WDT, SW:rtc_loop_stall, SW:upload_stuck}` 발생 → `alerts` 행(kind `camera_degraded`) + 사용자 푸시(새 이벤트 타입, 앱 계약 필요).
+  - ⚠️ `last_rec_s`만으론 "게코가 안 움직임"과 구분 불가(현장에서 실측됨) → 단독 조건 금지, `up_fail` 증가·reset 사유와 결합.
+  - 자동 재부팅은 **기본 꺼둠**, owner 결정 후 옵트인(§6).
+- **완료 조건:** PANIC/stall reset 이벤트 → alert 1건(중복 억제), 정상 카메라 오탐 0(현장 A/B/C 이력으로 재생 테스트).
+
+### P4. 라이브(WebRTC) 요청 보호
+- **현재 (`routers/webrtc.py` ≈:250-326, `webrtc_signaling.py`):** 오퍼당 최대 3회×7초. 카메라당 동시 시청 제한·반복 오퍼 rate limit 없음. `stream_until=now+5분` 기록만 하고 어디서도 적용 안 함. 두 시청자는 서로 다른 session_id로 카메라에 직행, 첫 `/close`가 `stream_mode`를 둘 다 지움.
+- **관찰:** B에 3시간 동안 오퍼 100회+ → 매 ~16초 stalled → 영상 없음 → 자가 재시작. 동시 시청 시 40초 먹통.
+- **설계안:** 카메라별 오퍼 rate limit(예: 1분 N회, 초과 시 429 + `Retry-After`), 동시 세션 상한(1~2, owner 결정), 최대 시청 시간 강제(`stream_until` 실제 적용 또는 세션 재발급 요구). 앱 쪽 재연결 백오프는 앱 전달 문서로.
+- **완료 조건:** 상한 초과 오퍼 429, 기존 단일 시청 흐름 회귀 없음(`docs/APP_WEBRTC.md` 계약 유지 또는 개정 문서화).
+
+### P5. 업로드 경로 견고화 — 펌웨어 확인 후
+- **현재 (`routers/clips.py` ≈:289, :338, `r2_client.py` :50):** PUT URL TTL **300초**, clip_id는 upload-url 발급 시 서버가 `uuid4`로 생성, 메타 등록은 업로드 뒤, **중복 id insert → 500(미처리 APIError)**.
+- **가설(미확정):** 펌웨어가 재시도 때 예전 URL을 재사용하면 5분 뒤 계속 403. 단 **관측된 last_err는 http 0(연결 실패)** 이라 현재 증거는 이 가설을 지지하지 않음.
+- **설계안:** ① 펌웨어 담당에게 "재시도 시 upload-url 재발급 여부 / 메타 재전송 여부" 확인 ② 중복 메타 등록은 idempotent(같은 id+같은 r2_key면 200) ③ 필요 시 TTL 연장 또는 "같은 clip_id로 URL 재발급" API.
+- **완료 조건:** ②는 즉시 가능(테스트 포함). ①③은 펌웨어 답 후 결정.
+
+## 2. 범위 밖 (이 작업에서 하지 않음)
+- 펌웨어 수정(재시도 로직·워치독) — 펌웨어 담당.
+- 운영 배포, 운영 DB migration 적용, `MIGRATIONS_APPLIED.md` 갱신 — **gwanhun 몫.** 우리는 코드 + SQL 파일 + PR 본문 요청까지.
+- 앱 UI 변경 — 앱 전달 문서(`docs/APP_*.md` 형식)로 요청만.
+
+## 3. 제약 (이 레포 규칙)
+- **main 직접 push 금지.** 항목별 브랜치(`feat/…`, `fix/…`) + PR. PR 올리기 전 커밋·push는 owner 승인.
+- service_role 쿼리는 `owner_id` 명시 필터. MQTT command `retain=False`. 기기/사용자 데이터 임의 생성 금지(fixture만).
+- **Supabase는 petcam-lab과 같은 프로젝트** → migration·트리거·RLS 변경은 양쪽에 영향. 로컬 `.env`로 서버를 띄우면 **production DB·버킷에 직접 씀**(pytest는 conftest monkeypatch로 안전).
+- terra 테스트는 Supabase MagicMock → 컬럼 부재·필터 누락을 못 잡음. **스키마 의존 변경은 운영 DB 읽기로 컬럼 실측 + `tests/test_migration_coverage.py` 가드.**
+- 선택 필드를 필수 heartbeat UPDATE에 묶지 않기(9/17 image_state·9/21 hw_id 사고).
+- 기준선: `uv run pytest -q` (09-29 main 기준 346 passed — 착수 시 재측정).
+
+## 4. 검증 데이터
+- 현장 테스트 카메라(tester01): A `0bf9f0e1-dcb8-4848-ac8b-1957abc2e189` / B `f36777f5-14db-4cbb-b905-a92e66b1e2d2` / C `99c48bc6-240c-434d-aae8-23fca670a14a`, 사육장 보드 A `e146a8dd…` B `a00b49e0…` C `f0749d91…`. 테스트는 **10-03 00:00 KST까지 진행 중** — 이 기기들에 명령·재부팅·예약 변경 금지(읽기만).
+- 명령 실패 실례: 09-29 `commands` source=schedule, status≠acked (B 02:10 fan2_off unknown_device, 08:10 B·C expired, B 10:00 mist expired 등).
+- 라이브 폭주 실례: `webrtc_connect_logs` camera B, 09-29 13:15~17:20 platform=ios.
+
+## 5. PR 분할
+| PR | 항목 | 스키마 변경 |
+|---|---|---|
+| 1 | P1 진단값 이력 | 새 테이블 migration |
+| 2 | P5-② 중복 메타 idempotent | 없음 |
+| 3 | P2-(a) on/off 재전달 | 없음(또는 컬럼 1개) |
+| 4 | P2-(b) 상태 재조정 | commands source CHECK 확장 |
+| 5 | P3 부분 멈춤 감지·알림 | alerts kind 확장 가능 |
+| 6 | P4 라이브 보호 | 없음(메모리/DB 카운터 결정) |
+
+## 6. owner 결정 (2026-09-29)
+1. P1 — **스냅샷 10분 · 보존 30일** ✅
+2. P2 — **relay(펌프) 제외, 수동 조작 존중**(예약 구간 중 수동 조작은 그 구간 끝까지 안 덮음) ✅
+3. P3 — **alert 행만, 푸시 보류, 자동 재부팅 없음** ✅
+4. P4 — 동시 시청 상한·최대 시청 시간: **미정**("고객 사용 패턴을 모름, 더 오래 볼 수도 있음"). 아래 실측 후 **앱 백오프 문서 + 서버 시간당 안전망(60회/시)** 으로 결정 ✅
+5. P5 — 펌웨어 질문은 **이관훈님 Slack DM** — 09-29 발송, **09-30 회신**(§9)
+
+### P4 실측 (webrtc_connect_logs 09-22~29, 1,719행, 28대, 읽기만)
+| 창 | 현장 B(f36777f5) | 나머지 카메라 최대 |
+|---|---|---|
+| 60초 | 6 | 8 |
+| 10분 | 20 | 23 |
+| 1시간 | **81** | 38 |
+→ 분·10분 단위 rate limit 은 B 폭주를 못 막고 정상 사용만 막는다. 구분되는 건 1시간 창뿐.
+B 09-29 13:15~17:20: 248건(streaming 89 / stalled 88 / no_video 58), 간격 p50 63초 — 앱의 stalled→재연결 루프가 본질.
+
+## 7. 체크리스트 (진행 상태 SOT)
+> PR 은 제출 = 체크. 머지·migration 적용·배포는 gwanhun 몫이라 별도 표기.
+
+- [x] P1 설계 결정(§6-1) → [#8](https://github.com/gwanhun/terra-server/pull/8) `camera_health_events` (migration 적용 요청)
+- [x] P5-② idempotent → [#7](https://github.com/gwanhun/terra-server/pull/7)
+- [x] P2-(a) → [#9](https://github.com/gwanhun/terra-server/pull/9) 재전달 (migration 없음, restore source 재사용)
+- [x] P2-(b) → [#10](https://github.com/gwanhun/terra-server/pull/10) 재조정 (commands source CHECK migration 선적용 필요)
+- [x] P3 → [#11](https://github.com/gwanhun/terra-server/pull/11) `camera_alerts` (migration 적용 요청)
+- [x] P4 → [#12](https://github.com/gwanhun/terra-server/pull/12) 시간당 offer 안전망 + 앱 백오프 요청(`docs/APP_WEBRTC.md` §7.1)
+- [x] P5-①③ 펌웨어 답변 반영 (09-30 회신) — **서버 추가 작업 없음**(§9). #7 은 방어용으로 유지
+- [x] 앱 전달 문서 — P4 429/재연결 백오프(#12 `APP_WEBRTC.md` §7.1). P3 푸시는 보류 결정
+- [ ] #8·#11 적용 후 쌓인 이력으로 P3 임계값(30분·3회) 재검토
+- [x] /code-review 지적 5건 반영(09-29): #8·#11 늦게 처리된 heartbeat 를 새 부팅으로 오판 → uptime 감소로,
+      #9 no_ack 스윕 전 수동 명령을 재전달이 덮음 → 액추에이터별 마지막 발행 시각, #10 예약 팬 타이머를 교정이 끊음 →
+      도는 중인 duration_ms 타이머 보류, petcam 리포트 부팅 시각 기준 clip_stats_at
+- [x] 같은 결함이 운영 중인 `schedule_restore.note_uptime` 에도 있음 → [#13](https://github.com/gwanhun/terra-server/pull/13)
+- [x] P4 후속: owner 결정(09-29) 라이브 15분·5분 쉼·한 기기(가져오기) → [#15](https://github.com/gwanhun/terra-server/pull/15), 설계 `specs/live-view-limit.md`
+
+## 8. 머지 가이드 (09-29 로컬 합본 리허설 결과)
+origin/main `de9af0a` 에 아래 순서로 7개를 머지 → 충돌 4회, **전부 "양쪽 블록 모두 유지"** 로 해결 → `uv run pytest -q` **463 passed**
+(346 + 각 PR 신규 테스트 합 117 과 일치).
+
+| 순서 | PR | 충돌 | 해결 |
+|---|---|---|---|
+| 1 | #7 clip 메타 멱등 | 없음 | |
+| 2 | #13 restore uptime 감소 | 없음 | |
+| 3 | #8 camera_health_events | 없음 | |
+| 4 | #11 camera_alerts | `handlers.py`(import·reset·카메라 분기), `DATABASE.md`, `test_migration_coverage.py` | 둘 다 유지. coverage 테이블 목록은 `camera_health_events`·`camera_alerts` 합집합 |
+| 5 | #9 재전달 | `test_mqtt_handlers.py` 파일 끝 | 둘 다 유지 |
+| 6 | #10 재조정 | `handlers.py` `reset_device_cache`, `API.md`, `test_mqtt_handlers.py` 끝 | 둘 다 유지 |
+| 7 | #12 offer 안전망 | 없음 | |
+| 8 | #15 라이브 시청 제한(15분·5분·한 기기) | #12 위에 쌓음 — #12 머지 후 base 를 main 으로 | **migration `2026-09-30_cameras_live_session.sql` 배포 전 적용 필수**(없으면 라이브가 안 열림) |
+
+기기 telemetry 처리 순서는 자동으로 **재전달(#9) → 재부팅 복원 → 재조정(#10)** 이 된다. 같은 telemetry 에서 재전달·복원이
+명령을 넣으면 재조정은 그 명령을 "진행 중"으로 보고 보류한다(중복 교정 없음).
+
+**migration 적용:** #10 `2026-09-29_commands_source_reconcile.sql` 은 **배포 전에**. #8 `camera_health_events`·#11 `camera_alerts` 는
+새 테이블이라 순서 무관(없으면 로그만). 적용 후 `MIGRATIONS_APPLIED.md` 기록.
+
+## 9. 펌웨어 회신 (이관훈 2026-09-29 밤~09-30, 원문: FIRMWARE_REPLY_CAMERA_UPLOAD_FAILURE_2026-09-29.md)
+
+### P5 질문 답 → 서버 결론
+| 질문 | 답 | 서버 결론 |
+|---|---|---|
+| ① 재시도 때 upload-url | 신규FW 는 재시도 없음(폐기). 구FW 는 **매번 새 upload-url·새 clip_id** | URL 만료(5분)는 원인 아님 → **P5-③(TTL 연장·같은 clip_id 재발급 API) 불필요** |
+| ② 메타 응답 유실 시 재전송 | 같은 clip_id 재전송 **없음**. 구FW 는 새 clip_id 로 처음부터(이전 mp4 는 R2 고아) | #7(중복 메타 200)은 펌웨어가 쓰는 경로 아님 — 무해한 방어로 유지. 고아 정리는 `scripts/reconcile_r2_orphans.py` |
+| ③ 성공 판정 | **2xx 전체** | #7 의 200 응답 문제없음 |
+| ④ 재시도 간격 | 신규FW 없음 / 구FW 60초 고정·백오프 없음·무제한·주기당 1건 | #11 정체 판정(성공=up_ok+sd_ok, 실패=up_fail+sd_fail) 과 일치 — `sd_fail` 은 **SD 백업 재업로드 실패**(SD 쓰기 실패 아님) |
+
+### 업로드 실패 60~78% 의 유력 원인 — R2 엔드포인트 IP 하나가 가정 회선에서 불통
+- R2 호스트가 IP 2개(172.64.190.1 / 172.64.66.1)로 풀리는데 **172.64.66.1 이 가정 회선(KT)에서 불통**. 펌웨어는
+  `CONFIG_LWIP_DNS_MAX_HOST_IP=1` 로 IP 하나만 쥐고 폴백이 없어, 그 IP 에 걸리면 DNS TTL 동안 연달아 `err 28674`.
+- AWS 서울(Lightsail)에서는 두 IP 정상 → Cloudflare 전역 장애 아님, 가정 회선 경로 문제.
+- **09-30 테스터 집(A·B·C 설치 집) 회선에서 재현:** 172.64.66.1 **3/3 연결 실패**, 172.64.190.1 3/3 정상(connect 0.01s) → B 계열 err 28674 원인 확정 방향. 관훈님께 DM 공유(09-30).
+- 실패는 두 종류: `err 28674`(연결 실패) 와 `err -1`(연결 후 write 정체·SD 읽기 실패·바이트 불일치).
+  B 는 28674, A 는 시점에 따라 -1·28674 둘 다(09-30 관훈 정정: A = `p4cam-1e671d88` = 카메라5. 전날 A 로 본 `p4cam-1eda91af` 는 테스트 외 카메라).
+- 서버가 우회할 방법은 없음(presigned PUT 은 R2 S3 엔드포인트 호스트로 서명됨) → **펌웨어 DNS 폴백이 해결책**.
+  서버는 #8(`camera_health_events.last_err` jsonb)이 펌웨어가 추가할 `last_err.detail`(dns/tcp/tls/write_stall/sd_read…)을
+  그대로 저장하므로 추가 작업 없이 집집마다 실패 유형이 쌓인다.
+
+### 펌웨어 후속 (관훈님 계획) — 서버 쪽 확인 포인트
+- 한 빌드로 묶음: ① DNS 폴백 ② `last_err.detail` ③ "녹화 0건 AND 라이브 프레임 없음" 워치독 ④ `sd_backlog` 버그(삭제 실패 무시·큐 풀 드롭 시 미삭제)
+- WebRTC 워치독 사유 `SW:rtc_send_stall`·`SW:rtc_lock_stall` 도 있음 → #11 은 `SW:rtc_` prefix 로 이미 포함
+- ⚠️ **플래시 시점**: 관훈님 제안은 "10/1 00시 1차 판정 뒤 A·B 부터". 그런데 1차 판정이 **hold 면 시험지 연장 규칙으로 10/3 00시까지
+  계속** → 10/1 에 A·B 를 리플래시하면 연장 구간이 오염된다. 1차 판정이 adopt/reject 로 끝났을 때만 10/1, hold 면 10/3 이후. owner 결정.
+- 문범석 4738(p4cam-ac5cd849)은 업로드 정체가 아니라 프레임·모션 파이프라인 정지 유형 — #11 업로드 정체 알림으로는 안 잡힘(③ 워치독 대상)
+
+## 10. 09-30 진행
+
+### 배포 (관훈 09-30 12:25 KST)
+- #12 → #15 main 머지(a6c8d67, ce5c9fe), `2026-09-30_cameras_live_session.sql` 선적용·MIGRATIONS_APPLIED 기록(c876597), terra-api 재시작.
+  구버전 앱은 15분·5분 쉼만, 한 기기 제한은 앱 0.144.0+363(viewer_id) 부터. 웹 콘솔은 viewer_id 미전송 → "이전 버전 앱".
+- 검증: 관훈 카메라10(p4cam-2a98822b)으로 가져오기·15분 종료 (A·B·C 미사용).
+- #15 PR 은 base 가 #12 브랜치라 GitHub 에선 OPEN 으로 남음(내용은 main 반영).
+
+### owner 결정 — 15분 시계 재시작 간격 (09-30)
+- 관훈 질의: 14분 보고 닫고 61초 뒤 다시 켜면 시계 초기화 → 쉼 없이 또 14분. "누적 15분" 으로 바꿀지.
+- **결정: 지금 그대로(`CONTINUE_GAP_SEC = 60`)** — 꽉 채운 15분에만 쉼. 사용자 편의 우선.
+
+### 세 대 모두 PANIC (관훈 09-30)
+- A 23:12 · B 07:29 · C 06:11 부팅, 전부 `reset=PANIC`. C(구FW)는 **iOS 라이브 3.5시간 + 연속 녹화 3건 한가운데서** 사망.
+- 공통 의심 지점(우선순위): ① 라이브+녹화 동시 경로(`clip_mp4_live_sink`→esp_peer) ② ESP-Hosted SDIO DMA ③ 내부 RAM 고갈 ④ 스택 부족.
+- `WDT`(ESP_RST_WDT)는 패닉 처리 중 RTC 워치독이 먼저 리셋한 것일 수 있음 — 코어덤프 전엔 PANIC 과 못 가름.
+- 펌웨어 다음 빌드: coredump 파티션 + 부팅 첫 하트비트에 `crash{}`(태스크·PC·백트레이스 16). **서버 후속 필요:** 지금 handler 는
+  `sys` 에 uptime/reset/heap/rssi 만 담아 `crash` 를 버린다 → 형식 확정 후 `clip_stats.sys.crash` + #8 `camera_health_events` reset 행에 저장.
+- 팀 요청: 시리얼 백트레이스 수집(테스트 집 노트북, `idf.py monitor --no-reset`), 1분 기록기에 `up_busy_s`·라이브 여부 추가
+  (petcam-lab `scripts/camera_hang_power_poll.py` — 다른 세션 소유), C 3.5시간 라이브 경위 확인, 문범석 4738 전원 재투입(구FW 원격 재부팅 불가).
