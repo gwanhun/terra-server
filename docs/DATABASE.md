@@ -17,6 +17,7 @@
 | `alerts` | IoT | 알림 이력 | UUID, device_id FK |
 | `cameras` | 영상 | 카메라 워커 등록 (ESP32-P4 / RPi). `rotate_180`(180° 회전 설정, 진실) + `capabilities`(펌웨어 보고, NULL=구 펌웨어) — 2026-09-08 | UUID, owner_id + enclosure_id FK |
 | `motion_clips` | 영상 | 모션 영상 메타 (R2 키, H.264 mp4) | UUID, camera_id FK |
+| `camera_health_events` | 영상 | 카메라 진단값 이력 — 재시작(reset) 즉시 + 10분 스냅샷 (clip_stats·sys). 2026-09-29 | BIGINT identity, camera_id FK |
 
 ## ERD (ASCII)
 
@@ -59,6 +60,7 @@ auth.users (Supabase Auth)
 | `alerts` | 본인 | service_role only (bridge) | 본인 (resolved_at) | - |
 | `cameras` | 본인 | **service_role only** (페어링 API) | 본인 | 본인 |
 | `motion_clips` | 본인 | service_role only (terra-api 업로드 콜백) | - | 본인 |
+| `camera_health_events` | service_role only | service_role only (bridge) | - | - (30일 cron) |
 
 > "본인" = `auth.uid() = owner_id` 또는 cascade로 매핑
 
@@ -84,6 +86,7 @@ auth.users (Supabase Auth)
   - `sample_count` 는 버킷 내 **행 수**. 지표별 유효 표본 수는 `t_a_count` / `h_a_count` / `t_b_count` / `h_b_count`
     (`2026-09-15_telemetry_30m_valid_counts.sql` 이후 버킷부터, 그 전은 NULL·복원 불가)
   - 센서 fault(`a_ok`/`b_ok` false) 샘플은 집계에서 제외됨
+- **`camera_health_events`**: 30일 보관 (pg_cron `cleanup-camera-health-events-30d`). 활성 카메라당 하루 ~144행
 - **`telemetry_1m`**: ⚠️ **미사용 — 채우는 cron 이 없어 영구히 빈 테이블** (Stage E 보류). 앱은 쓰지 말 것
 
 ## 영상 보관 정책
