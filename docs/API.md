@@ -645,6 +645,13 @@ Content-Type: application/json
 
 `motion_clips` 테이블에 INSERT → 앱이 Realtime push 수신.
 
+| 상황 | 응답 |
+|---|---|
+| 정상 | 201 |
+| 같은 `clip_id`·같은 `key` 재전송 (응답 유실 후 재시도) | 200, `{ "id": "<clip_id>" }` — 기존 행 그대로 (멱등) |
+| 같은 `clip_id` 가 다른 `key` 로 이미 등록됨 | 409 |
+| key 형식·카메라 불일치 | 400 |
+
 ---
 
 ### 4.5 `GET /clips/{clip_id}/url`

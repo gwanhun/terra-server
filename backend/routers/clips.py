@@ -33,7 +33,8 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from postgrest.exceptions import APIError
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.auth import get_current_user_id
@@ -340,10 +341,16 @@ def issue_upload_url(
     response_model=ClipMetaCreated,
     status_code=status.HTTP_201_CREATED,
     summary="업로드 완료 후 motion_clips 메타 등록 (워커용)",
-    responses={**_CAMERA_AUTH, **_BAD_KEY},
+    responses={
+        **_CAMERA_AUTH,
+        **_BAD_KEY,
+        200: {"model": ClipMetaCreated, "description": "같은 clip_id·key 재전송 — 기존 행 그대로"},
+        409: {"description": "같은 clip_id 가 다른 key 로 이미 등록됨"},
+    },
 )
 def create_clip_meta(
     body: ClipMetaCreate,
+    response: Response,
     camera: dict[str, Any] = Depends(get_authed_camera),
 ) -> ClipMetaCreated:
     """
@@ -352,6 +359,9 @@ def create_clip_meta(
     서버는 key 의 camera prefix 가 본인 카메라와 일치하는지 검증 → 불일치는 400.
     `thumbnail_key` 가 있으면 같은 검증 + clip_id 일치까지 확인.
     INSERT 성공 시 앱이 Realtime publication 으로 즉시 신규 클립 알림 수신.
+
+    재전송 멱등: 같은 clip_id·같은 key 로 다시 오면 200 + 기존 id (행은 그대로).
+    같은 clip_id 인데 key 가 다르면 409.
     """
     clip_id = _parse_key(body.key, camera["camera_id"], "mp4")
 
@@ -385,10 +395,41 @@ def create_clip_meta(
     }
 
     sb = get_supabase_client()
-    res = sb.table("motion_clips").insert(payload).execute()
+    try:
+        res = sb.table("motion_clips").insert(payload).execute()
+    except APIError as exc:
+        # PK 충돌(23505)만 좁게 처리. 펌웨어가 등록 응답을 못 받고 같은 메타를 재전송하는 경우
+        # 예전엔 500 이 떠서 재시도가 끝나지 않았다. 그 밖의 DB 오류는 그대로 올린다.
+        if exc.code != "23505":
+            raise
+        existing = _find_clip(sb, clip_id)
+        if existing is None:
+            # 23505 인데 그 id 행이 없다 = PK 가 아닌 다른 제약(예: 트리거가 쓰는 테이블) 충돌.
+            # 멱등 판정 대상이 아니므로 원래 오류를 그대로 올린다.
+            raise
+        if existing.get("camera_id") != camera["id"] or existing.get("r2_key") != body.key:
+            raise HTTPException(
+                status_code=409,
+                detail=f"clip_id 가 이미 다른 key 로 등록됨 (clip_id={clip_id})",
+            ) from exc
+        # 같은 카메라·같은 key 재전송 — 기존 행을 덮어쓰지 않고 그대로 성공 응답.
+        response.status_code = status.HTTP_200_OK
+        return ClipMetaCreated(id=clip_id)
     if not res.data:
         raise HTTPException(status_code=500, detail="motion_clips INSERT 실패")
     return ClipMetaCreated(id=res.data[0]["id"])
+
+
+def _find_clip(sb: Any, clip_id: str) -> dict[str, Any] | None:
+    """멱등 판정용 최소 조회 (id·camera_id·r2_key). 없으면 None."""
+    rows = (
+        sb.table("motion_clips")
+        .select("id, camera_id, r2_key")
+        .eq("id", clip_id)
+        .limit(1)
+        .execute()
+    ).data or []
+    return rows[0] if rows else None
 
 
 # ---------- 사용자(JWT) 엔드포인트 ----------
