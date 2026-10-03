@@ -168,10 +168,15 @@ class MqttWebRTCSignaling:
                 qos=1,
                 retain=False,
             )
-            if not info.wait_for_publish(timeout=timeout_sec):
+            # paho 2.x wait_for_publish() 는 None 을 반환한다(성공 여부 X). 타임아웃은
+            # is_published() 로 판정하고, rc 오류로 던지는 RuntimeError/ValueError 는
+            # 호출측이 잡을 수 있게 WebRTCSignalingError 로 바꾼다.
+            try:
+                info.wait_for_publish(timeout=timeout_sec)
+            except (RuntimeError, ValueError) as exc:
+                raise WebRTCSignalingError(f'MQTT publish failed: {exc}') from exc
+            if not info.is_published():
                 raise WebRTCSignalingTimeout('MQTT publish timed out')
-            if info.rc != mqtt.MQTT_ERR_SUCCESS:
-                raise WebRTCSignalingError(f'MQTT publish failed: {info.rc}')
         finally:
             client.loop_stop()
             client.disconnect()
