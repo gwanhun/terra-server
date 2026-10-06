@@ -64,6 +64,10 @@ _RESERVED_PAYLOAD_KEYS: frozenset[str] = frozenset({
     "msg_id", "issued_at", "ttl_sec", "action",
 })
 
+# 서버만 쓰는 기록용 필드 — 기기로 발행하지 않는다.
+# lcd_text: LCD 원문. ACK 때 devices.lcd_text 로 확정 (routers/lcd.py).
+_SERVER_ONLY_PAYLOAD_KEYS: frozenset[str] = frozenset({"lcd_text"})
+
 DEFAULT_INTERVAL_SEC = 1.0
 DEFAULT_BATCH = 50
 DEFAULT_TTL_SEC = 10  # commands.ttl_sec 가 NULL/0 일 때 fallback
@@ -249,7 +253,9 @@ def _dispatch_one(bridge: "MqttBridge", row: dict[str, Any]) -> None:
             logger.warning(
                 "command %s payload 의 예약 키 무시: %s", cmd_id, sorted(dropped)
             )
-        publish_payload.update(safe)
+        publish_payload.update(
+            {k: v for k, v in safe.items() if k not in _SERVER_ONLY_PAYLOAD_KEYS}
+        )
     if burst_ms is not None:
         publish_payload["duration_ms"] = burst_ms   # DB 행은 요청값(10000) 그대로, 기기엔 상한만큼
 

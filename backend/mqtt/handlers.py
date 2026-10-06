@@ -9,7 +9,7 @@ Supabase mock 만으로 단위 테스트 가능.
 | 핸들러 | DB 작업 |
 |--------|---------|
 | handle_telemetry | telemetry INSERT + devices.last_seen_at/is_online UPDATE. 카메라는 last_seen + capabilities 저장 + rotate_180 동기화 |
-| handle_ack       | commands status='acked', result, acked_at UPDATE |
+| handle_ack       | commands status='acked', result, acked_at UPDATE (+ LCD ok 면 devices.lcd_text) |
 | handle_alert     | alerts INSERT |
 
 ## device_id 해상
@@ -916,6 +916,7 @@ def handle_ack(device_id_text: str, payload: dict[str, Any]) -> None:
             _enqueue_command_event(res.data[0], device_id_text, device_uuid)
         except Exception:  # noqa: BLE001
             logger.exception("push 이벤트 적재 실패 (msg_id=%s)", msg_id)
+        _commit_lcd_text(sb, res.data[0], device_uuid)
 
     # devices.last_seen_at 도 갱신 — ack 도 디바이스 살아있다는 신호
     try:
@@ -925,6 +926,30 @@ def handle_ack(device_id_text: str, payload: dict[str, Any]) -> None:
         }).eq("id", device_uuid).execute()
     except Exception:  # noqa: BLE001
         logger.exception("devices UPDATE 실패 (ack)")
+
+
+def _commit_lcd_text(sb: Any, command_row: dict[str, Any], device_uuid: str) -> None:
+    """LCD 명령이 ok 로 ACK 되면 devices.lcd_text 확정 (앱 요청 2026-10-06).
+
+    ok 가 아니면 기기 화면이 안 바뀐 것이므로 그대로 둔다. lcd_bitmap 인데 원문이 없는 행
+    (배포 전 큐잉분)도 확정할 값이 없어 건너뛴다. 실패해도 ack 처리는 계속돼야 하므로 삼킨다.
+    """
+    action = command_row.get("action")
+    if action not in ("lcd_bitmap", "lcd_clear") or command_row.get("result") != "ok":
+        return
+    if action == "lcd_bitmap":
+        text = (command_row.get("payload") or {}).get("lcd_text")
+        if text is None:
+            return
+    else:
+        text = None
+    try:
+        sb.table("devices").update({
+            "lcd_text": text,
+            "lcd_text_updated_at": _now_iso(),
+        }).eq("id", device_uuid).execute()
+    except Exception:  # noqa: BLE001
+        logger.exception("devices.lcd_text UPDATE 실패 (device=%s)", device_uuid)
 
 
 def _enqueue_command_event(

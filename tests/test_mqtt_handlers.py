@@ -465,6 +465,62 @@ def test_handle_ack_push_failure_does_not_break_ack(
     assert "devices" in table_calls          # last_seen 갱신까지 도달
 
 
+def _lcd_ack(fake_sb: MagicMock, cmd_row: dict) -> list[dict]:
+    """lcd 명령 ACK 처리 후 devices UPDATE 페이로드 목록."""
+    fake_sb.table.side_effect = _ack_table_factory(cmd_row)
+    tables: list[MagicMock] = []
+    factory = fake_sb.table.side_effect
+
+    def _track(name: str) -> MagicMock:
+        t = factory(name)
+        if name == "devices":
+            tables.append(t)
+        return t
+
+    fake_sb.table.side_effect = _track
+    handlers.handle_ack(DEVICE_TEXT, {"msg_id": "cmd-1", "result": cmd_row["result"]})
+    return [c.args[0] for t in tables for c in t.update.call_args_list]
+
+
+def _lcd_row(action: str, result: str, payload: dict | None) -> dict:
+    return {"id": "cmd-1", "device_id": DEVICE_UUID, "issued_by": "owner-1",
+            "action": action, "result": result, "payload": payload,
+            "source": "manual", "source_id": None}
+
+
+def test_handle_ack_lcd_bitmap_ok_sets_lcd_text(fake_sb: MagicMock) -> None:
+    updates = _lcd_ack(fake_sb, _lcd_row(
+        "lcd_bitmap", "ok", {"w": 128, "h": 24, "data": "AA", "lcd_text": "밥 6시"}))
+    lcd = [u for u in updates if "lcd_text" in u]
+    assert len(lcd) == 1
+    assert lcd[0]["lcd_text"] == "밥 6시"
+    assert lcd[0]["lcd_text_updated_at"]
+
+
+def test_handle_ack_lcd_clear_ok_nulls_lcd_text(fake_sb: MagicMock) -> None:
+    updates = _lcd_ack(fake_sb, _lcd_row("lcd_clear", "ok", None))
+    lcd = [u for u in updates if "lcd_text" in u]
+    assert len(lcd) == 1 and lcd[0]["lcd_text"] is None
+
+
+def test_handle_ack_lcd_not_ok_keeps_lcd_text(fake_sb: MagicMock) -> None:
+    """기기가 거부하면 LCD 는 안 바뀌었으니 서버 값도 그대로."""
+    updates = _lcd_ack(fake_sb, _lcd_row(
+        "lcd_bitmap", "bad_request", {"data": "AA", "lcd_text": "x"}))
+    assert not [u for u in updates if "lcd_text" in u]
+
+
+def test_handle_ack_lcd_bitmap_without_text_skipped(fake_sb: MagicMock) -> None:
+    """원문 없는 구 행(배포 전 큐잉)은 확정할 값이 없으므로 건드리지 않는다."""
+    updates = _lcd_ack(fake_sb, _lcd_row("lcd_bitmap", "ok", {"data": "AA"}))
+    assert not [u for u in updates if "lcd_text" in u]
+
+
+def test_handle_ack_non_lcd_does_not_touch_lcd_text(fake_sb: MagicMock) -> None:
+    updates = _lcd_ack(fake_sb, _lcd_row("fan_on", "ok", None))
+    assert not [u for u in updates if "lcd_text" in u]
+
+
 def test_handle_ack_missing_msg_id_skipped(fake_sb: MagicMock) -> None:
     _setup_device_lookup(fake_sb)
     handlers.handle_ack(DEVICE_TEXT, {"result": "ok"})

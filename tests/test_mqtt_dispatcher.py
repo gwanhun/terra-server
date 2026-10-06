@@ -136,6 +136,18 @@ def test_payload_cannot_override_reserved_keys(
     assert out["brightness"] == 60       # 정상 인자는 통과
 
 
+def test_server_only_payload_keys_not_published(
+    fake_sb: MagicMock, fake_bridge: MagicMock
+) -> None:
+    """lcd_text 는 서버 기록용(ACK 시 devices.lcd_text 확정) — 기기로는 안 보낸다."""
+    out = _dispatch_with_payload(
+        fake_sb, fake_bridge, "lcd_bitmap",
+        {"w": 128, "h": 24, "enc": "raw", "data": "AAAA", "lcd_text": "밥 6시"},
+    )
+    assert "lcd_text" not in out
+    assert out["data"] == "AAAA"
+
+
 def test_non_dict_payload_ignored(fake_sb: MagicMock, fake_bridge: MagicMock) -> None:
     out = _dispatch_with_payload(fake_sb, fake_bridge, "led_on", None)
     assert out["action"] == "led_on"
