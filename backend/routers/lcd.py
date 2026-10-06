@@ -8,6 +8,10 @@ LCD 커스텀 텍스트 라우터 — Stage I.
 흐름: 서버가 텍스트를 1비트 비트맵으로 렌더 → `commands`(action='lcd_bitmap') 큐잉 →
 dispatcher publish → 펌웨어가 base64 디코드 후 상단 밴드에 blit + NVS 저장(재부팅 유지).
 mist 와 동일 파이프라인 재사용.
+
+원문은 payload `lcd_text` 에 같이 남긴다(서버 전용 — dispatcher 가 발행에서 뺀다).
+기기가 `result=ok` 로 ACK 하면 handlers 가 `devices.lcd_text` 로 확정 → 앱이 Realtime 으로 읽는다
+(앱 요청 2026-10-06: 다른 폰·재설치 후에도 지금 LCD 문구를 보여주기).
 """
 
 from __future__ import annotations
@@ -72,7 +76,7 @@ def set_lcd_text(
         # 빈 텍스트 → 기본값 복귀
         return _insert(sb, device_uuid, user_id, "lcd_clear", None)
 
-    payload = build_lcd_payload(body.text)
+    payload = {**build_lcd_payload(body.text), "lcd_text": body.text}
     return _insert(sb, device_uuid, user_id, "lcd_bitmap", payload)
 
 

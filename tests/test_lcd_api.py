@@ -36,6 +36,8 @@ def test_lcd_text_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
     assert payload["payload"]["enc"] == "raw"
     assert len(payload["payload"]["data"]) > 100      # base64 비트맵
     assert payload["issued_by"] == TEST_USER_ID
+    # 원문은 ACK 때 devices.lcd_text 로 확정하려고 같이 남긴다 (기기엔 안 나감 — dispatcher 가 뺀다)
+    assert payload["payload"]["lcd_text"] == "밥 6시"
 
 
 def test_lcd_empty_text_clears(app_client: TestClient, fake_sb: MagicMock) -> None:

@@ -116,3 +116,15 @@ def test_telemetry_writes_only_migrated_columns(
             f"{table} 에 쓰는 컬럼 {sorted(missing)} 의 마이그레이션 파일이 없음 — "
             f"migrations/YYYY-MM-DD_*.sql 추가 후 운영 적용 + MIGRATIONS_APPLIED.md 기록"
         )
+
+
+def test_lcd_ack_writes_only_migrated_columns() -> None:
+    """ACK 경로의 devices.lcd_text 확정도 마이그레이션 파일이 있는 컬럼만 쓴다."""
+    captured: dict[str, list[dict]] = {}
+    handlers._commit_lcd_text(
+        _capturing_sb(captured),
+        {"action": "lcd_bitmap", "result": "ok", "payload": {"lcd_text": "밥 6시"}},
+        DEVICE_UUID,
+    )
+    written = {k for p in captured["devices"] for k in p}
+    assert written and not written - _migration_columns("devices")
