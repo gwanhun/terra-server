@@ -32,6 +32,6 @@
 
 ## 배포 상태
 
-- [ ] 운영 DB 마이그레이션 `migrations/2026-10-07_devices_lcd_text.sql` 적용
+- [x] 운영 DB 마이그레이션 `migrations/2026-10-07_devices_lcd_text.sql` 적용
 - [ ] 서버 배포
 - 둘 다 끝나면 이 문서에 체크해서 알려 드릴게요.
