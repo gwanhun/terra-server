@@ -36,6 +36,11 @@
 `camera_id` = `cameras.camera_id`
 - ESP32-P4 워커: `p4cam-a1b2c3d4`
 - RPi 워커: `picam-a1b2c3d4`
+- **Terra Hub** (카메라+센서 통합 보드, 2026-10-06): `p4hub-a1b2c3d4` — `cameras.camera_id` **이자** `devices.device_id`.
+  한 보드가 한 MQTT 계정으로 카메라 토픽과 기기 토픽을 **같은 토픽**에 발행한다. 브리지는 `telemetry` payload 에
+  `dht22_a` 가 있으면 기기 경로(3초 센서, QoS 0), 없으면 카메라 경로(15초 heartbeat, QoS 1)로 처리하고,
+  `ack` 는 `commands` 에 msg_id 가 있으면 기기 명령, 없으면 카메라 명령(reboot/set_rotation/webrtc)으로 본다.
+  ACL 은 카메라 블록(상위집합) 하나. 상세: [specs/stage-k-unified-hub.md](../specs/stage-k-unified-hub.md)
 
 → 토픽 prefix 는 `esp32/` 로 통일 (브로커 ACL 단순화. 향후 `terra/` generic prefix 로 변경 검토 가능).
 
@@ -71,6 +76,7 @@
 - `led_brightness` 는 MOSFET 보드만 (0~100), 릴레이 보드는 키 없음
 - `capabilities` (2026-09-23+): 페어링 body 와 같은 보드 능력 플래그를 telemetry 에도 싣는다. 서버는 `devices.capabilities` 와
   다를 때만 UPDATE(프로세스 캐시). 베타 기기는 페어링을 호출하지 않아 이 경로가 유일하다. `mist_max_ms` = 분무 1회 상한(ms)
+  Terra Hub(2026-10-06+)는 `hub: true` 와 `lcd: true|false`(ST7735 빌드 여부 — false 면 `lcd_*` 가 `unknown_action`)를 더 싣는다
 - `hw_id` (2026-09-21+): 보드 불변 하드웨어 ID(efuse base MAC 12자리 hex). 페어링에서 이미
   저장되지만, 구 펌웨어로 등록돼 `devices.hw_id` 가 NULL 인 행은 새 펌웨어의 첫 telemetry 에서
   채워진다. 디바이스 telemetry 는 3초 주기라 프로세스당 1회만 UPDATE 한다. 용도는 **이미 생겨버린
@@ -291,3 +297,4 @@ topic read  esp32/picam-b2c3d4e5/command
 | 2026-09-20 | 0.5.4 | IoT `set_temp_offset` action 추가 (온도 보정, NVS 영속, LCD/telemetry 공통 적용) |
 | 2026-09-28 | 0.6.1 | IoT telemetry `uptime_sec`/`free_heap`/`reset`/`wifi_rssi` → `devices.sys_state`, IoT `reboot` action + `POST /devices/{id}/reboot` (카메라와 동일 진단·원격 재부팅) |
 | 2026-10-01 | 0.6.2 | IoT telemetry `temp_offset_c`(지금 적용 중인 온도 보정) → `devices.temp_offset_c`. 콘솔 온도 셀·보정 입력칸에 현재값 표시, 구 펌웨어는 commands 마지막 `set_temp_offset` 값으로 폴백 |
+| 2026-10-06 | 0.7.0 | **Terra Hub**(`p4hub-`): 카메라+기기 통합 보드. 한 계정·같은 토픽, payload 모양(`dht22_a`)으로 기기/카메라 경로 분기, ack 는 commands 매칭 여부로 분기. 기기 ack 에 `state`·`ts` 포함(terra-iot 와 동일) |

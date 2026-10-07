@@ -42,7 +42,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/cameras", tags=["cameras"])
 
-_ALLOWED_MODELS = {"esp32-p4", "rpi-zero-2-w", "rpi-4", "ip-camera"}
+_ALLOWED_MODELS = {"esp32-p4", "esp32-p4-hub", "rpi-zero-2-w", "rpi-4", "ip-camera"}
+# esp32-p4-hub: 카메라+센서/액추에이터 통합 보드(Terra Hub). cameras 행 + devices 행을 함께 만든다.
+HUB_MODEL = "esp32-p4-hub"
 _ALLOWED_RESOLUTIONS = {"VGA", "HD", "FHD"}
 
 
@@ -67,7 +69,15 @@ class CameraPairRequest(BaseModel):
     model: str = Field(
         default="esp32-p4",
         max_length=32,
-        description="esp32-p4 | rpi-zero-2-w | rpi-4 | ip-camera",
+        description="esp32-p4 | esp32-p4-hub (카메라+센서 통합) | rpi-zero-2-w | rpi-4 | ip-camera",
+    )
+    capabilities: dict[str, Any] | None = Field(
+        None,
+        description=(
+            "esp32-p4-hub 전용. 기기(devices.capabilities) 능력 플래그 — "
+            '{"board":"mosfet","led_dimmable":true,"hub":true,"mist_max_ms":30000}. '
+            "순수 카메라는 무시."
+        ),
     )
     firmware_ver: str | None = Field(None, max_length=64, examples=["terra-cam-p4 0.1.0"])
     resolution: str = Field(default="HD", description="VGA | HD (720p) | FHD (1080p)")
@@ -108,6 +118,13 @@ class CameraPairResponse(BaseModel):
     mqtt_broker_host: str = Field(..., description="Mosquitto 브로커 호스트")
     mqtt_broker_port: int = Field(..., description="Mosquitto 브로커 포트 (TLS 8883 / 평문 1883)")
     mqtt_use_tls: bool = Field(..., description="true 면 TLS 8883 필수")
+    device_uuid: str | None = Field(
+        None,
+        description=(
+            "esp32-p4-hub 전용: 함께 만든 devices.id. 기기 API(/devices/{id}/…, 예약, 알림)는 이 "
+            "UUID 로 호출한다. MQTT 토픽의 device_id 텍스트는 camera_id 와 같다."
+        ),
+    )
 
 
 class CameraUpdate(BaseModel):
@@ -238,7 +255,7 @@ def _find_by_hw_id(sb, user_id: str, hw_id: str | None) -> dict[str, Any] | None
         return None
     res = (
         sb.table("cameras")
-        .select("id, camera_id")
+        .select("id, camera_id, device_id")
         .eq("owner_id", user_id)
         .eq("hw_id", hw_id)
         .is_("unlinked_at", "null")
@@ -247,6 +264,66 @@ def _find_by_hw_id(sb, user_id: str, hw_id: str | None) -> dict[str, Any] | None
     )
     rows = res.data or []
     return rows[0] if rows else None
+
+def _ensure_hub_device(
+    sb, user_id: str, body: CameraPairRequest, cam_row: dict[str, Any], token_hashed: str,
+) -> str | None:
+    """Terra Hub: cameras 행의 짝 devices 행을 만들거나 갱신하고 그 UUID 를 돌려준다.
+
+    왜 두 행인가: 앱/웹/RLS/Realtime/예약/알림이 전부 devices 를 전제로 짜여 있다. 허브를
+    cameras 행 하나로만 두면 센서 차트·예약·푸시가 전부 새 분기를 타야 한다. 대신 "한 보드 =
+    두 행" 으로 두고 MQTT 계정을 공유한다: devices.device_id == cameras.camera_id (텍스트),
+    token_hash 동일. 브리지는 payload 모양(dht22_a 유무)으로 어느 행을 갱신할지 가른다.
+
+    재페어링(hw_id 재사용) 때는 cameras.device_id 링크로 기존 devices 행을 찾아 토큰만 갱신한다.
+    링크가 비어 있지만 같은 device_id 텍스트의 행이 있으면(과거 수동 생성) 그 행을 재사용한다.
+    실패는 500 — 허브가 카메라 행만 가지면 센서 데이터가 조용히 버려지므로 반쪽 성공을 막는다.
+    """
+    caps = body.capabilities or {"board": "mosfet", "led_dimmable": True, "hub": True}
+    caps = {**caps, "hub": True}
+    device_fields: dict[str, Any] = {
+        "token_hash": token_hashed,
+        "hw_id": body.hw_id,
+        "firmware_ver": body.firmware_ver,
+        "capabilities": caps,
+    }
+    if body.enclosure_id:
+        device_fields["enclosure_id"] = body.enclosure_id
+
+    linked = cam_row.get("device_id")
+    if linked:
+        res = sb.table("devices").update(device_fields).eq("id", linked).execute()
+        if res.data:
+            return linked
+        logger.warning("hub pair: 링크된 devices 행 없음 (device_id=%s) — 새로 만든다", linked)
+
+    res = (
+        sb.table("devices")
+        .select("id")
+        .eq("device_id", cam_row["camera_id"])
+        .limit(1)
+        .execute()
+    )
+    if res.data:
+        dev_uuid = res.data[0]["id"]
+        sb.table("devices").update(device_fields).eq("id", dev_uuid).execute()
+    else:
+        payload: dict[str, Any] = {
+            "owner_id": user_id,
+            "enclosure_id": cam_row.get("enclosure_id") or body.enclosure_id,
+            "device_id": cam_row["camera_id"],      # 같은 MQTT 계정 — 토픽 esp32/{id}/… 공유
+            "name": cam_row.get("name") or body.name,
+            **device_fields,
+        }
+        res = sb.table("devices").insert(payload).execute()
+        if not res.data:
+            raise HTTPException(status_code=500, detail="hub devices INSERT 실패")
+        dev_uuid = res.data[0]["id"]
+
+    link = sb.table("cameras").update({"device_id": dev_uuid}).eq("id", cam_row["id"]).execute()
+    if not link.data:
+        logger.warning("hub pair: cameras.device_id 링크 UPDATE 실패 (camera=%s)", cam_row["id"])
+    return dev_uuid
 
 
 @router.post(
@@ -300,6 +377,14 @@ def pair_camera(
         patch: dict[str, Any] = {"token_hash": token_hashed, **device_fields}
         if body.enclosure_id:          # 미지정이면 기존 사육장 연결을 유지
             patch["enclosure_id"] = body.enclosure_id
+        # 순수 카메라(p4cam-)로 등록됐던 보드를 허브 펌웨어로 리플래시한 경우: 같은 hw_id 라 행은
+        # 재사용하되 camera_id 를 p4hub- 로 바꾼다. 브리지가 접두사로 조회 테이블을 고르므로
+        # p4cam- 그대로면 센서 telemetry 가 cameras 경로로 빠져 조용히 버려진다. 펌웨어는 응답의
+        # 새 camera_id/token 을 NVS 에 저장하고, 옛 MQTT 계정은 아래서 해지한다.
+        old_camera_id: str | None = None
+        if body.model == HUB_MODEL and not str(existing.get("camera_id", "")).startswith("p4hub-"):
+            old_camera_id = existing.get("camera_id")
+            patch["camera_id"] = f"p4hub-{secrets.token_hex(4)}"
         res = (
             sb.table("cameras")
             .update(patch)
@@ -309,13 +394,19 @@ def pair_camera(
         if not res.data:
             raise HTTPException(status_code=500, detail="camera UPDATE 실패")
         row = res.data[0]
+        if "camera_id" in patch:
+            row["camera_id"] = patch["camera_id"]   # mock/부분 응답 대비 — 발급값이 진실
+        if old_camera_id and old_camera_id != row["camera_id"]:
+            registry.unregister_device(old_camera_id)
+            logger.info("pair: 허브 전환 camera_id %s → %s (옛 MQTT 계정 해지)", old_camera_id, row["camera_id"])
         logger.info(
             "pair: hw_id=%s 기존 카메라 재사용 camera_id=%s (새 행 미생성)",
             body.hw_id, row["camera_id"],
         )
     else:
-        # camera_id 접두사 — 모델별 구분 (운영 디버깅 편의)
-        prefix = "p4cam" if body.model == "esp32-p4" else "picam"
+        # camera_id 접두사 — 모델별 구분 (운영 디버깅 편의). 브리지 _resolve_both 가 이 접두사로
+        # 조회 테이블을 고르므로(p4hub = 둘 다) 바꾸면 handlers.py 도 같이 바꿔야 한다.
+        prefix = {"esp32-p4": "p4cam", HUB_MODEL: "p4hub"}.get(body.model, "picam")
         payload: dict[str, Any] = {
             "owner_id": user_id,
             "enclosure_id": body.enclosure_id,
@@ -333,6 +424,14 @@ def pair_camera(
     # Mosquitto 자동 등록 (실패해도 페어링 성공 처리).
     # 재사용 경로에서도 반드시 호출해야 한다 — 토큰을 새로 발급했으므로 브로커의
     # 기존 비밀번호로는 접속이 안 된다. mosquitto_passwd -b 는 같은 사용자면 덮어쓴다.
+    # Terra Hub: 짝 devices 행(같은 device_id 텍스트·같은 토큰). 재페어링이면 토큰만 갱신.
+    device_uuid: str | None = None
+    if body.model == HUB_MODEL:
+        if existing and "device_id" not in row:
+            row["device_id"] = existing.get("device_id")
+        device_uuid = _ensure_hub_device(sb, user_id, body, row, token_hashed)
+
+    # Mosquitto 자동 등록 (실패해도 페어링 성공 처리). 허브도 계정은 하나(camera_id).
     registry.register_device(row["camera_id"], camera_token)
 
     return CameraPairResponse(
@@ -340,6 +439,7 @@ def pair_camera(
         camera_id=row["camera_id"],
         camera_token=camera_token,
         reused=bool(existing),
+        device_uuid=device_uuid,
         **_mqtt_connect_info(),
     )
 

@@ -142,20 +142,26 @@ def _build_acl_content() -> str:
 
     sb = get_supabase_client()
 
-    # 디바이스 (write telemetry/ack/alert, read command)
-    dev_res = sb.table("devices").select("device_id").execute()
-    for row in dev_res.data or []:
-        did = row["device_id"]
-        buf.write(_acl_block(did, ["telemetry", "ack", "alert"], ["command"]))
-
     # 카메라 (write telemetry/motion_event/ack/alert, read command)
     # telemetry: 15초 heartbeat(last_seen/is_online) + rotate_180/capabilities 보고.
     # 2026-09-08 이전엔 빠져 있어 Mosquitto 가 카메라 telemetry 를 조용히 버렸다
     # (last_seen 이 ack 로만 갱신되던 원인). 기존 카메라는 regenerate_acl() 로 재생성 필요.
     cam_res = sb.table("cameras").select("camera_id").execute()
+    camera_ids: set[str] = set()
     for row in cam_res.data or []:
         cid = row["camera_id"]
+        camera_ids.add(cid)
         buf.write(_acl_block(cid, ["telemetry", "motion_event", "ack", "alert"], ["command"]))
+
+    # 디바이스 (write telemetry/ack/alert, read command)
+    # Terra Hub 는 devices.device_id == cameras.camera_id (한 계정) — 카메라 블록이 상위집합이라
+    # 같은 user 블록을 두 번 쓰지 않고 건너뛴다 (Mosquitto 는 중복 user 섹션을 병합하지만 파일이 지저분해진다).
+    dev_res = sb.table("devices").select("device_id").execute()
+    for row in dev_res.data or []:
+        did = row["device_id"]
+        if did in camera_ids:
+            continue
+        buf.write(_acl_block(did, ["telemetry", "ack", "alert"], ["command"]))
 
     return buf.getvalue()
 
