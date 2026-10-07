@@ -80,8 +80,18 @@ def main() -> int:
     p.add_argument("--watch", action="store_true")
     p.add_argument("--job")
     a = p.parse_args()
+    from postgrest.exceptions import APIError
+
     from backend.supabase_client import get_supabase_client
     sb = get_supabase_client()
+    try:
+        sb.table("ota_jobs").select("id").limit(1).execute()
+    except APIError as exc:
+        if "PGRST205" in str(exc):
+            print("ota_jobs 테이블 없음 — migrations/2026-10-07_firmware_ota.sql 을 Supabase SQL Editor 에서 먼저 적용"
+                  " (docs/OTA_TEST_PLAN_2026-10-07.md §0-4)", file=sys.stderr)
+            return 2
+        raise
     while True:
         if a.watch:
             os.system("clear")
