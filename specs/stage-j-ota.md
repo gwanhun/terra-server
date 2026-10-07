@@ -132,7 +132,20 @@ ota_1,      app,  ota_1,    0x200000,  0x1E0000   # 끝 0x3E0000 < 4MB
 
 **아직**: Slack 경보(⑨)는 ota_jobs 종결 로그만. 배포 순서: 마이그레이션 적용 → terra-api·terra-bridge 재시작 → 릴리스 등록.
 
-## 펌웨어 변경 (카메라 → 기기 순, 공통 로직은 두 트리 동일 유지)
+## 펌웨어 변경 — ✅ 빌드 통과 (2026-10-07, 실기 미검증)
+
+| 레포 | 브랜치/커밋 | 산출물 | 비고 |
+|---|---|---|---|
+| `firebeetle2-p4-yr030` (카메라) | `feat/ota` `26354d1` (바닥 `sdcard` `984a4fb` = 0.2.1 커밋) | bin 1,807,600B / 슬롯 4MB · bootloader 23,200B / 24,576 | 버전 `fb2-p4 0.3.0-20261007`, 업로드 스크립트 dry-run 통과(비밀값 0건) |
+| `terra-iot-nano` (기기) | `feat/ota` (바닥 `main` `6382ca1`) | bin 1,344,000B / 슬롯 1,966,080B (32% 여유) · bootloader 21,136B | 버전 `terra-fw 1.1.0-20261007`. supermini 미포팅(의도) |
+
+구현 위치: 카메라 `main/app_ota.c`(+`app_mqtt.c`·`app_sys.c`·`main.c`), 기기 `main/src/ota.c`(+`command_dispatch.c`·`mqtt_app.c`·`sys_info.c`·`main.c`·`http_server.c`). 상세는 각 레포 `docs/OTA.md` / `docs/ota.md`.
+기기 쪽 판정 차이: telemetry 가 QoS0 라 PUBACK 이 없어 **CONNACK + 첫 telemetry 발행 성공**으로 mark valid.
+빌드 중 확인된 것: IDF 6.0 = mbedTLS 4.0 → `psa/crypto.h` 해시 사용. `ESP_IDF_VERSION` 환경변수는 `6.0` 이어야 esp_wifi_remote Kconfig 가 로드됨(memory `reference-env-gotchas`).
+
+아래는 원래 계획(이력 보존).
+
+## 펌웨어 변경 — 원 계획 (카메라 → 기기 순)
 
 1. sdkconfig: `ESPTOOLPY_FLASHSIZE_16MB`(P4) · `BOOTLOADER_APP_ROLLBACK_ENABLE=y` · `APP_PROJECT_VER_FROM_CONFIG=y` + `APP_PROJECT_VER="<APP_FIRMWARE_VER>"` · `ESP_HTTPS_OTA_ALLOW_HTTP` 꺼짐 유지.
 2. `partitions.csv` 위 안으로 교체.
