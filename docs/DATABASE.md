@@ -15,7 +15,7 @@
 | `telemetry_1m` | IoT | 분 단위 다운샘플 | (device_id, bucket) |
 | `commands` | IoT | 명령 이력 | UUID, device_id FK |
 | `alerts` | IoT | 알림 이력 | UUID, device_id FK |
-| `cameras` | 영상 | 카메라 워커 등록 (ESP32-P4 / RPi). `rotate_180`(180° 회전 설정, 진실) + `capabilities`(펌웨어 보고, NULL=구 펌웨어) — 2026-09-08 | UUID, owner_id + enclosure_id FK |
+| `cameras` | 영상 | 카메라 워커 등록 (ESP32-P4 / RPi). `rotate_180`(180° 회전 설정, 진실) + `capabilities`(펌웨어 보고, NULL=구 펌웨어) — 2026-09-08. `device_id`(Terra Hub 짝 devices 행, NULL=순수 카메라) — 2026-10-06 | UUID, owner_id + enclosure_id FK |
 | `motion_clips` | 영상 | 모션 영상 메타 (R2 키, H.264 mp4) | UUID, camera_id FK |
 | `firmware_releases` | OTA | 펌웨어 빌드 1건(`target` camera_p4/device_nano, `version`=esp_app_desc, R2 키, sha256). `scripts/upload_firmware.py` 가 INSERT — 2026-10-07 | UUID, UNIQUE(target, version) |
 | `ota_jobs` | OTA | 기기 1대 × 릴리스 1건 작업. `status` pending→accepted→downloading→ready→applying→verified/rolled_back, failed/timeout. `prepare_msg_id`/`apply_msg_id`(카메라: MQTT msg_id, 기기: commands.id) — 2026-10-07 | UUID, release_id FK, target_uuid(FK 없음: 해제 행 이력 보존) |
@@ -47,6 +47,8 @@ auth.users (Supabase Auth)
 ```
 
 **enclosure 없이 단독 디바이스/카메라도 가능** (devices.enclosure_id, cameras.enclosure_id 가 NULL 허용).
+
+**Terra Hub**(2026-10-06): 카메라+센서 통합 보드 1대 = `cameras` 행 1 + `devices` 행 1. 같은 텍스트 id(`p4hub-…`)·같은 `token_hash`, `cameras.device_id` 로 링크. 앱은 기존처럼 "카메라 1 + 기기 1" 로 본다 — 앱 변경 0. [specs/stage-k-unified-hub.md](../specs/stage-k-unified-hub.md)
 
 ## RLS 정책
 
