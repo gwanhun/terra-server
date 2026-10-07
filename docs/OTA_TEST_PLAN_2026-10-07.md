@@ -73,6 +73,20 @@ uv run python scripts/upload_firmware.py --list
 - 원인/수정: 펌웨어 0.3.3 — prepare 다운로드를 16KB 전용 태스크로 이동 ([펌웨어 docs/OTA.md 실기 기록](../../esp32/firebeetle2-p4-yr030/docs/OTA.md)).
 - 재시도 절차: 보드에 **0.3.3 을 시리얼로** 올리고(`esptool write-flash 0x20000 <0.3.3 bin>` 또는 `idf.py app-flash`, erase 금지), 릴리스 **0.3.4**(코드 동일) 로 §3 을 다시 돈다. 콘솔 OTA 입력 `1` = 목록 첫 번째(최신).
 
+### 3-y. 2차 실기 결과 (2026-10-07, p4cam-06461c21, 시리얼 0.3.3 → OTA 0.3.4) — **§3 전부 통과**
+
+| 단계 | 결과 |
+|---|---|
+| 3-1~3-2 | `1 force` → job `85ffadaf…` `accepted`, 시리얼 `ota_prepare 예약 … 1.5초 뒤 재부팅` → `SW:ota_prepare` |
+| 3-3 | `OTA prepare 1/2 … int_largest=143360` → 10%…100% (1,862,032B, 약 10초) → esp_image 검증 → `OTA prepare 완료 → 슬롯 ota_1`. 서버 `downloading` → `ready 100%` |
+| 3-4 | heartbeat `fw=0.3.3` 유지, 녹화 파이프 정상(fps 10) |
+| 3-5 | 콘솔 OTA 재클릭 → `applying`, 시리얼 `ota_apply: … ota_1 로 전환` → `SW:ota_apply` |
+| 3-6 | `boot: Loaded app from partition at offset 0x420000`, `새 펌웨어 fb2-p4 0.3.4 … PENDING_VERIFY`, MQTT 10초 내 연결 |
+| 3-7 | heartbeat `fw=0.3.4` → job **`verified`** (apply 후 32초), `prev_version=0.3.3` |
+| 3-8 | WiFi/camera_id/회전 NVS 그대로. 콘솔 OTA 재클릭 시 같은 버전 409 는 미확인 |
+
+관찰(차단 아님): ① TLS 핸드셰이크 직후 esp_hosted SDIO 읽기 오류 1회(`sdmmc_io_rw_extended 0xffffffff`, 패킷 드롭) 뒤 5초 만에 복구 — 이 보드의 기존 60초 WDT 재부팅 조사와 묶어서 볼 것. ② prepare 를 돌린 부팅은 preroll 시점 PSRAM free 가 약 1MB 적음(18347K vs 19373K), 다음 부팅에서 원복 — TLS/http 캐시로 추정, OTA 동작 영향 없음.
+
 ## 4. 롤백 매트릭스 (카메라, 불량 빌드 3종)
 
 각 케이스마다 §2 처럼 버전을 올려 릴리스 등록 → §3 의 3-1~3-5 → 아래 기대. **끝나면 반드시 정상 빌드(0.3.1)가 다시 verified 인지 확인**하고 다음 케이스.

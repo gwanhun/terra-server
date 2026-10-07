@@ -157,8 +157,8 @@ ota_1,      app,  ota_1,    0x200000,  0x1E0000   # 끝 0x3E0000 < 4MB
 
 ## 완료 조건
 
-- [ ] dev cam 1대: 물리 리플래시(OTA 레이아웃) 후 **재페어링 없이** 기존 camera_id 로 heartbeat 복귀 (NVS 보존 검증)
-- [ ] 콘솔에서 릴리스 선택 → 카메라 다운로드 → 재부팅 → `firmware_ver` 갱신 → job `verified`. 전 과정 **케이블 없이**
+- [x] dev cam 1대: 물리 리플래시(OTA 레이아웃) 후 **재페어링 없이** 기존 camera_id 로 heartbeat 복귀 (NVS 보존 검증) — **2026-10-07 p4cam-06461c21**, 0.3.0 → 0.3.3 모두 `idf.py flash`/`write-flash 0x20000` 만으로 같은 camera_id·WiFi·회전 유지
+- [x] 콘솔에서 릴리스 선택 → 카메라 다운로드 → 재부팅 → `firmware_ver` 갱신 → job `verified`. 전 과정 **케이블 없이** — **2026-10-07** job `85ffadaf…` 0.3.3 → 0.3.4: accepted → downloading(1.86MB 약 10초) → ready → applying → verified(apply 후 32초). 1차(0.3.0 → 0.3.2, job `79d37c3d…`)는 prepare 가 main_task 스택 초과로 패닉 → `failed(max_tries)` 로 정상 실패 처리됨(0.3.3 에서 수정, 펌웨어 docs/OTA.md 실기 기록)
 - [ ] 롤백: MQTT 비밀번호를 틀리게 빌드한 "불량 릴리스" 배포 → 5분 내 자동 복귀 → job `rolled_back`, heartbeat `fw` 는 이전 버전
 - [ ] 다운로드 중 WiFi 차단 → `failed` 기록 후 구버전으로 정상 부팅 (벽돌 없음)
 - [ ] 라이브 중 `ota_update` → `busy` 거절 → 서버 job `failed(busy)` 로 표시
@@ -171,7 +171,7 @@ ota_1,      app,  ota_1,    0x200000,  0x1E0000   # 끝 0x3E0000 < 4MB
 ## 착수 전 확인 (owner / 실기)
 
 - [x] nano 실제 플래시 크기 — 4MB 확정(ESP32-S3FH4R2, 사양표). 슬롯 2×1920K 로 고정, 앱 1.3MB → 여유 600K. 앱이 1.8MB 를 넘기 시작하면 OTA 불가해지므로 **nano 앱 크기 상한 1.7MB** 를 완료 조건에 추가
-- [ ] 카메라 `handle_command` 수신 버퍼 크기 (job_id+sha256 = 100B 내외라 여유 예상)
+- [x] 카메라 `handle_command` 수신 버퍼 크기 — 실기에서 `ota_prepare`(url+sha256+size 포함) 수신·파싱 정상 (2026-10-07)
 - [x] 바닥 빌드 = OTA + 검증된 0.2.1 만, §15 미검증 항목은 첫 OTA 로 — **승인 (2026-10-07)**
 - [ ] 베타 회수/방문 일정 — 이 1회가 마지막 물리 접근이 되도록 (**미정**, owner)
 - [x] 다운로드 프록시 vs R2 직접 — **프록시 승인 (2026-10-07)**
