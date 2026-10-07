@@ -40,6 +40,7 @@ Supabase 에 적용한 마이그레이션 기록(SOT). `migrations/*.sql` 을 SQ
 | ✅ | `2026-09-30_cameras_live_session.sql` | 2026-09-30 | `cameras.live_*` 7컬럼 — 라이브 시청 제한 15분 상한·5분 쉼·한 기기(#15, `backend/live_session.py`). 코드(ce5c9fe)보다 먼저 적용, 적용 직후 7컬럼 조회 확인 |
 | ✅ | `2026-10-01_devices_temp_offset.sql` | 2026-10-01 | `devices.temp_offset_c` REAL — 펌웨어 2026-10-01+ 가 telemetry 로 보고하는 현재 온도 보정값. 코드보다 먼저 적용됨 |
 | ✅ | `2026-10-07_devices_lcd_text.sql` | 2026-10-07 | `devices.lcd_text` TEXT + `lcd_text_updated_at` — LCD 문구 원문, 기기 ACK ok 시 확정(앱 요청 2026-10-06). 코드 머지 전 적용, 적용 직후 information_schema 로 2컬럼 확인 |
+| ✅ | `2026-10-06_hub_link.sql` | 2026-10-07 | `cameras.device_id` UUID FK → devices — Terra Hub(카메라+센서 통합) 짝 행 링크(Stage K). 코드(90ac2fe)보다 먼저 적용됨 |
 
 ## 규칙
 - 새 마이그레이션은 `migrations/YYYY-MM-DD_설명.sql` 로 추가하고, 적용 후 이 표에 행 추가.

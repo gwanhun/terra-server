@@ -14,14 +14,19 @@ Supabase mock 만으로 단위 테스트 가능.
 
 ## device_id 해상
 
-`esp32/{device_id}/...` 의 device_id 는 TEXT — 두 종류 entity:
+`esp32/{device_id}/...` 의 device_id 는 TEXT — 세 종류 entity:
 - 디바이스 (센서/제어): `terra-XXXXXXXX` → `devices` 테이블
 - 카메라 워커: `p4cam-XXXXXXXX` / `picam-XXXXXXXX` → `cameras` 테이블
+- **Terra Hub** (카메라+센서 통합 보드, 2026-10-06): `p4hub-XXXXXXXX` → `cameras` 행 **과** `devices` 행
+  둘 다(같은 텍스트 id, 같은 MQTT 계정). telemetry 는 payload 모양으로 가른다 — `dht22_a` 가 있으면
+  devices 경로(3초 센서), 없으면 cameras 경로(15초 heartbeat). ack 는 commands 에 msg_id 가 있으면
+  devices, 없으면 카메라 명령(reboot/set_rotation/webrtc)의 ack. specs/stage-k-unified-hub.md.
 
 DB FK 는 각각 `devices.id` / `cameras.id` (UUID). 매 메시지마다 SELECT 하면 DB 왕복 비용 큼.
 → TTL 캐시로 device_id_text ↔ UUID 캐싱.
 
-`_resolve_entity()` 가 두 테이블을 순차 조회하고 (type, uuid) 튜플로 반환.
+`_resolve_both()` 가 접두사로 조회할 테이블을 고르고 (device_uuid, camera_uuid) 를 반환.
+`_resolve_entity()` 는 그 위의 호환 래퍼((type, uuid) — devices 우선).
 
 브리지는 API 서버와 별도 프로세스라 기기 삭제·이름 변경 신호를 받지 못한다. 그래서
 만료 없는 lru_cache 대신 TTL 캐시를 쓴다 (성공 5분 / 미존재 15초). `reset_device_cache()`
@@ -205,18 +210,37 @@ def device_meta(device_uuid: str) -> dict[str, Any] | None:
     return val
 
 
+# 접두사 → 조회 테이블. 서버가 페어링에서 발급하는 형식(routers/devices.py, routers/cameras.py)과
+# 짝이다. 순수 기기/카메라는 한 테이블만 조회해 왕복을 줄이고, 허브(p4hub-)와 모르는 접두사는 둘 다 본다.
+_DEVICE_ONLY_PREFIXES = ("terra-",)
+_CAMERA_ONLY_PREFIXES = ("p4cam-", "picam-")
+
+
+def _resolve_both(device_id_text: str) -> tuple[str | None, str | None]:
+    """device_id (TEXT) → (device_uuid, camera_uuid). 각각 미존재·해제됨이면 None.
+
+    Terra Hub 는 둘 다 채워진다(한 보드 = devices 행 + cameras 행). 순수 기기는 (uuid, None),
+    순수 카메라는 (None, uuid), 미페어링은 (None, None).
+    """
+    if device_id_text.startswith(_CAMERA_ONLY_PREFIXES):
+        return (None, _cached_camera_uuid(device_id_text))
+    dev = _cached_device_uuid(device_id_text)
+    if device_id_text.startswith(_DEVICE_ONLY_PREFIXES):
+        return (dev, None)
+    return (dev, _cached_camera_uuid(device_id_text))
+
+
 def _resolve_entity(device_id_text: str) -> tuple[str | None, str | None]:
-    """device_id (TEXT) → (entity_type, uuid).
+    """device_id (TEXT) → (entity_type, uuid). 호환 래퍼 — 허브는 "device" 로 분류된다.
 
     entity_type ∈ {"device", "camera", None}. 미페어링이면 (None, None).
-    devices 를 먼저 조회 (대부분 디바이스 트래픽), 미스 시 cameras.
+    telemetry/ack 처럼 허브를 양쪽으로 다뤄야 하는 곳은 _resolve_both 를 직접 쓴다.
     """
-    uid = _cached_device_uuid(device_id_text)
-    if uid is not None:
-        return ("device", uid)
-    uid = _cached_camera_uuid(device_id_text)
-    if uid is not None:
-        return ("camera", uid)
+    dev, cam = _resolve_both(device_id_text)
+    if dev is not None:
+        return ("device", dev)
+    if cam is not None:
+        return ("camera", cam)
     return (None, None)
 
 
@@ -677,16 +701,22 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
     - camera: telemetry INSERT 건너뜀 (스키마 불일치). cameras.last_seen_at/is_online UPDATE.
               capabilities 가 있고 DB 와 다르면 함께 저장. rotate_180 보고값이 DB 와 다르면
               set_rotation 재발행 (_sync_camera_rotation).
+    - 허브(p4hub-, devices+cameras 둘 다): payload 에 dht22_a/dht22_b 가 있으면 device 경로
+      (3초 센서 telemetry), 없으면 camera 경로(15초 heartbeat). 두 행의 last_seen 이 각자 갱신된다.
     - 미페어링: 경고 후 무시.
     """
-    entity_type, entity_uuid = _resolve_entity(device_id_text)
-    if entity_uuid is None:
+    device_uuid, camera_uuid = _resolve_both(device_id_text)
+    if device_uuid is None and camera_uuid is None:
         logger.warning("telemetry: 미페어링 device_id=%s 무시", device_id_text)
         return
 
     sb = get_supabase_client()
 
-    if entity_type == "camera":
+    is_sensor_payload = isinstance(payload.get("dht22_a"), dict) or isinstance(payload.get("dht22_b"), dict)
+    as_camera = camera_uuid is not None and not (is_sensor_payload and device_uuid is not None)
+
+    if as_camera:
+        entity_uuid = camera_uuid
         # 카메라는 heartbeat 만 — telemetry 행 INSERT X, last_seen 갱신 O.
         update: dict[str, Any] = {
             "last_seen_at": _now_iso(),
@@ -760,7 +790,7 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
                 logger.exception("camera_logs 저장 실패 (camera=%s)", device_id_text)
         return
 
-    device_uuid = entity_uuid
+    assert device_uuid is not None  # as_camera=False 는 device_uuid 가 있을 때만
     ts = _normalize_ts(payload.get("ts"))
 
     dht_a = payload.get("dht22_a") or {}
@@ -848,42 +878,47 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
 def handle_ack(device_id_text: str, payload: dict[str, Any]) -> None:
     """
     스펙 ([docs/MQTT.md](../../docs/MQTT.md) §3):
-        { "msg_id": "<uuid>", "result": "ok", "state": {...} }
+        { "msg_id": "...", "result": "ok", "state": {...} }
 
     동작:
     - device ack: commands UPDATE status='acked', result, acked_at + devices.last_seen UPDATE
     - camera ack: cameras.last_seen UPDATE 만 (camera 대상 commands 테이블 없음 — webrtc 시그널링은
-      별도의 short-lived MQTT 클라이언트가 직접 수신).
+      별도 경로). msg_id·result 는 로그로 남겨 발행 로그와 대조할 수 있게 한다.
+    - 허브(devices+cameras): msg_id 가 commands 에 있으면 device ack, 없으면 카메라 명령
+      (reboot/set_rotation/webrtc_*)의 ack 로 보고 camera 경로. "매칭 없음" 경고는 허브에선 내지 않는다.
+    - 미페어링: 경고 후 무시.
     """
-    entity_type, entity_uuid = _resolve_entity(device_id_text)
-    if entity_uuid is None:
+    device_uuid, camera_uuid = _resolve_both(device_id_text)
+    if device_uuid is None and camera_uuid is None:
         logger.warning("ack: 미페어링 device_id=%s 무시", device_id_text)
         return
 
-    if entity_type == "camera":
-        # 발행 로그("reboot 발행 camera=… msg_id=…")와 msg_id 로 짝을 맞춰 명령 도착·거부
-        # (구 펌웨어 rejected_unknown_action)를 서버 로그만으로 확인한다(앱팀 요청 2026-09-28).
-        # webrtc_answer/ice ack 는 payload 가 크므로 식별 필드만 남긴다.
-        logger.info(
-            "camera ack camera=%s msg_id=%s result=%s action=%s",
-            device_id_text, payload.get("msg_id"), payload.get("result"), payload.get("action"),
-        )
-        try:
-            sb = get_supabase_client()
-            sb.table("cameras").update({
-                "last_seen_at": _now_iso(),
-                "is_online": True,
-            }).eq("id", entity_uuid).execute()
-        except Exception:  # noqa: BLE001
-            logger.exception("cameras UPDATE 실패 (ack camera=%s)", device_id_text)
-        return
+    if device_uuid is not None:
+        msg_id = payload.get("msg_id")
+        if not msg_id:
+            if camera_uuid is None:
+                logger.warning("ack: msg_id 없음 (device=%s, payload=%s)", device_id_text, payload)
+                return
+        else:
+            matched = _ack_device_command(
+                device_id_text, device_uuid, msg_id, payload, is_hub=camera_uuid is not None,
+            )
+            if matched or camera_uuid is None:
+                return
+        # 허브인데 commands 에 없음(또는 msg_id 없는 webrtc_answer) → 카메라 ack
 
-    device_uuid = entity_uuid
-    msg_id = payload.get("msg_id")
-    if not msg_id:
-        logger.warning("ack: msg_id 없음 (device=%s, payload=%s)", device_id_text, payload)
-        return
+    _ack_camera(device_id_text, camera_uuid, payload)
 
+
+def _ack_device_command(
+    device_id_text: str, device_uuid: str, msg_id: str, payload: dict[str, Any], *, is_hub: bool,
+) -> bool:
+    """commands 행 acked 처리. 매칭된 행이 있으면 True.
+
+    매칭 실패 시: 순수 기기는 replay/foreign 경고 + last_seen 갱신(살아있다는 신호),
+    허브는 카메라 명령의 ack 일 수 있어 조용히 False 만 돌려준다(호출자가 camera 경로로).
+    DB 오류도 False — 단, 허브가 아니면 여기서 끝(기존 동작).
+    """
     result = payload.get("result", "ok")
     sb = get_supabase_client()
 
@@ -901,9 +936,11 @@ def handle_ack(device_id_text: str, payload: dict[str, Any]) -> None:
         )
     except Exception:  # noqa: BLE001
         logger.exception("commands UPDATE 실패 (msg_id=%s)", msg_id)
-        return
+        return not is_hub   # 순수 기기: 기존처럼 여기서 종료
 
     if not res.data:
+        if is_hub:
+            return False
         logger.warning(
             "ack: 매칭되는 command 없음 (msg_id=%s, device=%s) — replay/foreign",
             msg_id, device_id_text,
@@ -926,6 +963,24 @@ def handle_ack(device_id_text: str, payload: dict[str, Any]) -> None:
         }).eq("id", device_uuid).execute()
     except Exception:  # noqa: BLE001
         logger.exception("devices UPDATE 실패 (ack)")
+    return True
+
+
+def _ack_camera(device_id_text: str, camera_uuid: str, payload: dict[str, Any]) -> None:
+    """카메라 ack: 발행 로그("reboot 발행 camera=… msg_id=…")와 msg_id 로 짝을 맞춰 명령 도착·거부
+    (rejected_unknown_action 등)를 서버 저널만으로 확인할 수 있게 info 로 남기고 last_seen 갱신."""
+    logger.info(
+        "camera ack camera=%s msg_id=%s result=%s action=%s",
+        device_id_text, payload.get("msg_id"), payload.get("result"), payload.get("action"),
+    )
+    try:
+        sb = get_supabase_client()
+        sb.table("cameras").update({
+            "last_seen_at": _now_iso(),
+            "is_online": True,
+        }).eq("id", camera_uuid).execute()
+    except Exception:  # noqa: BLE001
+        logger.exception("cameras UPDATE 실패 (ack camera=%s)", device_id_text)
 
 
 def _commit_lcd_text(sb: Any, command_row: dict[str, Any], device_uuid: str) -> None:
@@ -1005,6 +1060,7 @@ def handle_alert(device_id_text: str, payload: dict[str, Any]) -> None:
 __all__ = [
     "_cached_camera_uuid",
     "_cached_device_text",
+    "_resolve_both",
     "_resolve_entity",
     "handle_ack",
     "handle_alert",
