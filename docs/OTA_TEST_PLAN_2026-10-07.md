@@ -66,6 +66,13 @@ uv run python scripts/upload_firmware.py --list
 - 3-3 에서 `failed` + error → [펌웨어 docs/OTA.md 실패 사유 표](../../esp32/firebeetle2-p4-yr030/docs/OTA.md). `connect`/`tls` 면 서버 URL·인증서, `http_401` 이면 토큰, `http_409` 면 작업 상태.
 - 3-7 에서 10분 무소식 → `timeout`. 시리얼로 어디서 멈췄는지 확인.
 
+### 3-x. 1차 실기 결과 (2026-10-07, p4cam-06461c21, 0.3.0 → 0.3.2)
+
+- 3-1~3-2 통과 (`1 force`, 작업 `accepted`, `SW:ota_prepare` 재부팅).
+- 3-3 실패: 다운로드 진입 직후 `Stack protection fault, task "main"` 2회 → `failed(max_tries)` ack → 서버 작업 `failed`. 카메라는 정상 복귀 (boot 파티션 미변경이라 서비스 영향 없음).
+- 원인/수정: 펌웨어 0.3.3 — prepare 다운로드를 16KB 전용 태스크로 이동 ([펌웨어 docs/OTA.md 실기 기록](../../esp32/firebeetle2-p4-yr030/docs/OTA.md)).
+- 재시도 절차: 보드에 **0.3.3 을 시리얼로** 올리고(`esptool write-flash 0x20000 <0.3.3 bin>` 또는 `idf.py app-flash`, erase 금지), 릴리스 **0.3.4**(코드 동일) 로 §3 을 다시 돈다. 콘솔 OTA 입력 `1` = 목록 첫 번째(최신).
+
 ## 4. 롤백 매트릭스 (카메라, 불량 빌드 3종)
 
 각 케이스마다 §2 처럼 버전을 올려 릴리스 등록 → §3 의 3-1~3-5 → 아래 기대. **끝나면 반드시 정상 빌드(0.3.1)가 다시 verified 인지 확인**하고 다음 케이스.
