@@ -903,6 +903,7 @@ async function loadDevices() {
         &nbsp;${ledSlider(r)}
         &nbsp;<button onclick="openTrend('${r.id}')" title="온도 추이 — 30분 집계(telemetry_30m), 최근 30일까지" style="font-size:11px;padding:2px 8px;margin-left:8px">📈추이</button>
         <button onclick="rebootDevice('${r.id}','${esc(r.device_id)}')" title="MQTT reboot 명령 1회 큐잉 — 2026-09-28+ 펌웨어만 반응, 구 펌웨어는 unknown_action" style="font-size:11px;padding:2px 8px;margin-left:4px">재부팅</button>
+        <button onclick="otaEntity('devices','${r.id}','${esc(r.device_id)}','device_nano')" title="OTA (Stage J, nano 만) — prepare → ready 면 다시 눌러 apply. commands 큐잉" style="font-size:11px;padding:2px 8px;margin-left:4px">OTA</button>
         <button onclick="unlinkDevice('devices','${r.id}')" title="소프트 해제 — 기록 보존, 앱의 '삭제'와 동일" style="font-size:11px;padding:2px 8px;margin-left:4px">해제</button>
         <button class="danger" onclick="deleteDevice('${r.id}')" title="hard delete — 기록까지 삭제(운영용)" style="font-size:11px;padding:2px 8px;margin-left:4px">삭제</button>
       </td>`;
@@ -1795,6 +1796,39 @@ async function rebootCamera(id, label) {
         r.published ? 'good' : 'bad');
 }
 
+// ---------- OTA (Stage J, specs/stage-j-ota.md) ----------
+// 한 버튼으로 2단계를 다룬다: 진행 중 작업이 없으면 릴리스를 골라 prepare, ready 면 apply 를 묻는다.
+// kind: 'cameras' | 'devices', target: 'camera_p4' | 'device_nano'
+async function otaEntity(kind, id, label, target) {
+  const jobs = await api('/firmware/jobs?target_uuid=' + id + '&limit=5');
+  const active = (jobs || []).find(j => ['pending','accepted','downloading','ready','applying'].includes(j.status));
+  if (active && active.status === 'ready') {
+    if (!confirm(`${label}: ${active.version} 다운로드 완료(ready).\n지금 적용(부팅 파티션 전환 + 재부팅)할까?\n약 30초 다운타임. 실패하면 부트로더가 이전 버전으로 복귀.`)) return;
+    const r = await api(`/${kind}/${id}/ota/${active.id}/apply`, { method: 'POST' });
+    log({ ota_apply: r });
+    if (r) toast(r.published === false ? 'ota_apply 발행 실패(브로커) — 잠시 후 재시도' : `ota_apply ${r.status} · job ${r.job_id}`,
+                 r.published === false ? 'bad' : 'good');
+    return;
+  }
+  if (active) {
+    toast(`${label}: 진행 중 작업 ${active.status} ${active.pct || 0}% (job ${active.id.slice(0,8)}) — 끝난 뒤 다시`, 'bad');
+    return;
+  }
+  const rels = await api('/firmware/releases?target=' + target);
+  if (!rels || !rels.length) { toast('등록된 릴리스 없음 — scripts/upload_firmware.py', 'bad'); return; }
+  const menu = rels.map((r, i) => `${i + 1}. ${r.version}  (${(r.size_bytes / 1048576).toFixed(2)}MB${r.notes ? ' · ' + r.notes : ''})`).join('\n');
+  const pick = prompt(`${label} OTA 1단계(prepare: 다운로드·검증만, 재부팅 1회, 부팅 파티션 불변)\n릴리스 번호 입력. 뒤에 " force" 를 붙이면 사전 점검 무시(개발용)\n\n${menu}`, '1');
+  if (!pick) return;
+  const m = pick.trim().match(/^(\d+)(\s+force)?$/i);
+  if (!m || !rels[+m[1] - 1]) { toast('잘못된 선택', 'bad'); return; }
+  const r = await api(`/${kind}/${id}/ota`, { method: 'POST', body: JSON.stringify({ release_id: rels[+m[1] - 1].id, force: !!m[2] }) });
+  log({ ota_prepare: r });
+  if (!r) return;
+  const ok = r.published !== false && r.status !== 'failed';
+  toast(ok ? `ota_prepare 발행 · ${r.version} · job ${r.job_id.slice(0,8)}${r.gate_reasons && r.gate_reasons.length ? ' (게이트 무시: ' + r.gate_reasons.join(',') + ')' : ''}`
+           : `ota_prepare 실패: ${r.detail || r.status}`, ok ? 'good' : 'bad');
+}
+
 async function unlinkDevice(kind, id) {
   if (!confirm('등록 해제? (기록은 보존, 목록에서만 사라짐)')) return;
   const r = await api('/' + kind + '/' + id + '/unlink', {
@@ -2095,7 +2129,7 @@ async function loadCameras() {
     CAM_LAST[r.id] = r;
     const tr = document.createElement('tr');
     tr.dataset.id = r.id;
-    tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td><select onchange="assignEnclosure('cameras','${r.id}',this.value)" style="max-width:130px">${enclosureOptions(r.enclosure_id)}</select></td><td class="cam-online">${onlineCellHtml(r)}</td><td class="cam-rotate">${rotateCellHtml(r)}</td><td class="cam-clips">${clipCellHtml(r)}</td><td style="white-space:nowrap"><button onclick="openLive('${r.id}', '${esc(r.camera_id)}')">라이브</button> <button onclick="rebootCamera('${r.id}','${esc(r.camera_id)}')" title="MQTT reboot 명령 1회 발행 — 신 펌웨어(≥0.2.0)만 반응, 구 펌웨어는 rejected 로그만">재부팅</button> <button onclick="unlinkDevice('cameras','${r.id}')" title="소프트 해제 — 클립·R2 보존">해제</button> <button class="danger" onclick="deleteCamera('${r.id}')" title="hard delete — 클립 메타까지 삭제(운영용)">삭제</button></td>`;
+    tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td><select onchange="assignEnclosure('cameras','${r.id}',this.value)" style="max-width:130px">${enclosureOptions(r.enclosure_id)}</select></td><td class="cam-online">${onlineCellHtml(r)}</td><td class="cam-rotate">${rotateCellHtml(r)}</td><td class="cam-clips">${clipCellHtml(r)}</td><td style="white-space:nowrap"><button onclick="openLive('${r.id}', '${esc(r.camera_id)}')">라이브</button> <button onclick="rebootCamera('${r.id}','${esc(r.camera_id)}')" title="MQTT reboot 명령 1회 발행 — 신 펌웨어(≥0.2.0)만 반응, 구 펌웨어는 rejected 로그만">재부팅</button> <button onclick="otaEntity('cameras','${r.id}','${esc(r.camera_id)}','camera_p4')" title="OTA (Stage J) — prepare(다운로드) → ready 면 다시 눌러 apply(전환). capabilities.ota 보고 펌웨어만">OTA</button> <button onclick="unlinkDevice('cameras','${r.id}')" title="소프트 해제 — 클립·R2 보존">해제</button> <button class="danger" onclick="deleteCamera('${r.id}')" title="hard delete — 클립 메타까지 삭제(운영용)">삭제</button></td>`;
     tbody.appendChild(tr);
   });
 }

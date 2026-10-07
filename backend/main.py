@@ -33,6 +33,7 @@ from backend.routers import (
     commands,
     devices,
     enclosures,
+    firmware,
     lcd,
     schedules,
     settings,
@@ -202,6 +203,7 @@ app.include_router(lcd.router)
 app.include_router(schedules.device_schedules_router)
 app.include_router(schedules.schedules_router)
 app.include_router(settings.router)
+app.include_router(firmware.router)
 
 # 정적 웹 콘솔 — 루트(/) 에 마운트.
 # 라우터들 다음에 등록해야 /devices, /cameras, /web-config 등이 우선 매칭됨.

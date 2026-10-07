@@ -108,22 +108,29 @@ ota_0,      app,  ota_0,    0x20000,   0x1E0000   # 1920K (앱 1.3MB, 여유 600
 ota_1,      app,  ota_1,    0x200000,  0x1E0000   # 끝 0x3E0000 < 4MB
 ```
 
-## 서버 변경
+## 서버 변경 — ✅ 구현 완료 (2026-10-07, 브랜치 `feat/stage-j-ota`, 운영 미배포·마이그레이션 미적용)
 
-**마이그레이션** `migrations/2026-10-XX_firmware_ota.sql`
-- `firmware_releases(id, target text CHECK IN ('camera_p4','device_nano'), version text, r2_key text, size_bytes int, sha256 text, notes text, created_at)` — `UNIQUE(target, version)`. RLS: 정책 없음(service_role 전용).
-- `ota_jobs(id, kind text CHECK IN ('camera','device'), target_uuid uuid, release_id FK, status text, pct smallint, msg_id uuid, command_id uuid NULL(기기), error text, created_at, updated_at)` — status: `pending → sent → downloading → applied → verified | failed | rolled_back | timeout`. 인덱스 `(target_uuid, created_at desc)`.
+계약 정본: [docs/API.md §4.10](../docs/API.md), [docs/MQTT.md §2·§3-b](../docs/MQTT.md), [docs/DATABASE.md](../docs/DATABASE.md).
 
-**코드**
-- `scripts/upload_firmware.py` — bin 읽기 → `esp_app_desc` 파싱(버전 일치 검사) → sha256 → R2 PUT (`r2_client`) → `firmware_releases` INSERT. 같은 (target, version) 재업로드 거절.
-- `backend/routers/firmware.py` — `GET /firmware/{job_id}/bin` (Camera Token 또는 Device Token, job 의 target 이 토큰 주인인지 확인, 상태 `sent/downloading` 만 허용) → R2 presigned GET 을 서버가 열어 `StreamingResponse` (`def` 핸들러, 블로킹 I/O 규칙). `GET /firmware/releases` (JWT, 운영자 콘솔용).
-- `backend/routers/cameras.py` — `POST /{uuid}/ota {release_id}` : 소유자 확인(`require_active_camera`) → 동시 job 검사 → `ota_jobs` INSERT → `camera_commands.ota_update_command()` 발행(`reboot_camera` 와 같은 best-effort 패턴, `published=false` 시 job=failed).
-- `backend/routers/devices.py` — `POST /{uuid}/ota {release_id}` : `commands` INSERT(action `ota_update`, ttl 60, payload `{job_id, version, size, sha256}`) + `ota_jobs(command_id)`. `command_service` 예약 키 보호 그대로.
-- `backend/mqtt/handlers.py` — `handle_ack`: payload `state.ota` 있으면 `ota_jobs` 갱신(msg_id 매칭). `handle_telemetry`: 카메라 `fw`·기기 `fw` 수신 시 진행 중 job 과 비교 → `verified`/`rolled_back`. 기기 heartbeat `fw` 파싱 추가(`devices.firmware_ver` 갱신, 카메라와 동일하게 값 다를 때만).
-- `backend/mqtt/dispatcher.py` — `ota_update` 는 `UNSUPPORTED_ACTIONS` 아님. 구 펌웨어 `unknown_action` ack → job=failed(error=`old_firmware`).
-- `offline_monitor` 또는 dispatcher 스윕 — `downloading` 15분 / `applied` 10분 초과 → `timeout`.
-- 콘솔 `web/index.html` — 카메라·기기 행에 "펌웨어 업데이트" 드롭다운(릴리스 선택) + 진행률. `firmware_ver` 옆 최신 릴리스와 다르면 배지.
-- 문서: `MQTT.md` §2 `ota_update` + ack `state.ota`, `API.md` 신규 3개, `DATABASE.md` 2 테이블, `MIGRATIONS_APPLIED.md`.
+**마이그레이션** `migrations/2026-10-07_firmware_ota.sql` (적용 후 `MIGRATIONS_APPLIED.md` 기록)
+- `firmware_releases(id, target, version, r2_key, elf_r2_key, size_bytes, sha256, project_name, idf_ver, notes, created_by, created_at)` — `UNIQUE(target, version)`, RLS 정책 없음(service_role).
+- `ota_jobs(id, kind, target_uuid, release_id, status, pct, prepare_msg_id, apply_msg_id, prev_version, error, issued_by, forced, created_at, updated_at, applied_at, finished_at)` — status `pending → accepted → downloading → ready → applying → verified | rolled_back`, 언제든 `failed`, 시한 `timeout`. 부분 인덱스(진행 중 상태).
+
+**코드** (pytest 479 passed, OTA 관련 76건)
+- `backend/ota_service.py` — 상태 전이 SOT. `gate_reasons`(사전 점검 ③), `create_job`, `apply_ack`(§3-b), `apply_heartbeat_fw`(verified/rolled_back), `scan_once` + `OtaMonitor`(단계별 시한·기기 commands 실패 반영, 브리지 스레드).
+- `backend/mqtt/camera_commands.py` — `ota_prepare_command` / `ota_apply_command` / `ota_prepare_payload` (카메라·기기 공통 필드).
+- `backend/auth_device.py` — 기기/카메라 토큰 bcrypt 검증 (`verify_entity_token`).
+- `backend/routers/firmware.py` — `GET /firmware/releases`, `GET /firmware/jobs[/{id}]`(JWT, 본인 기기만), `GET /firmware/jobs/{id}/bin`(Bearer 기기 토큰, 작업 대상 기기의 토큰만, 상태 pending/accepted/downloading 만, R2 → `StreamingResponse` 프록시, 첫 바이트 전 `downloading` 표시).
+- `backend/routers/cameras.py` — `POST /{uuid}/ota`(게이트 → job → `ota_prepare` 직접 발행, 발행 실패 시 `failed/publish_failed`), `POST /{uuid}/ota/{job}/apply`(`ready` 만).
+- `backend/routers/commands.py` — 기기 동일 2개, `commands` 큐잉(action `ota_prepare`/`ota_apply`, ttl 60, reason 기록).
+- `backend/mqtt/handlers.py` — `_route_ota_ack`(카메라: OTA 식별 가능한 ack 만, 기기: `ota` 블록 ack 는 commands 를 덮지 않음 D3 / 첫 ack 는 action 이 ota_* 일 때만), 기기 heartbeat `fw` → `devices.firmware_ver`(캐시, 다를 때만), `_ota_verify_from_heartbeat`(fw 변경 또는 **uptime 리셋** 시에만 조회 — 롤백은 fw 가 그대로라 재부팅 감지로 잡음).
+- `backend/mqtt_bridge_main.py` — `OtaMonitor` 등록. `backend/main.py` — firmware 라우터.
+- `scripts/upload_firmware.py` — `esp_app_desc` 파싱(버전·project_name·idf), chip_id↔target 교차 검증, `-dirty` 거절, 바이너리 자격증명 스캔(`p4cam-/terra-` id, bcrypt, `ChangeMe`), sha256, R2 PUT(bin+elf), INSERT, `--list`, `--dry-run`. **실측(2026-10-07)**: 현재 카메라 빌드의 `esp_app_desc.version` 은 `4cff056-dirty`(git describe) 라 `APP_FIRMWARE_VER` 와 다른 소스 → 펌웨어 항목 1(`APP_PROJECT_VER_FROM_CONFIG`) 필수.
+- 콘솔 `web/index.html` — 카메라·기기 행 "OTA" 버튼 1개로 2단계(진행 중 없음 → 릴리스 선택 prepare, `ready` → apply 확인).
+- ENV `API_PUBLIC_BASE_URL`(명령 `url`). 문서 4종 + `.env.example`.
+- 테스트: `tests/test_ota_service.py`, `test_ota_api.py`, `test_ota_handlers.py`, `test_auth_device.py`, `tests/fake_sb.py`(인메모리 Supabase 흉내).
+
+**아직**: Slack 경보(⑨)는 ota_jobs 종결 로그만. 배포 순서: 마이그레이션 적용 → terra-api·terra-bridge 재시작 → 릴리스 등록.
 
 ## 펌웨어 변경 (카메라 → 기기 순, 공통 로직은 두 트리 동일 유지)
 
@@ -197,7 +204,7 @@ ota_1,      app,  ota_1,    0x200000,  0x1E0000   # 끝 0x3E0000 < 4MB
 
 | # | 리스크 | 근거 | 대응 |
 |---|---|---|---|
-| D1 🟠 | **바이너리에 비밀값 포함.** Kconfig 기본값에 `"admin"`/`"ChangeMe!StrongPass2026"` 류가 있고, 개발용 creds 를 채운 채 빌드할 수 있음 | `main/Kconfig.projbuild` 기본값, BETA_ONBOARDING 경고 | 업로드 스크립트가 `strings` 로 알려진 패턴(토큰 prefix, WiFi 비번, 기본 비번) 검사 후 거절. 릴리스 빌드는 creds Kconfig 전부 빈 값 |
+| D1 🟠 | **바이너리에 비밀값 포함.** Kconfig 기본값에 `"admin"`/`"ChangeMe!StrongPass2026"` 류가 있고, 개발용 creds 를 채운 채 빌드할 수 있음. **실측(2026-10-07)**: 현재 카메라 빌드(`4cff056-dirty`)에 `ChangeMe!StrongP…` 가 그대로 들어 있어 `upload_firmware.py` 가 거절함 — 펌웨어에서 해당 Kconfig 기본값을 비우거나 릴리스 빌드에서 제거해야 등록 가능 | `main/Kconfig.projbuild` 기본값, BETA_ONBOARDING 경고 | 업로드 스크립트가 `strings` 로 알려진 패턴(토큰 prefix, WiFi 비번, 기본 비번) 검사 후 거절. 릴리스 빌드는 creds Kconfig 전부 빈 값 |
 | D2 🟠 | 서명 없음: 서버 침해 시 임의 펌웨어 주입 | 결정 7 | 명령의 `sha256` 을 펌웨어가 기록 후 검증(파티션 범위 해시). Secure Boot v2 / 앱 서명은 다음 스테이지. R2 버킷 쓰기 권한은 서버 키만 |
 | D3 🟡 | ack 중복 처리: 기기는 msg_id = `commands.id` 라 진행률 ack 가 같은 msg_id 로 여러 번 옴 → `commands` 행을 재갱신 | `handle_ack` 현재 구조 | `state.ota` 가 있는 ack 는 `ota_jobs` 로만 라우팅, `commands` 는 첫 ack 만 |
 | D4 🟡 | nano/supermini 트리 분기 → 이후 공통 수정 diff 에 OTA 노이즈 | supermini 제외 결정 | memory `project-firmware-trees-synced` 에 예외 기록 완료. `diff` 시 `app_ota.c`·`partitions.csv` 제외 |

@@ -175,6 +175,18 @@
     다르면 브리지가 재발행(카메라당 최소 60초 간격). 펌웨어는 vflip+hmirror 동시 적용 후
     NVS 저장, ack `"ok"`. 구 펌웨어는 `rejected_unknown_action`.
   - `token_rotate`
+- `action` (OTA, 카메라·기기 공통 — Stage J 2026-10-07, [specs/stage-j-ota.md](../specs/stage-j-ota.md)):
+  - `ota_prepare` (추가: `job_id`, `version`, `size`(bytes), `sha256`, `url`) — `ttl_sec` 60.
+    펌웨어는 즉시 ack(`ok` + `state:"OTA_PREPARE"` / `busy`(녹화·업로드·라이브 중) / `rejected_unknown_action`(구 펌웨어)),
+    `ok` 면 NVS 에 작업을 적어 두고 재부팅 → 카메라 파이프라인 전에 `GET url`(Bearer 자기 토큰)로 받아
+    **비활성 OTA 슬롯에 기록·sha256 검증**까지만 한다(부팅 파티션 불변). 진행·결과는 §3-b ack.
+    실패 시 NVS 시도 카운터로 **최대 2회** 뒤 포기(부팅 루프 방지).
+  - `ota_apply` (추가: `job_id`) — `ttl_sec` 60. ack `ok` + `state:"OTA_APPLY"` 후 부팅 파티션 전환 + 재부팅.
+    새 펌웨어는 PENDING_VERIFY 로 켜져 **MQTT 연결 + heartbeat 1회** 성공 시 `esp_ota_mark_app_valid`,
+    5분 안에 못 하면(타이머는 WiFi 와 무관하게 부팅 직후 시작) `esp_ota_mark_app_invalid_rollback_and_reboot`.
+    판정 전에는 `net_wd`·`upload_stuck`·`enc_stall` 등 자가 재부팅을 지연한다.
+  - 기기(nano)는 같은 페이로드가 `commands` 테이블(action `ota_prepare`/`ota_apply`)을 거쳐 dispatcher 로 나간다.
+    OTA 지원 펌웨어는 telemetry/heartbeat `capabilities.ota: true` 와 `fw`(빌드 식별 문자열)를 보고해야 서버 게이트를 통과한다.
 
 ### 3. Ack
 
@@ -192,6 +204,23 @@
 - `"rejected_ttl_expired"` — TTL 초과
 - `"rejected_unknown_action"`
 - `"rejected_duplicate_msg_id"`
+
+#### 3-b. OTA 진행·결과 ack (Stage J)
+
+`ota_prepare` 의 첫 ack 뒤, 펌웨어는 **같은 `msg_id`** 로 `ota` 블록을 실은 ack 를 추가 발행한다
+(다운로드 10% 마다 · 완료 · 실패). 서버는 `ota` 블록이 있는 ack 를 `commands` 가 아니라 `ota_jobs` 에만 반영한다.
+
+```json
+{ "msg_id": "<ota_prepare msg_id>", "result": "ok",    "ota": { "job_id": "…", "phase": "downloading", "pct": 40 } }
+{ "msg_id": "<ota_prepare msg_id>", "result": "ok",    "ota": { "job_id": "…", "phase": "ready", "version": "fb2-p4 0.3.0-20261010" } }
+{ "msg_id": "<ota_prepare msg_id>", "result": "error", "ota": { "job_id": "…", "phase": "failed", "error": "tls" } }
+```
+
+- `phase`: `downloading` | `ready` | `failed`. `error`(failed 만): `dns` `tcp` `tls` `http` `auth` `sha256_mismatch`
+  `image_invalid` `flash_write` `no_space` `timeout` `busy` 중 하나(자유 문자열 허용, 200자 컷).
+- `ota_apply` 는 ack `ok` 뒤 바로 재부팅하므로 추가 ack 가 없다. 결과는 heartbeat `fw` 로 서버가 판정한다
+  (`verified` / `rolled_back`). 새 펌웨어 heartbeat 에 `ota: {"job_id": "…", "state": "pending_verify"|"valid"}` 를
+  실어 주면 진단에 도움이 되지만 필수는 아니다.
 
 ### 4. Alert
 
@@ -291,3 +320,4 @@ topic read  esp32/picam-b2c3d4e5/command
 | 2026-09-20 | 0.5.4 | IoT `set_temp_offset` action 추가 (온도 보정, NVS 영속, LCD/telemetry 공통 적용) |
 | 2026-09-28 | 0.6.1 | IoT telemetry `uptime_sec`/`free_heap`/`reset`/`wifi_rssi` → `devices.sys_state`, IoT `reboot` action + `POST /devices/{id}/reboot` (카메라와 동일 진단·원격 재부팅) |
 | 2026-10-01 | 0.6.2 | IoT telemetry `temp_offset_c`(지금 적용 중인 온도 보정) → `devices.temp_offset_c`. 콘솔 온도 셀·보정 입력칸에 현재값 표시, 구 펌웨어는 commands 마지막 `set_temp_offset` 값으로 폴백 |
+| 2026-10-07 | 0.7.0 | **Stage J OTA**: `ota_prepare` / `ota_apply` action(카메라·기기 공통), §3-b `ota` 블록 ack, IoT telemetry `fw` → `devices.firmware_ver`, `capabilities.ota` 게이트 |

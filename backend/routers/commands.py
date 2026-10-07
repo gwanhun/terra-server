@@ -21,6 +21,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from backend import ota_service
 from backend.auth import get_current_user_id
 from backend.device_access import require_active_device
 from backend.command_service import (
@@ -29,6 +30,7 @@ from backend.command_service import (
     insert_pending_command,
     validate_mist_duration,
 )
+from backend.mqtt.camera_commands import ACTION_OTA_APPLY, ACTION_OTA_PREPARE, OTA_TTL_SEC
 from backend.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
@@ -134,3 +136,105 @@ def reboot(
 
     logger.info("reboot 큐잉 device=%s command_id=%s", device_uuid, inserted["id"])
     return CommandOut(id=inserted["id"], action=REBOOT_ACTION, status="pending")
+
+
+# ---------- OTA (Stage J, specs/stage-j-ota.md) — nano 만, supermini 제외 ----------
+#
+# 카메라와 달리 commands 테이블을 거친다: dispatcher 가 발행하고 ack/no_ack/expired 가 기록된다.
+# ota_jobs 는 commands.id 를 prepare_msg_id / apply_msg_id 로 들고 ack 의 `ota` 블록을 받는다.
+
+class OtaRequest(BaseModel):
+    release_id: str = Field(..., description="firmware_releases.id (target=device_nano)")
+    force: bool = Field(False, description="사전 점검 게이트 무시(개발용). 작업에 forced=true 로 남음")
+
+
+class OtaJobOut(BaseModel):
+    job_id: str
+    status: str
+    version: str
+    command_id: str = Field(..., description="commands.id — 앱/콘솔이 Realtime 으로 ack 추적")
+    gate_reasons: list[str] = Field(default_factory=list)
+
+
+_OTA_DEVICE_COLUMNS = (
+    "id, owner_id, device_id, unlinked_at, firmware_ver, capabilities, sys_state, "
+    "last_seen_at, is_online"
+)
+
+
+def _load_device_for_ota(sb: Any, device_uuid: str, user_id: str) -> dict[str, Any]:
+    res = sb.table("devices").select(_OTA_DEVICE_COLUMNS).eq("id", device_uuid).limit(1).execute()
+    row = (res.data or [None])[0]
+    if not row or row.get("owner_id") != user_id or row.get("unlinked_at"):
+        raise HTTPException(status_code=404, detail="device not found")
+    return row
+
+
+@router.post(
+    "/{device_uuid}/ota",
+    response_model=OtaJobOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="기기 OTA 1단계: ota_prepare 큐잉 (다운로드·검증, 부팅 파티션 불변)",
+    responses={**_AUTH_REQUIRED, **_NOT_FOUND,
+               409: {"description": "진행 중 작업 있음 / 같은 버전 / 사전 점검 실패"}},
+)
+def start_device_ota(
+    device_uuid: str,
+    body: OtaRequest,
+    user_id: str = Depends(get_current_user_id),
+) -> OtaJobOut:
+    sb = get_supabase_client()
+    dev = _load_device_for_ota(sb, device_uuid, user_id)
+    gate = ota_service.gate_reasons(ota_service.KIND_DEVICE, dev) if body.force else []
+    try:
+        job, release, payload = ota_service.create_job(
+            sb, kind=ota_service.KIND_DEVICE, entity=dev, release_id=body.release_id,
+            issued_by=user_id, force=body.force,
+        )
+    except ota_service.OtaError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    inserted = insert_pending_command(
+        sb, device_uuid=device_uuid, action=ACTION_OTA_PREPARE, payload=payload,
+        issued_by=user_id, ttl_sec=OTA_TTL_SEC, source="manual", reason="ota_prepare",
+    )
+    if inserted is None:
+        ota_service.mark_failed(sb, job["id"], "command_insert_failed")
+        raise HTTPException(status_code=500, detail="command INSERT 실패")
+    ota_service.set_prepare_msg(sb, job["id"], inserted["id"])
+    logger.info("ota_prepare 큐잉 device=%s job=%s command=%s version=%s",
+                device_uuid, job["id"], inserted["id"], release["version"])
+    return OtaJobOut(job_id=job["id"], status="pending", version=release["version"],
+                     command_id=inserted["id"], gate_reasons=gate)
+
+
+@router.post(
+    "/{device_uuid}/ota/{job_id}/apply",
+    response_model=OtaJobOut,
+    summary="기기 OTA 2단계: ota_apply 큐잉 (부팅 파티션 전환 + 재부팅)",
+    responses={**_AUTH_REQUIRED, **_NOT_FOUND, 409: {"description": "작업이 ready 가 아님"}},
+)
+def apply_device_ota(
+    device_uuid: str,
+    job_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> OtaJobOut:
+    sb = get_supabase_client()
+    dev = _load_device_for_ota(sb, device_uuid, user_id)
+    job = ota_service.get_job(sb, job_id)
+    if not job or job["target_uuid"] != dev["id"]:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job["status"] != "ready":
+        raise HTTPException(status_code=409, detail=f"job is {job['status']}, not ready")
+    release = ota_service.get_release(sb, job["release_id"])
+    version = release["version"] if release else ""
+
+    inserted = insert_pending_command(
+        sb, device_uuid=device_uuid, action=ACTION_OTA_APPLY, payload={"job_id": job_id},
+        issued_by=user_id, ttl_sec=OTA_TTL_SEC, source="manual", reason="ota_apply",
+    )
+    if inserted is None:
+        raise HTTPException(status_code=500, detail="command INSERT 실패")
+    ota_service.mark_applying(sb, job_id, inserted["id"])
+    logger.info("ota_apply 큐잉 device=%s job=%s command=%s", device_uuid, job_id, inserted["id"])
+    return OtaJobOut(job_id=job_id, status="applying", version=version, command_id=inserted["id"])
