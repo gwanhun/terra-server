@@ -29,7 +29,7 @@ def _camera(**over) -> dict:
         "id": CAM_UUID, "owner_id": "owner-1", "camera_id": "p4cam-aabbccdd", "unlinked_at": None,
         "firmware_ver": "fb2-p4 0.2.1-20261006", "capabilities": {"ota": True, "rotate_180": True},
         "clip_stats": {"up_busy_s": -1, "sys": {"uptime_s": 3600, "rssi": -55, "int_largest": 60_000}},
-        "last_seen_at": _iso(10), "is_online": True, "live_until": None,
+        "last_seen_at": _iso(10), "is_online": True, "live_session_id": None,
     }
     base.update(over)
     return base
@@ -64,7 +64,7 @@ def test_gate_passes_healthy_camera() -> None:
         ({"clip_stats": {"up_busy_s": -1, "sys": {"uptime_s": 3600, "rssi": -80, "int_largest": 60_000}}}, "weak_wifi"),
         ({"clip_stats": {"up_busy_s": -1, "sys": {"uptime_s": 3600, "rssi": -55, "int_largest": 15_000}}}, "low_internal_ram"),
         ({"clip_stats": {"up_busy_s": -1, "sys": {"uptime_s": 20, "rssi": -55, "int_largest": 60_000}}}, "just_booted"),
-        ({"live_until": _iso(-300)}, "live_active"),
+        ({"live_session_id": "sess-1"}, "live_active"),
     ],
 )
 def test_gate_reasons_camera(over: dict, expected: str) -> None:

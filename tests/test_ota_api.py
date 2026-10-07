@@ -33,7 +33,7 @@ def _camera(**over: Any) -> dict:
         "id": CAM_UUID, "owner_id": TEST_USER_ID, "camera_id": "p4cam-aabbccdd", "unlinked_at": None,
         "token_hash": CAM_TOKEN_HASH, "firmware_ver": "fb2-p4 0.2.1-20261006",
         "capabilities": {"ota": True}, "clip_stats": {"up_busy_s": -1, "sys": {"uptime_s": 3600, "rssi": -50, "int_largest": 70_000}},
-        "last_seen_at": _iso(5), "is_online": True, "live_until": None,
+        "last_seen_at": _iso(5), "is_online": True, "live_session_id": None,
     }
     base.update(over)
     return base

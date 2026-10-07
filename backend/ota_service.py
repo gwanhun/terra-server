@@ -168,12 +168,9 @@ def gate_reasons(kind: str, entity: dict[str, Any], *, now: datetime | None = No
             last_err = clips.get("last_err")
             # SD fault 는 heartbeat 에 직접 안 실린다 — sd_fail 급증은 _warn_clip_regression 몫.
             _ = last_err
-        if entity.get("live_session_id") or entity.get("live_until"):
-            try:
-                if entity.get("live_until") and _parse_iso(entity["live_until"]) > now:
-                    reasons.append("live_active")
-            except ValueError:
-                pass
+        # 라이브 중 = cameras.live_session_id 가 있음 (backend/live_session.py 가 종료 시 NULL 로 지움).
+        if entity.get("live_session_id"):
+            reasons.append("live_active")
     return reasons
 
 

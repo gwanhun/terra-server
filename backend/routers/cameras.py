@@ -661,7 +661,7 @@ class OtaJobOut(BaseModel):
 
 _OTA_CAMERA_COLUMNS = (
     "id, owner_id, camera_id, unlinked_at, firmware_ver, capabilities, clip_stats, "
-    "last_seen_at, is_online, live_until"
+    "last_seen_at, is_online, live_session_id"
 )
 
 
