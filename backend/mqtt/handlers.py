@@ -46,7 +46,8 @@ from typing import Any
 from postgrest.exceptions import APIError
 from supabase import Client
 
-from backend.mqtt.camera_commands import rotation_command
+from backend import ota_service
+from backend.mqtt.camera_commands import ACTION_OTA_APPLY, ACTION_OTA_PREPARE, rotation_command
 from backend.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
@@ -348,6 +349,10 @@ def device_mist_max_ms(device_uuid: str) -> int:
     return mist_max_ms_of(caps)
 
 
+# 기기 heartbeat `fw` 의 마지막 기록값(프로세스 캐시). 재시작 뒤 첫 heartbeat 는 한 번 더 쓴다.
+_device_fw_cache: dict[str, str] = {}
+
+
 def _sync_device_capabilities(sb: Client, device_uuid: str, label: str, caps: dict[str, Any]) -> None:
     """telemetry 의 capabilities 를 devices.capabilities 에 반영(다를 때만). 실패는 로그만.
 
@@ -499,6 +504,12 @@ def _backfill_hw_id(
     return True
 
 
+# 직전 heartbeat 대비 uptime 이 줄어든(= 재부팅한) entity. OTA apply 뒤 첫 heartbeat 를 잡아
+# verified/rolled_back 을 판정할 때 쓴다 — 롤백이면 fw 가 DB 값과 같아 "변경" 으로는 안 잡히므로.
+# 소비자(handle_telemetry)가 읽은 뒤 바로 비운다.
+_rebooted_recent: set[str] = set()
+
+
 def _sys_state(kind: str, id_text: str, entity_uuid: str, payload: dict[str, Any]) -> dict[str, Any] | None:
     """heartbeat/telemetry 의 uptime_sec / reset / free_heap / wifi_rssi → 저장할 dict.
 
@@ -530,7 +541,26 @@ def _sys_state(kind: str, id_text: str, entity_uuid: str, payload: dict[str, Any
     if prev is not None and uptime < prev:
         logger.warning("%s %s: 재부팅 감지 reset=%s (이전 uptime %ss → %ss)",
                        kind, id_text, reset, prev, uptime)
+        _rebooted_recent.add(entity_uuid)
     return sys_state
+
+
+def _ota_verify_from_heartbeat(
+    sb: Client, entity_uuid: str, fw: Any, fw_written: bool
+) -> None:
+    """OTA(Stage J): apply 뒤 첫 heartbeat 의 `fw` 로 verified / rolled_back 판정.
+
+    fw 가 바뀌었거나(새 펌웨어 첫 보고) 재부팅 직후(롤백이면 fw 는 이전 값 그대로)일 때만
+    ota_jobs 를 조회한다 — 15초 heartbeat 마다 테이블을 보지 않기 위해. 나머지는 OtaMonitor 시한.
+    """
+    rebooted = entity_uuid in _rebooted_recent
+    _rebooted_recent.discard(entity_uuid)
+    if not (isinstance(fw, str) and fw) or not (fw_written or rebooted):
+        return
+    try:
+        ota_service.apply_heartbeat_fw(sb, entity_uuid, fw)
+    except Exception:  # noqa: BLE001
+        logger.exception("ota heartbeat 판정 실패 (entity=%s)", entity_uuid)
 
 
 CAMERA_LOG_MAX_LINES = 8
@@ -768,6 +798,9 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
             _camera_state_patch(entity_uuid, capabilities=written["capabilities"])
         if written is not None and "firmware_ver" in written:
             _camera_state_patch(entity_uuid, firmware_ver=written["firmware_ver"])
+        _ota_verify_from_heartbeat(
+            sb, entity_uuid, fw, bool(written is not None and "firmware_ver" in written)
+        )
 
         # 하드웨어 ID(2026-09-21): 구 펌웨어로 등록돼 NULL 인 행을 새 펌웨어 하트비트가 한 번
         # 채운다. 보드가 바뀌지 않는 한 불변이라 성공 후엔 캐시에 반영해 다시 쓰지 않는다.
@@ -841,8 +874,18 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
     t_off = payload.get("temp_offset_c")
     if isinstance(t_off, (int, float)) and not isinstance(t_off, bool) and -10.0 <= t_off <= 10.0:
         dev_update["temp_offset_c"] = round(float(t_off), 2)
-    # 선택 필드(sys_state/temp_offset_c) 실패가 온라인 표시를 막지 않게 — 카메라와 같은 정책(_write_heartbeat).
-    _write_heartbeat(sb, "devices", device_id_text, device_uuid, dev_update)
+    # 빌드 식별(Stage J, OTA 지원 펌웨어부터): 카메라 heartbeat `fw` 와 같은 규칙 — 기기는 지금까지
+    # 페어링 때만 firmware_ver 를 보내 리플래시 여부를 서버가 몰랐다. 캐시와 다를 때만 UPDATE.
+    fw = payload.get("fw")
+    fw_ok = isinstance(fw, str) and 0 < len(fw) <= 64
+    if fw_ok and _device_fw_cache.get(device_uuid) != fw:
+        dev_update["firmware_ver"] = fw
+    # 선택 필드(sys_state/temp_offset_c/firmware_ver) 실패가 온라인 표시를 막지 않게 — 카메라와 같은 정책(_write_heartbeat).
+    written = _write_heartbeat(sb, "devices", device_id_text, device_uuid, dev_update)
+    fw_written = written is not None and "firmware_ver" in written
+    if fw_written:
+        _device_fw_cache[device_uuid] = written["firmware_ver"]
+    _ota_verify_from_heartbeat(sb, device_uuid, fw if fw_ok else None, fw_written)
 
     # 재부팅 후 예약 상태 복원(2026-09-28, 앱 회신 §2): 부팅 직후 첫 telemetry 에서 조명·팬 예약의
     # "지금 켜져 있어야 할" 상태를 ON 명령으로 1회 큐잉. 실패해도 telemetry 처리는 계속.
@@ -922,38 +965,47 @@ def _ack_device_command(
     result = payload.get("result", "ok")
     sb = get_supabase_client()
 
-    try:
-        res = (
-            sb.table("commands")
-            .update({
-                "status": "acked",
-                "result": result,
-                "acked_at": _now_iso(),
-            })
-            .eq("id", msg_id)
-            .eq("device_id", device_uuid)
-            .execute()
-        )
-    except Exception:  # noqa: BLE001
-        logger.exception("commands UPDATE 실패 (msg_id=%s)", msg_id)
-        return not is_hub   # 순수 기기: 기존처럼 여기서 종료
-
-    if not res.data:
-        if is_hub:
-            return False
-        logger.warning(
-            "ack: 매칭되는 command 없음 (msg_id=%s, device=%s) — replay/foreign",
-            msg_id, device_id_text,
-        )
+    ota = payload.get("ota")
+    if isinstance(ota, dict):
+        # OTA 진행/결과 ack(Stage J): 첫 ack 에서 commands 는 이미 acked 다. 같은 msg_id 로 다시
+        # 오는 이 ack 는 ota_jobs 만 갱신한다(commands 를 또 덮지 않음 — 리스크 D3). 허브든 아니든
+        # ota_jobs 는 msg_id(= commands.id 또는 카메라 msg_id)로 찾으므로 여기서 끝낸다.
+        _route_ota_ack(sb, payload)
     else:
-        # 푸시 이벤트 적재. res.data[0] 은 갱신된 commands 행 전체라
-        # (issued_by/source/source_id/action/result) JOIN 없이 다 들어있다.
-        # 실패해도 ack 처리 자체는 성공이므로 절대 예외를 올리지 않는다.
         try:
-            _enqueue_command_event(res.data[0], device_id_text, device_uuid)
+            res = (
+                sb.table("commands")
+                .update({
+                    "status": "acked",
+                    "result": result,
+                    "acked_at": _now_iso(),
+                })
+                .eq("id", msg_id)
+                .eq("device_id", device_uuid)
+                .execute()
+            )
         except Exception:  # noqa: BLE001
-            logger.exception("push 이벤트 적재 실패 (msg_id=%s)", msg_id)
-        _commit_lcd_text(sb, res.data[0], device_uuid)
+            logger.exception("commands UPDATE 실패 (msg_id=%s)", msg_id)
+            return not is_hub   # 순수 기기: 기존처럼 여기서 종료
+
+        if not res.data:
+            if is_hub:
+                return False
+            logger.warning(
+                "ack: 매칭되는 command 없음 (msg_id=%s, device=%s) — replay/foreign",
+                msg_id, device_id_text,
+            )
+        else:
+            # 푸시 이벤트 적재. res.data[0] 은 갱신된 commands 행 전체라
+            # (issued_by/source/source_id/action/result) JOIN 없이 다 들어있다.
+            # 실패해도 ack 처리 자체는 성공이므로 절대 예외를 올리지 않는다.
+            try:
+                _enqueue_command_event(res.data[0], device_id_text, device_uuid)
+            except Exception:  # noqa: BLE001
+                logger.exception("push 이벤트 적재 실패 (msg_id=%s)", msg_id)
+            _commit_lcd_text(sb, res.data[0], device_uuid)
+            if res.data[0].get("action") in (ACTION_OTA_PREPARE, ACTION_OTA_APPLY):
+                _route_ota_ack(sb, payload)   # 첫 ack: ok → accepted / busy·unknown_action → failed
 
     # devices.last_seen_at 도 갱신 — ack 도 디바이스 살아있다는 신호
     try:
@@ -973,14 +1025,43 @@ def _ack_camera(device_id_text: str, camera_uuid: str, payload: dict[str, Any]) 
         "camera ack camera=%s msg_id=%s result=%s action=%s",
         device_id_text, payload.get("msg_id"), payload.get("result"), payload.get("action"),
     )
+    sb = get_supabase_client()
+    # OTA(Stage J): ota_prepare/ota_apply 의 ack 와 진행·결과 ack(`ota` 블록) → ota_jobs 전이.
+    # webrtc 류 ack 는 매번 테이블을 보지 않게 식별 가능한 것만 넘긴다.
+    _route_ota_ack(sb, payload)
     try:
-        sb = get_supabase_client()
         sb.table("cameras").update({
             "last_seen_at": _now_iso(),
             "is_online": True,
         }).eq("id", camera_uuid).execute()
     except Exception:  # noqa: BLE001
         logger.exception("cameras UPDATE 실패 (ack camera=%s)", device_id_text)
+
+
+def _route_ota_ack(sb: Any, payload: dict[str, Any]) -> None:
+    """ack 가 OTA 작업과 관련 있어 보이면 ota_service.apply_ack 로. 아니면 아무것도 안 한다.
+
+    관련 판정: `ota` 블록이 있거나, `state` 가 "OTA_*" 이거나, result 가 거절/오류
+    (구 펌웨어의 rejected_unknown_action 을 failed(old_firmware) 로 닫기 위해).
+    작업과 무관한 msg_id 면 apply_ack 가 None 을 돌려주고 끝.
+    """
+    msg_id = payload.get("msg_id")
+    if not msg_id:
+        return
+    ota = payload.get("ota")
+    result = payload.get("result")
+    state = payload.get("state")
+    related = (
+        isinstance(ota, dict)
+        or (isinstance(state, str) and state.upper().startswith("OTA"))
+        or (result not in (None, "ok"))
+    )
+    if not related:
+        return
+    try:
+        ota_service.apply_ack(sb, str(msg_id), result, ota if isinstance(ota, dict) else None)
+    except Exception:  # noqa: BLE001
+        logger.exception("ota ack 처리 실패 (msg_id=%s)", msg_id)
 
 
 def _commit_lcd_text(sb: Any, command_row: dict[str, Any], device_uuid: str) -> None:

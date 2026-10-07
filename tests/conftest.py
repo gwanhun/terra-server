@@ -65,11 +65,13 @@ def app_client(monkeypatch: pytest.MonkeyPatch, fake_sb: MagicMock) -> TestClien
 
     # auth_camera 와 routers 내부에서도 동일 mock 가도록 module-level patch
     from backend import auth_camera
+    from backend import auth_device
     from backend.routers import cameras as cameras_router
     from backend.routers import clips as clips_router
     from backend.routers import commands as commands_router
     from backend.routers import devices as devices_router
     from backend.routers import enclosures as enclosures_router
+    from backend.routers import firmware as firmware_router
     from backend.routers import lcd as lcd_router
     from backend.routers import schedules as schedules_router
     from backend.routers import settings as settings_router
@@ -77,11 +79,13 @@ def app_client(monkeypatch: pytest.MonkeyPatch, fake_sb: MagicMock) -> TestClien
 
     for mod in (
         auth_camera,
+        auth_device,
         cameras_router,
         clips_router,
         commands_router,
         devices_router,
         enclosures_router,
+        firmware_router,
         lcd_router,
         schedules_router,
         settings_router,

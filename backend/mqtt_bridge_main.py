@@ -14,6 +14,7 @@ systemd 에서는:
 | `CommandDispatcher` | Supabase commands(pending) → MQTT publish (1초 polling) |
 | `ScheduleRunner`    | Supabase schedules(due) → commands INSERT (30초 polling) |
 | `OfflineMonitor`    | devices.last_seen_at 감시 → offline alert (1분 주기) |
+| `OtaMonitor`        | ota_jobs 단계별 시한 초과 → timeout, 기기 commands 실패 → failed (1분 주기) |
 | `PushOutboxWorker`  | push_outbox(pending) → 앱 Edge Function POST (5초 polling) |
 
 모두 같은 프로세스 안. 전부 SIGTERM 에서 graceful shutdown.
@@ -29,6 +30,7 @@ import sys
 from backend.mqtt.bridge import MqttBridge
 from backend.mqtt.dispatcher import CommandDispatcher
 from backend.offline_monitor import OfflineMonitor
+from backend.ota_service import OtaMonitor
 from backend.push_events import PushOutboxWorker
 from backend.schedule_runner import ScheduleRunner
 
@@ -60,10 +62,12 @@ def run() -> None:
     dispatcher = CommandDispatcher(bridge)
     schedule_runner = ScheduleRunner()
     offline_monitor = OfflineMonitor()
+    ota_monitor = OtaMonitor()
     push_worker = PushOutboxWorker()
 
     def _shutdown(_signum: int, _frame) -> None:
         push_worker.stop()
+        ota_monitor.stop()
         offline_monitor.stop()
         schedule_runner.stop()
         dispatcher.stop()
@@ -77,6 +81,7 @@ def run() -> None:
     dispatcher.start()
     schedule_runner.start()
     offline_monitor.start()
+    ota_monitor.start()
     push_worker.start()
     bridge.wait_stopped()
 

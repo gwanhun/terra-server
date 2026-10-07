@@ -30,10 +30,16 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from backend import ota_service
 from backend.auth import get_current_user_id
 from backend.crypto import generate_token, hash_token
 from backend.mqtt import registry
-from backend.mqtt.camera_commands import reboot_command, rotation_command
+from backend.mqtt.camera_commands import (
+    ota_apply_command,
+    ota_prepare_command,
+    reboot_command,
+    rotation_command,
+)
 from backend.supabase_client import get_supabase_client
 from backend.unlink_service import unlink_entity
 from backend.webrtc_signaling import MqttWebRTCSignaling
@@ -631,6 +637,124 @@ def reboot_camera(
     except Exception:  # noqa: BLE001
         logger.warning("reboot 발행 실패 camera=%s", row.get("camera_id"), exc_info=True)
         return RebootOut(published=False, msg_id=None)
+
+
+# ---------- OTA (Stage J, specs/stage-j-ota.md) ----------
+
+class OtaRequest(BaseModel):
+    release_id: str = Field(..., description="firmware_releases.id (target=camera_p4)")
+    force: bool = Field(
+        False,
+        description="사전 점검 게이트(오프라인·약한 WiFi·내부 RAM·부팅 직후·업로드/라이브 중·"
+                    "capabilities.ota 미보고)를 무시. 개발용 — 작업에 forced=true 로 남는다",
+    )
+
+
+class OtaJobOut(BaseModel):
+    job_id: str
+    status: str
+    version: str
+    published: bool = Field(..., description="MQTT 명령 발행 성공 여부(best-effort)")
+    msg_id: str | None = None
+    gate_reasons: list[str] = Field(default_factory=list, description="force 로 무시한 게이트 사유")
+
+
+_OTA_CAMERA_COLUMNS = (
+    "id, owner_id, camera_id, unlinked_at, firmware_ver, capabilities, clip_stats, "
+    "last_seen_at, is_online, live_until"
+)
+
+
+def _load_camera_for_ota(sb, camera_uuid: str, user_id: str) -> dict[str, Any]:
+    res = sb.table("cameras").select(_OTA_CAMERA_COLUMNS).eq("id", camera_uuid).limit(1).execute()
+    row = (res.data or [None])[0]
+    if not row or row.get("owner_id") != user_id or row.get("unlinked_at"):
+        raise HTTPException(status_code=404, detail="camera not found")
+    return row
+
+
+@router.post(
+    "/{camera_uuid}/ota",
+    response_model=OtaJobOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="카메라 OTA 1단계: ota_prepare (다운로드·검증, 부팅 파티션 불변)",
+    responses={**_AUTH_REQUIRED, **_NOT_FOUND,
+               409: {"description": "진행 중 작업 있음 / 같은 버전 / 사전 점검 실패"}},
+)
+def start_camera_ota(
+    camera_uuid: str,
+    body: OtaRequest,
+    user_id: str = Depends(get_current_user_id),
+) -> OtaJobOut:
+    """ota_jobs 생성 → `ota_prepare` 1회 발행. 펌웨어는 ack 후 재부팅해 깨끗한 상태에서 받는다.
+
+    다운로드가 끝나면 작업이 `ready` 가 되고, 전환은 별도 `.../ota/{job_id}/apply` 로 보낸다.
+    발행 실패는 작업을 failed(publish_failed) 로 닫고 published=false 로 알린다.
+    """
+    sb = get_supabase_client()
+    cam = _load_camera_for_ota(sb, camera_uuid, user_id)
+    gate = ota_service.gate_reasons(ota_service.KIND_CAMERA, cam) if body.force else []
+    try:
+        job, release, payload = ota_service.create_job(
+            sb, kind=ota_service.KIND_CAMERA, entity=cam, release_id=body.release_id,
+            issued_by=user_id, force=body.force,
+        )
+    except ota_service.OtaError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    cmd = ota_prepare_command(
+        job_id=payload["job_id"], version=payload["version"], size_bytes=payload["size"],
+        sha256=payload["sha256"], url=payload["url"],
+    )
+    ota_service.set_prepare_msg(sb, job["id"], cmd["msg_id"])
+    try:
+        MqttWebRTCSignaling().publish(cam.get("camera_id", ""), cmd)
+        logger.info("ota_prepare 발행 camera=%s job=%s msg_id=%s version=%s",
+                    cam.get("camera_id"), job["id"], cmd["msg_id"], release["version"])
+        return OtaJobOut(job_id=job["id"], status="pending", version=release["version"],
+                         published=True, msg_id=cmd["msg_id"], gate_reasons=gate)
+    except Exception:  # noqa: BLE001
+        logger.warning("ota_prepare 발행 실패 camera=%s job=%s", cam.get("camera_id"), job["id"],
+                       exc_info=True)
+        ota_service.mark_failed(sb, job["id"], "publish_failed")
+        return OtaJobOut(job_id=job["id"], status="failed", version=release["version"],
+                         published=False, msg_id=None, gate_reasons=gate)
+
+
+@router.post(
+    "/{camera_uuid}/ota/{job_id}/apply",
+    response_model=OtaJobOut,
+    summary="카메라 OTA 2단계: ota_apply (부팅 파티션 전환 + 재부팅)",
+    responses={**_AUTH_REQUIRED, **_NOT_FOUND, 409: {"description": "작업이 ready 가 아님"}},
+)
+def apply_camera_ota(
+    camera_uuid: str,
+    job_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> OtaJobOut:
+    """`ready` 작업에만 허용. 새 펌웨어의 heartbeat `fw` 가 릴리스 버전이면 verified,
+    이전 버전으로 돌아오면 rolled_back, 10분 무소식이면 timeout (ota_service.OtaMonitor)."""
+    sb = get_supabase_client()
+    cam = _load_camera_for_ota(sb, camera_uuid, user_id)
+    job = ota_service.get_job(sb, job_id)
+    if not job or job["target_uuid"] != cam["id"]:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job["status"] != "ready":
+        raise HTTPException(status_code=409, detail=f"job is {job['status']}, not ready")
+    release = ota_service.get_release(sb, job["release_id"])
+    version = release["version"] if release else ""
+
+    cmd = ota_apply_command(job_id=job_id)
+    try:
+        MqttWebRTCSignaling().publish(cam.get("camera_id", ""), cmd)
+    except Exception:  # noqa: BLE001
+        logger.warning("ota_apply 발행 실패 camera=%s job=%s", cam.get("camera_id"), job_id,
+                       exc_info=True)
+        return OtaJobOut(job_id=job_id, status="ready", version=version, published=False, msg_id=None)
+    ota_service.mark_applying(sb, job_id, cmd["msg_id"])
+    logger.info("ota_apply 발행 camera=%s job=%s msg_id=%s", cam.get("camera_id"), job_id, cmd["msg_id"])
+    return OtaJobOut(job_id=job_id, status="applying", version=version, published=True,
+                     msg_id=cmd["msg_id"])
 
 
 @router.post(

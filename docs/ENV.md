@@ -83,6 +83,7 @@ ESP32-CAM 모션 영상 저장용. S3 호환 API.
 - `R2_SECRET_ACCESS_KEY` — 🔴 같은 페이지에서 한 번만 표시. 분실 시 재발급
 - `R2_BUCKET` — 버킷 이름 (Cloudflare 대시보드에서 미리 생성)
 - `R2_PUBLIC_BASE_URL` — 옵션. 공개 도메인 연결 시. 없으면 presigned GET URL 만 사용
+- `API_PUBLIC_BASE_URL` — 🟢 OTA(Stage J). 펌웨어가 바이너리를 받으러 올 terra-api 공개 주소. `ota_prepare` 명령의 `url` 에 들어간다. 기본 `https://api.terra-server.uk`, 로컬 테스트는 `http://<LAN IP>:8000`
 
 #### 권장 R2 셋업
 

@@ -55,6 +55,11 @@ Content-Type: application/json
 | `POST` | `/cameras/{id}/unlink` | JWT | **카메라 등록 해제 (소프트, 클립·R2 보존)** |
 | `DELETE` | `/cameras/{id}` | JWT | 카메라 hard delete (운영·탈퇴용, 앱 미사용) |
 | `POST` | `/cameras/{id}/reboot` | JWT | **카메라 원격 재부팅** (MQTT `reboot` 명령 1회 발행, 2026-09-28) |
+| `POST` | `/cameras/{id}/ota` | JWT | **OTA 1단계** `ota_prepare` 발행 (Stage J, 2026-10-07, §4.10) |
+| `POST` | `/cameras/{id}/ota/{job_id}/apply` | JWT | **OTA 2단계** `ota_apply` 발행 — `ready` 작업만 (§4.10) |
+| `POST` | `/devices/{id}/ota` · `/devices/{id}/ota/{job_id}/apply` | JWT | 기기(nano) OTA — 같은 계약, `commands` 큐잉 (§4.10) |
+| `GET` | `/firmware/releases` · `/firmware/jobs` · `/firmware/jobs/{job_id}` | JWT | 릴리스 목록 · 본인 기기 OTA 작업 (§4.10) |
+| `GET` | `/firmware/jobs/{job_id}/bin` | **Camera/Device Token** | 펌웨어가 받는 바이너리 (서버가 R2 프록시, §4.10) |
 | `POST` | `/cameras/{id}/clips/upload-url` | **Camera Token** | R2 presigned PUT URL 발급 |
 | `POST` | `/cameras/{id}/clips` | **Camera Token** | 업로드 완료 후 모션 클립 메타 등록 |
 | `GET` | `/enclosures/{id}/clips` | JWT | 사육장의 모션 클립 목록 (cursor pagination) |
@@ -804,6 +809,44 @@ POST /cameras/{camera_uuid}/reboot        (본문 없음)
   `sys{uptime_s,reset,heap,rssi}`(`rssi` dBm 은 신 펌웨어). `clip_stats_at` 은 마지막 갱신 시각.
 - `firmware_ver`: 페어링 값 + 신 펌웨어부터 하트비트 `fw` 로 갱신(값이 다를 때만 UPDATE). 구 펌웨어는 `"fb2-p4 0.1.0"`/null 고정.
 
+### 4.10 펌웨어 OTA — Stage J (2026-10-07, [specs/stage-j-ota.md](../specs/stage-j-ota.md))
+
+카메라(P4)·기기(nano)에 펌웨어를 케이블 없이 배포. **2단계**: `prepare`(다운로드·검증·비활성 슬롯 기록, 부팅 파티션 불변) → `apply`(전환+재부팅).
+앱 노출 없음(운영 콘솔·스크립트 전용). supermini 는 범위 밖.
+
+**릴리스 등록** — `uv run python scripts/upload_firmware.py --target camera_p4 --bin build/x.bin [--elf build/x.elf]`.
+버전은 사람이 넘기지 않고 바이너리의 `esp_app_desc.version` 에서 읽는다. chip_id 불일치·`-dirty`·같은 (target, version)·바이너리 내 자격증명 흔적은 거절.
+
+```
+POST /cameras/{camera_uuid}/ota            { "release_id": "<firmware_releases.id>", "force": false }
+→ 201 { "job_id", "status": "pending", "version", "published": true, "msg_id", "gate_reasons": [] }
+→ 201 { ..., "status": "failed", "published": false }      브로커 발행 실패 (작업은 failed/publish_failed 로 닫힘)
+→ 400 release 가 이 종류 용이 아님   → 404 타인/unlinked   → 409 진행 중 작업 · 같은 버전 · 사전 점검 실패(detail 에 사유)
+
+POST /cameras/{camera_uuid}/ota/{job_id}/apply       (본문 없음, 작업이 ready 일 때만)
+→ 200 { "job_id", "status": "applying", "version", "published": true, "msg_id" }
+→ 409 { "detail": "job is downloading, not ready" }
+
+POST /devices/{device_uuid}/ota            { "release_id", "force" }     → 201 { "job_id", "status", "version", "command_id" }
+POST /devices/{device_uuid}/ota/{job_id}/apply                          → 200 { ..., "command_id" }
+   기기는 commands 테이블을 거친다(action ota_prepare / ota_apply, ttl 60) — ack/no_ack/expired 가 commands 에 남는다.
+
+GET  /firmware/releases?target=camera_p4   → [{ id, target, version, size_bytes, sha256, project_name, idf_ver, notes, created_at }]
+GET  /firmware/jobs?target_uuid=…          → [{ id, kind, target_uuid, release_id, version, status, pct, prev_version, error, forced, created_at, updated_at, applied_at, finished_at }]
+GET  /firmware/jobs/{job_id}               → 위 1건 (본인 기기 작업만, 아니면 404)
+
+GET  /firmware/jobs/{job_id}/bin           Authorization: Bearer <camera_token | device_token>
+→ 200 application/octet-stream, Content-Length, X-Firmware-Version, X-Firmware-SHA256   (R2 에서 스트리밍)
+→ 401 토큰 불일치(작업 대상 기기의 토큰이어야 함)   → 404 작업 미존재   → 409 작업 상태가 pending/accepted/downloading 이 아님
+```
+
+**사전 점검 게이트** (`force=true` 로만 우회, 작업에 `forced=true` 기록): `offline` · `never_seen` · `no_ota_capability`(heartbeat `capabilities.ota` 미보고 = 구 펌웨어) · `weak_wifi`(rssi < −75) · `low_internal_ram`(int_largest < 40KB) · `just_booted`(uptime < 5분) · `uploading` · `live_active`.
+
+**작업 상태**: `pending → accepted(ack ok) → downloading(pct) → ready → applying → verified | rolled_back` / 언제든 `failed`(error: `old_firmware`·`busy`·`publish_failed`·펌웨어 보고 사유) / 시한 초과 `timeout`(pending 3분·accepted 10분·downloading 15분·applying 10분, `ready` 는 무기한).
+`verified` = apply 뒤 heartbeat `fw` 가 릴리스 버전. `rolled_back` = heartbeat `fw` 가 `prev_version` 으로 돌아옴(부트로더 롤백).
+
+**ENV**: `API_PUBLIC_BASE_URL`(기본 `https://api.terra-server.uk`) — 명령의 `url` 을 만든다.
+
 ---
 
 ## 5. 에러 코드 표
@@ -920,3 +963,4 @@ supabase
 | 2026-05-27 | 0.2.0 | 카메라 페어링 흐름 RPi/QR 기반으로 변경 (prepare-pair + pair_token) |
 | 2026-05-27 | 0.3.0 | 메인 카메라 워커 ESP32-P4 로 변경 (BLE 페어링), Stage G(라이브 스트리밍) 엔드포인트 추가 |
 | 2026-05-27 | 0.4.0 | **Stage F 구현 완료** — enclosures/cameras/clips 라우터 + R2 presigned URL + Camera Token Bearer 인증 (44 tests passing). Swagger UI 메타데이터 보강 (`/docs` 즉시 사용 가능) |
+| 2026-10-07 | 0.9.0 | **Stage J OTA** — `POST /{cameras,devices}/{id}/ota` + `…/apply`, `GET /firmware/releases·jobs`, `GET /firmware/jobs/{id}/bin`(Camera/Device Token, R2 프록시). 2단계(prepare/apply), 사전 점검 게이트, `ota_jobs` 상태 전이 (§4.10) |

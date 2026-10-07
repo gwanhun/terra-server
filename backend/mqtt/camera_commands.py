@@ -47,3 +47,54 @@ def reboot_command() -> dict[str, Any]:
         "ttl_sec": REBOOT_TTL_SEC,
         "action": ACTION_REBOOT,
     }
+
+
+# ---------- OTA (Stage J, specs/stage-j-ota.md) ----------
+#
+# 2단계. prepare 는 다운로드·검증·비활성 슬롯 기록까지만(부팅 파티션 불변), apply 가 전환+재부팅.
+# 펌웨어는 ack 를 먼저 보내고(ok/busy/rejected_unknown_action), 진행·결과는 같은 msg_id 로
+# `ota` 블록을 실은 ack 를 추가 발행한다(docs/MQTT.md §3-b). 기기(nano)는 같은 페이로드가
+# commands 테이블을 거쳐 dispatcher 로 나간다 — 필드 이름은 여기서만 정한다.
+
+ACTION_OTA_PREPARE = "ota_prepare"
+ACTION_OTA_APPLY = "ota_apply"
+OTA_TTL_SEC = 60
+
+
+def ota_prepare_payload(
+    *, job_id: str, version: str, size_bytes: int, sha256: str, url: str,
+) -> dict[str, Any]:
+    """commands.payload / 직접 발행 공통의 action 외 필드."""
+    return {
+        "job_id": job_id,
+        "version": version,
+        "size": int(size_bytes),
+        "sha256": sha256,
+        "url": url,          # GET <api>/firmware/jobs/{job_id}/bin — Bearer <camera/device token>
+    }
+
+
+def ota_prepare_command(
+    *, job_id: str, version: str, size_bytes: int, sha256: str, url: str,
+) -> dict[str, Any]:
+    """`esp32/{camera_id}/command` 용 ota_prepare 페이로드 (카메라 직접 발행)."""
+    return {
+        "msg_id": str(uuid4()),
+        "issued_at": int(time.time()),
+        "ttl_sec": OTA_TTL_SEC,
+        "action": ACTION_OTA_PREPARE,
+        **ota_prepare_payload(
+            job_id=job_id, version=version, size_bytes=size_bytes, sha256=sha256, url=url,
+        ),
+    }
+
+
+def ota_apply_command(*, job_id: str) -> dict[str, Any]:
+    """`esp32/{camera_id}/command` 용 ota_apply 페이로드. 펌웨어는 ack 후 전환+재부팅."""
+    return {
+        "msg_id": str(uuid4()),
+        "issued_at": int(time.time()),
+        "ttl_sec": OTA_TTL_SEC,
+        "action": ACTION_OTA_APPLY,
+        "job_id": job_id,
+    }
