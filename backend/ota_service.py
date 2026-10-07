@@ -44,7 +44,7 @@ TERMINAL_STATUSES: frozenset[str] = frozenset({"verified", "failed", "rolled_bac
 
 # 사전 점검 게이트 임계 (리스크 저감 ③). 실패할 상황엔 애초에 보내지 않는다.
 GATE_MIN_RSSI_DBM = -75          # 약한 WiFi 설치 판별선(앱 안내와 동일)
-GATE_MIN_INT_LARGEST_BYTES = 40 * 1024   # 내부 RAM 최대 연속 블록(OTA 버퍼·TLS 여유)
+GATE_MIN_INT_LARGEST_BYTES = 20 * 1024   # 내부 RAM 최대 연속 블록. 실기(2026-10-07): P4 는 부팅 직후도 31KB — OTA 는 4KB 버퍼+PSRAM TLS 라 20KB 면 충분
 GATE_MIN_UPTIME_SEC = 300        # 부팅 직후 5분은 센서/AE 수렴 중
 GATE_ONLINE_WITHIN_SEC = 90      # last_seen 이 이보다 오래되면 오프라인 취급
 

@@ -840,7 +840,7 @@ GET  /firmware/jobs/{job_id}/bin           Authorization: Bearer <camera_token |
 → 401 토큰 불일치(작업 대상 기기의 토큰이어야 함)   → 404 작업 미존재   → 409 작업 상태가 pending/accepted/downloading 이 아님
 ```
 
-**사전 점검 게이트** (`force=true` 로만 우회, 작업에 `forced=true` 기록): `offline` · `never_seen` · `no_ota_capability`(heartbeat `capabilities.ota` 미보고 = 구 펌웨어) · `weak_wifi`(rssi < −75) · `low_internal_ram`(int_largest < 40KB) · `just_booted`(uptime < 5분) · `uploading` · `live_active`.
+**사전 점검 게이트** (`force=true` 로만 우회, 작업에 `forced=true` 기록): `offline` · `never_seen` · `no_ota_capability`(heartbeat `capabilities.ota` 미보고 = 구 펌웨어) · `weak_wifi`(rssi < −75) · `low_internal_ram`(int_largest < 20KB) · `just_booted`(uptime < 5분) · `uploading` · `live_active`.
 
 **작업 상태**: `pending → accepted(ack ok) → downloading(pct) → ready → applying → verified | rolled_back` / 언제든 `failed`(error: `old_firmware`·`busy`·`publish_failed`·펌웨어 보고 사유) / 시한 초과 `timeout`(pending 3분·accepted 10분·downloading 15분·applying 10분, `ready` 는 무기한).
 `verified` = apply 뒤 heartbeat `fw` 가 릴리스 버전. `rolled_back` = heartbeat `fw` 가 `prev_version` 으로 돌아옴(부트로더 롤백).
