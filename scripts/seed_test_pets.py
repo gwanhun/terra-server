@@ -116,7 +116,7 @@ def main() -> int:
             print(f"  FAIL   {r['email']}: {exc}")
         finally:
             try:
-                sb.auth.sign_out()
+                sb.auth.sign_out({"scope": "local"})  # 기본 global 은 테스터 폰 앱 세션까지 지운다
             except Exception:  # noqa: BLE001 — 로그아웃 실패는 무시
                 pass
 
