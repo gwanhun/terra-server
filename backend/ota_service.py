@@ -44,7 +44,10 @@ TERMINAL_STATUSES: frozenset[str] = frozenset({"verified", "failed", "rolled_bac
 
 # 사전 점검 게이트 임계 (리스크 저감 ③). 실패할 상황엔 애초에 보내지 않는다.
 GATE_MIN_RSSI_DBM = -75          # 약한 WiFi 설치 판별선(앱 안내와 동일)
-GATE_MIN_INT_LARGEST_BYTES = 20 * 1024   # 내부 RAM 최대 연속 블록. 실기(2026-10-07): P4 는 부팅 직후도 31KB — OTA 는 4KB 버퍼+PSRAM TLS 라 20KB 면 충분
+# 내부 RAM 최대 연속 블록. 다운로드는 ota_prepare 로 재부팅한 직후(내부 RAM 140KB+)에 하므로 평시 값은
+# OTA 자체와 거의 무관 — 이 게이트는 "heartbeat 도 간신히 보내는 고갈 상태" 만 거른다.
+# 2026-10-08: 베타 카메라 0.3.4 가 운영 중 15,360 을 정상으로 보고해 20KB 는 전부 막혔음 → 8KB.
+GATE_MIN_INT_LARGEST_BYTES = 8 * 1024
 GATE_MIN_UPTIME_SEC = 300        # 부팅 직후 5분은 센서/AE 수렴 중
 GATE_ONLINE_WITHIN_SEC = 90      # last_seen 이 이보다 오래되면 오프라인 취급
 

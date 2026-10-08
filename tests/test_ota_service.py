@@ -62,7 +62,7 @@ def test_gate_passes_healthy_camera() -> None:
         ({"capabilities": None}, "no_ota_capability"),
         ({"clip_stats": {"up_busy_s": 12, "sys": {"uptime_s": 3600, "rssi": -55, "int_largest": 60_000}}}, "uploading"),
         ({"clip_stats": {"up_busy_s": -1, "sys": {"uptime_s": 3600, "rssi": -80, "int_largest": 60_000}}}, "weak_wifi"),
-        ({"clip_stats": {"up_busy_s": -1, "sys": {"uptime_s": 3600, "rssi": -55, "int_largest": 15_000}}}, "low_internal_ram"),
+        ({"clip_stats": {"up_busy_s": -1, "sys": {"uptime_s": 3600, "rssi": -55, "int_largest": 6_000}}}, "low_internal_ram"),
         ({"clip_stats": {"up_busy_s": -1, "sys": {"uptime_s": 20, "rssi": -55, "int_largest": 60_000}}}, "just_booted"),
         ({"live_session_id": "sess-1"}, "live_active"),
     ],
