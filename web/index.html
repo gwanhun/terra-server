@@ -455,6 +455,19 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
   </div>
 </div>
 
+<!-- OTA 모달 (Stage J) — prepare(다운로드) → ready → apply(전환). 열려 있는 동안 5초마다 작업 상태 갱신 -->
+<div id="ota-modal" class="modal-backdrop hidden" onclick="if(event.target===this)closeOta()">
+  <div class="modal" style="max-width:640px">
+    <div class="modal-header">
+      <h2>⬆️ OTA — <span id="ota-label"></span></h2>
+      <button class="danger" onclick="closeOta()">닫기</button>
+    </div>
+    <div id="ota-body" class="muted">불러오는 중…</div>
+    <small class="muted">1단계 <b>prepare</b>: 비활성 슬롯에 다운로드·sha256 검증만(재부팅 1회, 부팅 파티션 불변 — 실패해도 구버전 그대로).
+      2단계 <b>apply</b>: 슬롯 전환+재부팅(약 30초). 새 펌웨어가 5분 안에 MQTT 로 못 붙으면 부트로더가 이전 버전으로 자동 복귀.</small>
+  </div>
+</div>
+
 <!-- Supabase JS (CDN) -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 
@@ -1746,34 +1759,125 @@ async function rebootCamera(id, label) {
 // ---------- OTA (Stage J, specs/stage-j-ota.md) ----------
 // 한 버튼으로 2단계를 다룬다: 진행 중 작업이 없으면 릴리스를 골라 prepare, ready 면 apply 를 묻는다.
 // kind: 'cameras' | 'devices', target: 'camera_p4' | 'device_nano'
-async function otaEntity(kind, id, label, target) {
-  const jobs = await api('/firmware/jobs?target_uuid=' + id + '&limit=5');
-  const active = (jobs || []).find(j => ['pending','accepted','downloading','ready','applying'].includes(j.status));
+// ─────────────────────────────────────────────────────────────────────────
+// OTA 모달 (Stage J) — 릴리스 드롭다운 → prepare 발행 → 진행 상태 자동 갱신 → ready 면 apply 버튼
+// ─────────────────────────────────────────────────────────────────────────
+const OTA = { kind: null, id: null, label: '', target: null, timer: null, busy: false };
+const OTA_ACTIVE = ['pending', 'accepted', 'downloading', 'ready', 'applying'];
+const OTA_STATUS_KO = {
+  pending: '명령 발행됨 · 기기 응답 대기', accepted: '기기가 수락 · 재부팅 후 다운로드 시작', downloading: '다운로드 중',
+  ready: '다운로드·검증 완료 · 적용 대기', applying: '전환 + 재부팅 중 · 새 펌웨어 확정 대기',
+  verified: '적용 완료 (새 버전 확정)', rolled_back: '롤백됨 (이전 버전으로 복귀)', failed: '실패', timeout: '시간 초과',
+};
+const OTA_GATE_KO = {
+  offline: '오프라인', never_seen: 'heartbeat 없음', no_ota_capability: '구 펌웨어(OTA 미지원)', weak_wifi: 'WiFi 약함(< -75dBm)',
+  low_internal_ram: '내부 RAM 부족', just_booted: '부팅 5분 이내', uploading: '클립 업로드 중', live_active: '라이브 시청 중',
+};
+
+function otaEntity(kind, id, label, target) {
+  Object.assign(OTA, { kind, id, label, target, busy: false });
+  document.getElementById('ota-label').innerText = label;
+  document.getElementById('ota-body').innerHTML = '불러오는 중…';
+  document.getElementById('ota-modal').classList.remove('hidden');
+  otaRefresh();
+  clearInterval(OTA.timer);
+  OTA.timer = setInterval(otaRefresh, 5000);
+}
+
+function closeOta() {
+  clearInterval(OTA.timer);
+  OTA.timer = null;
+  document.getElementById('ota-modal').classList.add('hidden');
+}
+
+function otaAgo(iso) {
+  if (!iso) return '';
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  return s < 60 ? `${s}초 전` : s < 3600 ? `${Math.floor(s / 60)}분 전` : `${Math.floor(s / 3600)}시간 전`;
+}
+
+function otaJobLine(j) {
+  const cls = j.status === 'verified' ? 'good' : ['failed', 'rolled_back', 'timeout'].includes(j.status) ? 'bad' : '';
+  const extra = [j.error ? `error=${j.error}` : '', j.forced ? '게이트 무시' : '', j.prev_version ? `← ${j.prev_version}` : ''].filter(Boolean).join(' · ');
+  return `<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
+    <span class="status ${cls}" style="min-width:90px">${esc(j.status)}</span>
+    <code>${esc(j.version || '?')}</code>
+    <span class="muted">${OTA_STATUS_KO[j.status] || ''}${j.status === 'downloading' ? ` ${j.pct || 0}%` : ''}</span>
+    <span class="muted" style="margin-left:auto">${otaAgo(j.updated_at)}${extra ? ' · ' + esc(extra) : ''}</span>
+  </div>`;
+}
+
+async function otaRefresh() {
+  if (!OTA.id || OTA.busy) return;
+  const [jobs, rels] = await Promise.all([
+    api('/firmware/jobs?target_uuid=' + OTA.id + '&limit=5'),
+    api('/firmware/releases?target=' + OTA.target),
+  ]);
+  if (!OTA.id) return;  // 기다리는 사이 닫힘
+  const active = (jobs || []).find(j => OTA_ACTIVE.includes(j.status));
+  const history = (jobs || []).filter(j => j !== active);
+  let html = '';
+
   if (active && active.status === 'ready') {
-    if (!confirm(`${label}: ${active.version} 다운로드 완료(ready).\n지금 적용(부팅 파티션 전환 + 재부팅)할까?\n약 30초 다운타임. 실패하면 부트로더가 이전 버전으로 복귀.`)) return;
-    const r = await api(`/${kind}/${id}/ota/${active.id}/apply`, { method: 'POST' });
+    html += `<div style="margin-bottom:10px">${otaJobLine(active)}</div>
+      <button onclick="otaApply('${active.id}')" style="font-size:14px;padding:6px 14px">2단계 적용 — ${esc(active.version)} 로 전환 + 재부팅</button>
+      <div class="muted" style="margin-top:6px">녹화·라이브가 잠깐 끊겨도 되는 시점에 눌러. 전환 뒤 새 펌웨어가 MQTT 로 붙으면 <b>verified</b>, 못 붙으면 5분 뒤 자동 롤백.</div>`;
+  } else if (active) {
+    const pct = active.status === 'downloading' ? (active.pct || 0) : active.status === 'pending' || active.status === 'accepted' ? 0 : 100;
+    html += `<div style="margin-bottom:6px">${otaJobLine(active)}</div>
+      <div style="background:#2a2a2a;border-radius:4px;height:8px;overflow:hidden"><div style="width:${pct}%;height:100%;background:#4a8;transition:width .5s"></div></div>
+      <div class="muted" style="margin-top:6px">진행 중 — 5초마다 자동 갱신. ${active.status === 'applying' ? '기기가 재부팅 중이라 30초~1분 뒤 verified/rolled_back 으로 끝남.' : '끝나면 적용 버튼이 나타남.'}</div>`;
+  } else if (!rels || !rels.length) {
+    html += `<div class="muted">등록된 릴리스 없음 — <code>scripts/upload_firmware.py</code> 로 먼저 등록.</div>`;
+  } else {
+    const opts = rels.map(r => `<option value="${esc(r.id)}">${esc(r.version)} — ${(r.size_bytes / 1048576).toFixed(2)}MB${r.notes ? ' · ' + esc(r.notes) : ''}</option>`).join('');
+    html += `<label style="display:block;margin-bottom:6px">릴리스
+        <select id="ota-release" style="width:100%;margin-top:4px;font-size:13px">${opts}</select></label>
+      <label style="display:block;margin-bottom:10px"><input type="checkbox" id="ota-force"> 사전 점검 무시(force) — 오프라인·약한 WiFi·부팅 5분 이내 등도 강행 (개발용)</label>
+      <button onclick="otaPrepare()" style="font-size:14px;padding:6px 14px">1단계 다운로드 (prepare)</button>
+      <div class="muted" style="margin-top:6px">기기가 한 번 재부팅해 받아 두기만 한다. 부팅 파티션은 안 바뀌어서 지금 버전으로 계속 동작.</div>`;
+  }
+  if (history.length) {
+    html += `<details style="margin-top:12px"><summary class="muted">최근 작업 ${history.length}건</summary>
+      <div style="display:flex;flex-direction:column;gap:4px;margin-top:6px">${history.map(otaJobLine).join('')}</div></details>`;
+  }
+  document.getElementById('ota-body').innerHTML = html;
+}
+
+async function otaPrepare() {
+  const sel = document.getElementById('ota-release');
+  const force = document.getElementById('ota-force').checked;
+  if (!sel || !sel.value) return;
+  const version = sel.options[sel.selectedIndex].text.split(' — ')[0];
+  if (force && !confirm(`${OTA.label}: ${version} 사전 점검을 무시하고 보낼까?`)) return;
+  OTA.busy = true;
+  try {
+    const r = await api(`/${OTA.kind}/${OTA.id}/ota`, { method: 'POST', body: JSON.stringify({ release_id: sel.value, force }) });
+    log({ ota_prepare: r });
+    if (!r) return;
+    const ok = r.published !== false && r.status !== 'failed';
+    if (ok) {
+      toast(`prepare 발행 · ${r.version}${r.gate_reasons && r.gate_reasons.length ? ' (게이트 무시: ' + r.gate_reasons.map(g => OTA_GATE_KO[g] || g).join(', ') + ')' : ''}`, 'good');
+    } else {
+      toast(`prepare 실패: ${r.detail || r.status}`, 'bad');
+    }
+  } finally {
+    OTA.busy = false;
+    otaRefresh();
+  }
+}
+
+async function otaApply(jobId) {
+  if (!confirm(`${OTA.label}: 지금 전환 + 재부팅할까? (약 30초 다운타임)`)) return;
+  OTA.busy = true;
+  try {
+    const r = await api(`/${OTA.kind}/${OTA.id}/ota/${jobId}/apply`, { method: 'POST' });
     log({ ota_apply: r });
-    if (r) toast(r.published === false ? 'ota_apply 발행 실패(브로커) — 잠시 후 재시도' : `ota_apply ${r.status} · job ${r.job_id}`,
-                 r.published === false ? 'bad' : 'good');
-    return;
+    if (r) toast(r.published === false ? 'apply 발행 실패(브로커) — 잠시 후 재시도' : `apply 발행 · ${r.version}`, r.published === false ? 'bad' : 'good');
+  } finally {
+    OTA.busy = false;
+    otaRefresh();
   }
-  if (active) {
-    toast(`${label}: 진행 중 작업 ${active.status} ${active.pct || 0}% (job ${active.id.slice(0,8)}) — 끝난 뒤 다시`, 'bad');
-    return;
-  }
-  const rels = await api('/firmware/releases?target=' + target);
-  if (!rels || !rels.length) { toast('등록된 릴리스 없음 — scripts/upload_firmware.py', 'bad'); return; }
-  const menu = rels.map((r, i) => `${i + 1}. ${r.version}  (${(r.size_bytes / 1048576).toFixed(2)}MB${r.notes ? ' · ' + r.notes : ''})`).join('\n');
-  const pick = prompt(`${label} OTA 1단계(prepare: 다운로드·검증만, 재부팅 1회, 부팅 파티션 불변)\n릴리스 번호 입력. 뒤에 " force" 를 붙이면 사전 점검 무시(개발용)\n\n${menu}`, '1');
-  if (!pick) return;
-  const m = pick.trim().match(/^(\d+)(\s+force)?$/i);
-  if (!m || !rels[+m[1] - 1]) { toast('잘못된 선택', 'bad'); return; }
-  const r = await api(`/${kind}/${id}/ota`, { method: 'POST', body: JSON.stringify({ release_id: rels[+m[1] - 1].id, force: !!m[2] }) });
-  log({ ota_prepare: r });
-  if (!r) return;
-  const ok = r.published !== false && r.status !== 'failed';
-  toast(ok ? `ota_prepare 발행 · ${r.version} · job ${r.job_id.slice(0,8)}${r.gate_reasons && r.gate_reasons.length ? ' (게이트 무시: ' + r.gate_reasons.join(',') + ')' : ''}`
-           : `ota_prepare 실패: ${r.detail || r.status}`, ok ? 'good' : 'bad');
 }
 
 async function unlinkDevice(kind, id) {
