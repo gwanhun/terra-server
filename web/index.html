@@ -1336,6 +1336,11 @@ async function checkAccount(email, resultEl, btns) {
       const div = document.createElement('div'); div.style.marginBottom = '2px';
       const label = document.createElement('span'); label.className = 'good';
       label.textContent = (isCam ? '📷 ' : '📟 ') + ident + ' ' + (obj.name || '') + (obj.is_online ? ' 🟢 ' : ' ⚪ ');
+      if (obj.firmware_ver) {
+        const fw = document.createElement('span'); fw.className = 'muted'; fw.style.marginRight = '4px';
+        fw.textContent = obj.firmware_ver; fw.title = 'heartbeat 가 보고한 펌웨어 버전';
+        label.appendChild(fw);
+      }
       if (!isCam) {
         const cb = document.createElement('input'); cb.type = 'checkbox';
         cb.checked = !!regSelected[obj.id]; cb.style.marginRight = '4px'; cb.title = '일괄 제어 선택';
@@ -1355,6 +1360,14 @@ async function checkAccount(email, resultEl, btns) {
         rb.onclick = () => rebootRegisteredCamera(email, obj.id, ident);
         div.appendChild(rb);
       }
+      const otaB = document.createElement('button');
+      const otaOk = !!(obj.capabilities && obj.capabilities.ota);
+      otaB.textContent = 'OTA'; otaB.style.fontSize = '10px'; otaB.style.padding = '1px 6px'; otaB.style.marginLeft = '4px';
+      otaB.title = (otaOk ? 'OTA (Stage J) — 그 계정 JWT 로 prepare → apply' : '구 펌웨어(capabilities.ota 미보고) — 서버 게이트가 막음. 케이블 리플래시 필요')
+        + (obj.firmware_ver ? '\n현재: ' + obj.firmware_ver : '');
+      if (!otaOk) otaB.style.opacity = '.5';
+      otaB.onclick = () => otaRegistered(email, kind, obj, ident);
+      div.appendChild(otaB);
       const unl = document.createElement('button');
       unl.textContent = '해제'; unl.style.fontSize = '10px'; unl.style.padding = '1px 6px'; unl.style.marginLeft = '4px';
       unl.title = '소프트 해제 — 목록에서만 사라지고 클립·분석 데이터는 보존. 클립이 쌓인 기기는 이걸 쓸 것';
@@ -1374,6 +1387,24 @@ async function checkAccount(email, resultEl, btns) {
     resultEl.className = 'bad'; resultEl.textContent = '❌ ' + (e.message || e);
   } finally {
     if (btns) btns.forEach(b => b.disabled = false);
+  }
+}
+
+// 베타 계정 기기·카메라 OTA — 메인 패널 OTA 모달과 같은데 소유자가 그 테스트 계정이라 그 계정 JWT 로 호출.
+// JWT 는 서명 검증이라 signOut 뒤에도 만료(1시간) 전까지 유효 — 모달의 5초 폴링에 그대로 쓴다.
+async function otaRegistered(email, kind, obj, ident) {
+  const client = getBatchClient(); if (!client) return;
+  const password = document.getElementById('reg-pass').value;
+  try {
+    const { data, error } = await client.auth.signInWithPassword({ email, password });
+    if (error) throw new Error(error.message);
+    const token = data.session.access_token;
+    await client.auth.signOut();
+    const isCam = kind === 'camera';
+    otaEntity(isCam ? 'cameras' : 'devices', obj.id, `${ident} · ${email}`, isCam ? 'camera_p4' : 'device_nano',
+              { token, base: regApiBase() });
+  } catch (e) {
+    toast('❌ ' + (e.message || e), 'bad');
   }
 }
 
@@ -1762,7 +1793,28 @@ async function rebootCamera(id, label) {
 // ─────────────────────────────────────────────────────────────────────────
 // OTA 모달 (Stage J) — 릴리스 드롭다운 → prepare 발행 → 진행 상태 자동 갱신 → ready 면 apply 버튼
 // ─────────────────────────────────────────────────────────────────────────
-const OTA = { kind: null, id: null, label: '', target: null, timer: null, busy: false };
+// auth: 베타 계정 패널에서 열 때 {token, base} — 그 계정 JWT 로 호출(소유자 아니면 404). 없으면 메인 세션 api().
+const OTA = { kind: null, id: null, label: '', target: null, timer: null, busy: false, auth: null };
+
+async function otaApi(path, opts = {}) {
+  if (!OTA.auth) return api(path, opts);
+  try {
+    const res = await fetch(OTA.auth.base + path, {
+      cache: 'no-store', ...opts,
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + OTA.auth.token, ...(opts.headers || {}) },
+    });
+    const text = await res.text();
+    let body; try { body = JSON.parse(text); } catch (e) { body = text; }
+    if (!res.ok) {
+      toast(`${res.status}: ${typeof body === 'object' ? (body.detail || JSON.stringify(body)) : body}`, 'bad');
+      return null;
+    }
+    return body;
+  } catch (e) {
+    toast('네트워크 에러: ' + e.message, 'bad');
+    return null;
+  }
+}
 const OTA_ACTIVE = ['pending', 'accepted', 'downloading', 'ready', 'applying'];
 const OTA_STATUS_KO = {
   pending: '명령 발행됨 · 기기 응답 대기', accepted: '기기가 수락 · 재부팅 후 다운로드 시작', downloading: '다운로드 중',
@@ -1774,8 +1826,8 @@ const OTA_GATE_KO = {
   low_internal_ram: '내부 RAM 부족', just_booted: '부팅 5분 이내', uploading: '클립 업로드 중', live_active: '라이브 시청 중',
 };
 
-function otaEntity(kind, id, label, target) {
-  Object.assign(OTA, { kind, id, label, target, busy: false });
+function otaEntity(kind, id, label, target, auth) {
+  Object.assign(OTA, { kind, id, label, target, busy: false, auth: auth || null });
   document.getElementById('ota-label').innerText = label;
   document.getElementById('ota-body').innerHTML = '불러오는 중…';
   document.getElementById('ota-modal').classList.remove('hidden');
@@ -1810,8 +1862,8 @@ function otaJobLine(j) {
 async function otaRefresh() {
   if (!OTA.id || OTA.busy) return;
   const [jobs, rels] = await Promise.all([
-    api('/firmware/jobs?target_uuid=' + OTA.id + '&limit=5'),
-    api('/firmware/releases?target=' + OTA.target),
+    otaApi('/firmware/jobs?target_uuid=' + OTA.id + '&limit=5'),
+    otaApi('/firmware/releases?target=' + OTA.target),
   ]);
   if (!OTA.id) return;  // 기다리는 사이 닫힘
   const active = (jobs || []).find(j => OTA_ACTIVE.includes(j.status));
@@ -1852,7 +1904,7 @@ async function otaPrepare() {
   if (force && !confirm(`${OTA.label}: ${version} 사전 점검을 무시하고 보낼까?`)) return;
   OTA.busy = true;
   try {
-    const r = await api(`/${OTA.kind}/${OTA.id}/ota`, { method: 'POST', body: JSON.stringify({ release_id: sel.value, force }) });
+    const r = await otaApi(`/${OTA.kind}/${OTA.id}/ota`, { method: 'POST', body: JSON.stringify({ release_id: sel.value, force }) });
     log({ ota_prepare: r });
     if (!r) return;
     const ok = r.published !== false && r.status !== 'failed';
@@ -1871,7 +1923,7 @@ async function otaApply(jobId) {
   if (!confirm(`${OTA.label}: 지금 전환 + 재부팅할까? (약 30초 다운타임)`)) return;
   OTA.busy = true;
   try {
-    const r = await api(`/${OTA.kind}/${OTA.id}/ota/${jobId}/apply`, { method: 'POST' });
+    const r = await otaApi(`/${OTA.kind}/${OTA.id}/ota/${jobId}/apply`, { method: 'POST' });
     log({ ota_apply: r });
     if (r) toast(r.published === false ? 'apply 발행 실패(브로커) — 잠시 후 재시도' : `apply 발행 · ${r.version}`, r.published === false ? 'bad' : 'good');
   } finally {
