@@ -163,8 +163,8 @@ ota_1,      app,  ota_1,    0x200000,  0x1E0000   # 끝 0x3E0000 < 4MB
 - [ ] 다운로드 중 WiFi 차단 → `failed` 기록 후 구버전으로 정상 부팅 (벽돌 없음)
 - [ ] 라이브 중 `ota_update` → `busy` 거절 → 서버 job `failed(busy)` 로 표시
 - [ ] 구 펌웨어(0.2.1)에 `ota_update` → `unknown_action` → job `failed(old_firmware)`
-- [ ] 기기 nano 1대 동일 시나리오(다운로드·verified·롤백)
-- [ ] nano 앱 바이너리 ≤ 1.7MB (슬롯 1920K 대비 여유). 빌드 스크립트가 초과 시 실패
+- [~] 기기 nano 1대 동일 시나리오 — **다운로드·verified 2026-10-08 통과** (terra-760f77b6, 1.1.0 → 1.1.2, job `fe6cddf3…`, force 없이 게이트 통과, apply 후 22초 verified). 1.1.0 의 8KB cloud_pair_task 로도 TLS 다운로드 정상(`largest=73728`, 1.34MB 9초). **롤백은 미실시**
+- [~] nano 앱 바이너리 ≤ 1.7MB — 1.1.2 = 1,344,288B(슬롯 1,966,080B 의 68%). 빌드 스크립트 상한 검사는 미구현(idf 가 파티션 초과만 막음)
 - [ ] 베타 18대 리플래시 계획에 OTA 레이아웃 포함 → 이후 1회 OTA 로 전체 갱신 성공, `cameras.firmware_ver` 로 집계
 - [ ] 문서 4종 갱신 + pytest(핸들러 ack/telemetry job 전이, 라우터 권한, 토큰 타입 교차 거절)
 

@@ -112,6 +112,17 @@ uv run python scripts/upload_firmware.py --list
 - 콘솔 기기 행 **OTA**. 차이: 명령이 `commands` 테이블을 거치므로 콘솔 명령 패널에 `ota_prepare` 행이 `pending → sent → acked` 로 보인다. 정상 판정은 CONNACK + 첫 telemetry(QoS0) 라 3-6 의 "PUBACK" 대신 `MQTT CONNECTED` 직후.
 - busy 거절 없음(액추에이터는 부팅 초기 OFF). 분무 중이면 끊긴다 — 테스트 중엔 분무 안 할 때.
 
+### 6-x. 실기 결과 (2026-10-08, terra-760f77b6) — **정상 경로 통과**
+
+| 단계 | 결과 |
+|---|---|
+| 전제 | nano 는 이미 `feat/ota` 1.1.0 (OTA 레이아웃) 으로 플래시돼 있어 케이블 불필요. 새 WiFi(iptime) 라 BLE 재프로비저닝 후 온라인 |
+| 발행 | 1차 job `639c3dac…` 는 **오프라인 상태에서 `1 force`** 로 발행 → 수신 불가 → 3분 뒤 `timeout`(설계대로). 진행 중엔 재발행 409 |
+| prepare | 2차 job `fe6cddf3…` `1`(force 없음) → `accepted` → `SW:ota_prepare` → `OTA prepare 1/2 … largest=73728` → 10%…100% (1,344,288B, 약 9초) → esp_image 검증 → `슬롯 ota_1` → MQTT 연결 직후 `ready` ack |
+| apply | 콘솔 재클릭 → `applying` → ota_1 부팅 → CONNACK+첫 telemetry 확정 → heartbeat `fw=1.1.2` → **`verified`** (apply 후 22초), `prev_version=1.1.0` |
+
+메모: 1.1.0 은 prepare 를 8KB `cloud_pair_task` 에서 돌리는 빌드인데도 통과 — nano 는 esp_hosted 없이 네이티브 WiFi 라 TLS 스택 부담이 카메라보다 작다. 1.1.1+ 의 16KB 전용 태스크는 여유분. 재부팅 직전 `esp-tls read error -0x004C`/`MQTT ERROR` 는 WiFi 종료로 소켓이 끊기는 정상 잡음.
+
 ## 7. 기록
 
 각 단계 결과를 `specs/stage-j-ota.md` 완료 조건 체크박스에 날짜와 함께 적고, 실패 케이스는 `firebeetle2-p4-yr030/docs/IMPROVEMENTS.md` §18 에 시리얼 로그 요지를 남긴다. 베타 18대 리플래시는 **§3·§4·§5 가 dev cam 에서 전부 통과한 뒤** 스펙의 단계적 배포 순서(dev → A/B → 5대 → 나머지)로.
