@@ -118,8 +118,7 @@ def _put(client, bucket: str, key: str, body: bytes, content_type: str) -> None:
 def cmd_list(args: argparse.Namespace) -> int:
     from backend.supabase_client import get_supabase_client
     sb = get_supabase_client()
-    q = sb.table("firmware_releases").select("id, target, version, size_bytes, sha256, created_at, notes") \
-        .order("created_at", desc=True).limit(50)
+    q = sb.table("firmware_releases").select("*").order("created_at", desc=True).limit(50)
     if args.target:
         q = q.eq("target", args.target)
     rows = q.execute().data or []
