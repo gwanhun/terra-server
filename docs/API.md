@@ -817,6 +817,10 @@ POST /cameras/{camera_uuid}/reboot        (본문 없음)
 **릴리스 등록** — `uv run python scripts/upload_firmware.py --target camera_p4 --bin build/x.bin [--elf build/x.elf]`.
 버전은 사람이 넘기지 않고 바이너리의 `esp_app_desc.version` 에서 읽는다. chip_id 불일치·`-dirty`·같은 (target, version)·바이너리 내 자격증명 흔적은 거절.
 
+**릴리스 삭제/퇴역** (2026-10-08) — `uv run python scripts/upload_firmware.py --delete <release_id> --reason "…" [--yes]`.
+R2 의 bin·elf 를 지우고, 작업 이력(`ota_jobs`)이 없으면 행 DELETE, 있으면 FK 때문에 `retired_at`/`retired_reason` 만 채운다(**퇴역**).
+퇴역 릴리스는 `GET /firmware/releases` 기본 목록에서 빠지고(`include_retired=true` 로만 보임), `POST …/ota` 는 409 `release retired: …`(force 무시), `GET /firmware/jobs/{id}/bin` 은 410. 진행 중 작업이 참조하면 삭제 거절.
+
 ```
 POST /cameras/{camera_uuid}/ota            { "release_id": "<firmware_releases.id>", "force": false }
 → 201 { "job_id", "status": "pending", "version", "published": true, "msg_id", "gate_reasons": [] }
@@ -831,13 +835,14 @@ POST /devices/{device_uuid}/ota            { "release_id", "force" }     → 201
 POST /devices/{device_uuid}/ota/{job_id}/apply                          → 200 { ..., "command_id" }
    기기는 commands 테이블을 거친다(action ota_prepare / ota_apply, ttl 60) — ack/no_ack/expired 가 commands 에 남는다.
 
-GET  /firmware/releases?target=camera_p4   → [{ id, target, version, size_bytes, sha256, project_name, idf_ver, notes, created_at }]
+GET  /firmware/releases?target=camera_p4[&include_retired=true]
+                                           → [{ id, target, version, size_bytes, sha256, project_name, idf_ver, notes, created_at, retired_at, retired_reason }]
 GET  /firmware/jobs?target_uuid=…          → [{ id, kind, target_uuid, release_id, version, status, pct, prev_version, error, forced, created_at, updated_at, applied_at, finished_at }]
 GET  /firmware/jobs/{job_id}               → 위 1건 (본인 기기 작업만, 아니면 404)
 
 GET  /firmware/jobs/{job_id}/bin           Authorization: Bearer <camera_token | device_token>
 → 200 application/octet-stream, Content-Length, X-Firmware-Version, X-Firmware-SHA256   (R2 에서 스트리밍)
-→ 401 토큰 불일치(작업 대상 기기의 토큰이어야 함)   → 404 작업 미존재   → 409 작업 상태가 pending/accepted/downloading 이 아님
+→ 401 토큰 불일치(작업 대상 기기의 토큰이어야 함)   → 404 작업 미존재   → 409 작업 상태가 pending/accepted/downloading 이 아님   → 410 릴리스 퇴역
 ```
 
 **사전 점검 게이트** (`force=true` 로만 우회, 작업에 `forced=true` 기록): `offline` · `never_seen` · `no_ota_capability`(heartbeat `capabilities.ota` 미보고 = 구 펌웨어) · `weak_wifi`(rssi < −75) · `low_internal_ram`(int_largest < 20KB) · `just_booted`(uptime < 5분) · `uploading` · `live_active`.
@@ -963,4 +968,5 @@ supabase
 | 2026-05-27 | 0.2.0 | 카메라 페어링 흐름 RPi/QR 기반으로 변경 (prepare-pair + pair_token) |
 | 2026-05-27 | 0.3.0 | 메인 카메라 워커 ESP32-P4 로 변경 (BLE 페어링), Stage G(라이브 스트리밍) 엔드포인트 추가 |
 | 2026-05-27 | 0.4.0 | **Stage F 구현 완료** — enclosures/cameras/clips 라우터 + R2 presigned URL + Camera Token Bearer 인증 (44 tests passing). Swagger UI 메타데이터 보강 (`/docs` 즉시 사용 가능) |
+| 2026-10-08 | 0.9.1 | OTA 릴리스 퇴역 — `firmware_releases.retired_at/retired_reason`, `GET /firmware/releases?include_retired`, 퇴역 릴리스 `POST …/ota` 409 · `/bin` 410, `upload_firmware.py --delete` (§4.10) |
 | 2026-10-07 | 0.9.0 | **Stage J OTA** — `POST /{cameras,devices}/{id}/ota` + `…/apply`, `GET /firmware/releases·jobs`, `GET /firmware/jobs/{id}/bin`(Camera/Device Token, R2 프록시). 2단계(prepare/apply), 사전 점검 게이트, `ota_jobs` 상태 전이 (§4.10) |

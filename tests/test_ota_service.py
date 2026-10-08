@@ -101,6 +101,16 @@ def test_create_job_rejects_target_mismatch() -> None:
     assert ei.value.status_code == 400
 
 
+def test_create_job_rejects_retired_release() -> None:
+    rel = {**_release(), "retired_at": _iso(60), "retired_reason": "prepare 스택 버그"}
+    sb = FakeSB(firmware_releases=[rel])
+    with pytest.raises(svc.OtaError) as ei:
+        svc.create_job(sb, kind="camera", entity=_camera(), release_id=REL_CAM, issued_by=None, force=True)
+    assert ei.value.status_code == 409
+    assert "retired" in ei.value.detail and "프레페어" not in ei.value.detail
+    assert sb.rows("ota_jobs") == []
+
+
 def test_create_job_rejects_same_version() -> None:
     sb = FakeSB(firmware_releases=[_release(version="fb2-p4 0.2.1-20261006")])
     with pytest.raises(svc.OtaError, match="already on this version"):

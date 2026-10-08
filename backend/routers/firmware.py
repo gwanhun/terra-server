@@ -56,6 +56,8 @@ class ReleaseOut(BaseModel):
     idf_ver: str | None = None
     notes: str | None = None
     created_at: str
+    retired_at: str | None = Field(None, description="설정돼 있으면 퇴역 — OTA 대상 불가 (include_retired=true 로만 보임)")
+    retired_reason: str | None = None
 
 
 class JobOut(BaseModel):
@@ -94,12 +96,15 @@ def _job_out(j: dict[str, Any], version: str | None) -> JobOut:
 def list_releases(
     target: str | None = Query(None, description="camera_p4 | device_nano"),
     limit: int = Query(50, ge=1, le=200),
+    include_retired: bool = Query(False, description="퇴역(retired_at 설정) 릴리스도 포함"),
     _user_id: str = Depends(get_current_user_id),
 ) -> list[ReleaseOut]:
     sb = get_supabase_client()
     q = sb.table("firmware_releases").select("*").order("created_at", desc=True).limit(limit)
     if target:
         q = q.eq("target", target)
+    if not include_retired:
+        q = q.is_("retired_at", "null")
     return [_release_out(r) for r in (q.execute().data or [])]
 
 
@@ -175,6 +180,7 @@ def _iter_r2_object(key: str, size: int) -> Iterator[bytes]:
         401: {"description": "토큰 누락/불일치"},
         404: {"description": "작업 미존재"},
         409: {"description": "작업이 다운로드 가능한 상태가 아님"},
+        410: {"description": "릴리스가 퇴역됨 (retired_at)"},
     },
     response_class=StreamingResponse,
 )
@@ -196,6 +202,9 @@ def download_bin(job_id: str, authorization: str | None = Header(default=None)) 
     release = ota_service.get_release(sb, job["release_id"])
     if not release:
         raise HTTPException(status_code=404, detail="release not found")
+    if release.get("retired_at"):
+        # 발행 뒤 퇴역된 경우. R2 객체도 지워져 있을 수 있으니 스트림 전에 끊는다.
+        raise HTTPException(status_code=410, detail="release retired")
 
     if job["status"] != "downloading":
         try:

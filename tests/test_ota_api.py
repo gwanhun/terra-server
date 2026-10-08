@@ -205,6 +205,30 @@ def test_list_releases_filters_target(app_client: TestClient) -> None:
     assert "r2_key" not in res.json()[0]
 
 
+def test_list_releases_hides_retired_unless_asked(app_client: TestClient, fake_sb: FakeSB) -> None:
+    fake_sb.rows("firmware_releases").append(
+        {"id": "rel-cam-bad", "target": "camera_p4", "version": "fb2-p4 0.3.2-20261007",
+         "r2_key": "firmware/camera_p4/bad.bin", "size_bytes": 10, "sha256": "c" * 64, "created_at": _iso(10),
+         "retired_at": _iso(1), "retired_reason": "prepare 스택 버그"})
+    shown = app_client.get("/firmware/releases", params={"target": "camera_p4"}).json()
+    assert [r["id"] for r in shown] == [REL_CAM]
+    all_ = app_client.get("/firmware/releases", params={"target": "camera_p4", "include_retired": "true"}).json()
+    assert [r["id"] for r in all_] == ["rel-cam-bad", REL_CAM]
+    assert all_[0]["retired_reason"] == "prepare 스택 버그"
+    # 퇴역 릴리스로는 작업을 못 만든다 (force 도 무시)
+    res = app_client.post(f"/cameras/{CAM_UUID}/ota", json={"release_id": "rel-cam-bad", "force": True})
+    assert res.status_code == 409 and "retired" in res.json()["detail"]
+
+
+def test_download_bin_retired_release_410(app_client: TestClient, fake_sb: FakeSB) -> None:
+    fake_sb.rows("firmware_releases")[0]["retired_at"] = _iso(1)
+    fake_sb.rows("ota_jobs").append(
+        {"id": "job-r", "kind": "camera", "target_uuid": CAM_UUID, "release_id": REL_CAM, "status": "accepted",
+         "created_at": _iso(1), "updated_at": _iso(1)})
+    res = app_client.get("/firmware/jobs/job-r/bin", headers={"Authorization": f"Bearer {CAM_TOKEN}"})
+    assert res.status_code == 410
+
+
 def test_list_jobs_only_own_entities(app_client: TestClient, fake_sb: FakeSB) -> None:
     fake_sb.rows("ota_jobs").extend([
         {"id": "mine", "kind": "camera", "target_uuid": CAM_UUID, "release_id": REL_CAM, "status": "ready",

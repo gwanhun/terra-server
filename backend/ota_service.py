@@ -199,6 +199,10 @@ def create_job(
         raise OtaError(
             f"release target {release.get('target')} 은 {kind} 용이 아님", 400
         )
+    if release.get("retired_at"):
+        raise OtaError(
+            "release retired: " + str(release.get("retired_reason") or release.get("version")), 409
+        )
     if entity.get("firmware_ver") == release.get("version"):
         raise OtaError("already on this version", 409)
 

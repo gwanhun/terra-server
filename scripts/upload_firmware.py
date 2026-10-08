@@ -9,6 +9,12 @@ OTA 릴리스 등록 — 빌드 산출물(.bin, 선택 .elf)을 R2 에 올리고
 
     uv run python scripts/upload_firmware.py --list [--target device_nano]
 
+    uv run python scripts/upload_firmware.py --delete <release_id> --reason "prepare 스택 버그" [--yes]
+
+--delete: R2 의 bin/elf 를 지우고, 작업 이력(ota_jobs)이 없으면 행을 DELETE, 있으면 FK 때문에
+retired_at/retired_reason 만 채운다(퇴역 — 목록·OTA 대상·다운로드에서 제외, 이력은 유지).
+진행 중(pending/accepted/downloading/ready/applying) 작업이 참조하면 거절.
+
 등록 전에 거절하는 것(specs/stage-j-ota.md 리스크 A4·C6·C7·D1):
 - 이미지 헤더의 chip_id 가 target 과 다름 (카메라 bin 을 nano 로 등록 등)
 - esp_app_desc.version 이 비었거나 `-dirty` (--allow-dirty 로만 허용) — 같은 문자열의 다른 빌드 차단
@@ -119,8 +125,77 @@ def cmd_list(args: argparse.Namespace) -> int:
     rows = q.execute().data or []
     print(f"{'created':20} {'target':12} {'version':28} {'size':>9}  id")
     for r in rows:
+        retired = f"  [퇴역 {r['retired_at'][:10]}: {r.get('retired_reason') or '-'}]" if r.get("retired_at") else ""
         print(f"{r['created_at'][:19]:20} {r['target']:12} {r['version']:28} {r['size_bytes']:>9}  {r['id']}"
-              + (f"  — {r['notes']}" if r.get("notes") else ""))
+              + retired + (f"  — {r['notes']}" if r.get("notes") else ""))
+    return 0
+
+
+_ACTIVE_JOB_STATUSES = frozenset({"pending", "accepted", "downloading", "ready", "applying"})
+
+
+def cmd_delete(args: argparse.Namespace) -> int:
+    from datetime import UTC, datetime
+
+    from backend.r2_client import get_r2_bucket, get_r2_client
+    from backend.supabase_client import get_supabase_client
+
+    sb = get_supabase_client()
+    rel = (sb.table("firmware_releases").select("*").eq("id", args.delete).limit(1).execute().data or [None])[0]
+    if not rel:
+        print(f"없음: release_id={args.delete}", file=sys.stderr)
+        return 2
+
+    jobs = sb.table("ota_jobs").select("id, status, kind").eq("release_id", rel["id"]).execute().data or []
+    active = [j for j in jobs if j["status"] in _ACTIVE_JOB_STATUSES]
+    if active:
+        print("거절: 진행 중 작업이 이 릴리스를 참조함 — 끝난 뒤 다시:", file=sys.stderr)
+        for j in active:
+            print(f"  - {j['id']} {j['kind']} {j['status']}", file=sys.stderr)
+        return 3
+
+    running: list[str] = []
+    for table, idcol in (("cameras", "camera_id"), ("devices", "device_id")):
+        rows = sb.table(table).select(idcol).eq("firmware_ver", rel["version"]).is_("unlinked_at", "null") \
+            .execute().data or []
+        running += [r[idcol] for r in rows]
+
+    mode = "퇴역(retired_at 설정, 행 유지)" if jobs else "행 DELETE"
+    print(f"release      : {rel['id']}")
+    print(f"target       : {rel['target']}   version: {rel['version']}   size: {rel['size_bytes']:,} B")
+    print(f"r2           : {rel['r2_key']}" + (f"  (+ {rel['elf_r2_key']})" if rel.get("elf_r2_key") else ""))
+    print(f"작업 이력     : {len(jobs)}건 → {mode}")
+    if running:
+        print(f"경고         : 이 버전으로 돌고 있는 보드 {len(running)}대 — {', '.join(running)} "
+              "(보드 동작엔 영향 없음. 바이너리만 더는 받을 수 없게 됨)")
+    if rel.get("retired_at"):
+        print(f"이미 퇴역됨   : {rel['retired_at']} ({rel.get('retired_reason') or '-'}) — R2 삭제만 다시 시도")
+    if not args.yes:
+        ans = input("진행? [y/N] ").strip().lower()
+        if ans not in ("y", "yes"):
+            print("취소")
+            return 1
+
+    # DB 먼저, R2 는 그 다음 — 컬럼 미적용 등으로 DB 가 실패하면 바이너리는 손대지 않는다
+    # (R2 만 지워지고 행이 살아 있으면 "고를 수 있는데 받을 수 없는" 릴리스가 된다).
+    if jobs:
+        patch = {"retired_at": datetime.now(UTC).isoformat(), "retired_reason": args.reason or "deleted"}
+        try:
+            sb.table("firmware_releases").update(patch).eq("id", rel["id"]).execute()
+        except Exception as e:  # noqa: BLE001 — PostgREST 오류 메시지를 그대로 보여주는 게 목적
+            print(f"퇴역 표시 실패: {e}\n→ migrations/2026-10-08_firmware_releases_retired.sql 적용 여부 확인 "
+                  "(R2 는 건드리지 않았음)", file=sys.stderr)
+            return 4
+        print(f"퇴역 완료     : release_id={rel['id']} ({patch['retired_reason']})")
+    else:
+        sb.table("firmware_releases").delete().eq("id", rel["id"]).execute()
+        print(f"삭제 완료     : release_id={rel['id']}")
+
+    client, bucket = get_r2_client(), get_r2_bucket()
+    for key in (rel["r2_key"], rel.get("elf_r2_key")):
+        if key:
+            client.delete_object(Bucket=bucket, Key=key)   # S3 삭제는 없는 키도 204 — 멱등
+            print(f"r2 삭제      : {key}")
     return 0
 
 
@@ -203,12 +278,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--deny-string", action="append", default=[], help="추가 금지 정규식 (반복 가능)")
     p.add_argument("--dry-run", action="store_true", help="검사·요약만, 업로드·등록 안 함")
     p.add_argument("--list", action="store_true", help="등록된 릴리스 목록")
+    p.add_argument("--delete", metavar="RELEASE_ID", help="릴리스 삭제/퇴역 (R2 bin·elf 삭제 포함)")
+    p.add_argument("--reason", help="--delete 사유 (retired_reason)")
+    p.add_argument("--yes", action="store_true", help="--delete 확인 프롬프트 생략")
     args = p.parse_args(argv)
 
     if args.list:
         return cmd_list(args)
+    if args.delete:
+        return cmd_delete(args)
     if not args.target or not args.bin:
-        p.error("--target 과 --bin 이 필요 (또는 --list)")
+        p.error("--target 과 --bin 이 필요 (또는 --list / --delete)")
     return cmd_upload(args)
 
 
