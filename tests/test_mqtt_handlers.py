@@ -1407,3 +1407,76 @@ def test_camera_telemetry_stores_errs(fake_sb: MagicMock, published: list) -> No
     assert len(rows) == 2
     assert rows[0]["prev_boot"] is True and rows[0]["count"] == 3 and rows[0]["uptime_s"] == 12
     assert rows[1]["prev_boot"] is False and rows[1]["count"] == 1 and len(rows[1]["msg"]) == 200
+
+
+def test_camera_telemetry_errs_accepts_nine_lines(fake_sb: MagicMock, published: list) -> None:
+    """0.3.6 펌웨어는 8줄 + 링 유실 합성 줄 = 9줄까지 보낸다. 9번째가 버려지면 안 된다."""
+    updates: list[dict] = []
+    inner = _camera_state_table_factory(updates, rotate_180=True)
+    logs_tbl = MagicMock()
+    fake_sb.table.side_effect = lambda name: logs_tbl if name == "camera_logs" else inner(name)
+    handlers._camera_log_recent.clear()
+    errs = [{"up": 100 + i, "n": 1, "prev": False, "m": f"E (100{i}) tag: line {i}"} for i in range(9)]
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "uptime_sec": 120, "errs": errs})
+    assert len(logs_tbl.insert.call_args.args[0]) == 9
+
+
+def test_camera_clip_regression_warns_enc_sdfault_flap(
+    fake_sb: MagicMock, published: list, caplog: pytest.LogCaptureFixture
+) -> None:
+    """enc_err/sd_fault 증가, 플래핑 진입, C6 카운터 증가가 저널 경고로 남는다(2026-10-12)."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_state_table_factory(updates, rotate_180=True)
+    handlers._clip_prev.clear()
+    base = {"ts": 1, "uptime_sec": 300}
+    handlers.handle_telemetry(CAMERA_TEXT, {**base, "clips": {"rec": 1, "enc_err": 0, "sd_fault": 0},
+                                            "net": {"flap": False, "cp_fail": 0}})
+    with caplog.at_level("WARNING"):
+        handlers.handle_telemetry(CAMERA_TEXT, {**base, "uptime_sec": 315,
+                                                "clips": {"rec": 1, "enc_err": 1, "sd_fault": 2},
+                                                "net": {"flap": True, "cp_fail": 1, "disc": 2, "reason": 200}})
+    text = caplog.text
+    assert "H.264 인코더 실패 +1" in text
+    assert "SD 쓰기 fault +2" in text
+    assert "MQTT 플래핑 진입" in text
+    assert "C6 전송 실패 +1" in text
+
+
+def test_camera_telemetry_errs_dedupes_retransmitted_lines(fake_sb: MagicMock, published: list) -> None:
+    """QoS1 재전송으로 같은 (up, m) 가 다시 오면 camera_logs 에 두 번 넣지 않는다(2026-10-12)."""
+    updates: list[dict] = []
+    inner = _camera_state_table_factory(updates, rotate_180=True)
+    logs_tbl = MagicMock()
+    fake_sb.table.side_effect = lambda name: logs_tbl if name == "camera_logs" else inner(name)
+    handlers._camera_log_recent.clear()
+
+    line = {"up": 55607, "n": 1, "prev": False, "m": "E (55608888) terra_uploader: R2 PUT failed: ESP_FAIL"}
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "uptime_sec": 55610, "errs": [line]})
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "uptime_sec": 55625, "errs": [line]})
+    handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "uptime_sec": 55640, "errs": [
+        line, {"up": 55630, "n": 1, "prev": False, "m": "E (55631000) mqtt_client: No PING_RESP, disconnected"},
+    ]})
+
+    assert logs_tbl.insert.call_count == 2
+    first = logs_tbl.insert.call_args_list[0].args[0]
+    second = logs_tbl.insert.call_args_list[1].args[0]
+    assert len(first) == 1 and first[0]["uptime_s"] == 55607
+    assert len(second) == 1 and second[0]["uptime_s"] == 55630
+
+
+def test_camera_telemetry_sys_state_net_diag(fake_sb: MagicMock, published: list) -> None:
+    """0.3.6 bssid/ch/net → clip_stats.sys 에 저장(타입 검증, 길이 제한)."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_state_table_factory(updates, rotate_180=True)
+    handlers.handle_telemetry(CAMERA_TEXT, {
+        "ts": 1, "uptime_sec": 300, "wifi_rssi": -56, "bssid": "b0:38:6c:ab:52:92", "ch": 1,
+        "net": {"disc": 3, "reason": 200, "disc_age_s": 120, "disc_bssid": "b0:38:6c:37:ba:ea",
+                "flap": True, "cp_fail": 0, "cp_down": 0, "cp_init": 1, "junk": "x"},
+        "clips": {"rec": 1, "sd_fault": 4},
+    })
+    cs = [u for u in updates if "clip_stats" in u][-1]["clip_stats"]
+    sy = cs["sys"]
+    assert sy["bssid"] == "b0:38:6c:ab:52:92" and sy["ch"] == 1
+    assert sy["net"] == {"disc": 3, "reason": 200, "disc_age_s": 120, "cp_fail": 0, "cp_down": 0,
+                         "cp_init": 1, "flap": True, "disc_bssid": "b0:38:6c:37:ba:ea"}
+    assert cs["sd_fault"] == 4

@@ -1622,7 +1622,10 @@ async function toggleCameraTest(cam, hostDiv, btn, email) {
     logBox.style.display = 'block'; logBox.textContent = '불러오는 중…';
     try {
       const rows = await api('/cameras/' + cam.id + '/logs?limit=100');
+      // 0.3.6~: "N (ms) …" 는 펌웨어 판단 기록(부팅 표식·재부팅 사유·AP 이동·클립 유실·링 유실).
+      // 부팅 표식 앞엔 구분선을 넣어 타임라인을 부팅 단위로 읽게 한다(최신순이라 선은 아래쪽 경계).
       logBox.textContent = rows.length ? rows.map(r =>
+        (/^N \(\d+\) boot: /.test(r.msg) ? '──────── 부팅 ────────\n' : '') +
         (r.created_at || '').slice(5, 19).replace('T', ' ') + (r.prev_boot ? ' [이전 부팅]' : '') +
         ' up' + (r.uptime_s ?? '?') + 's ' + r.msg + (r.count > 1 ? '  x' + r.count : '')).join('\n')
         : '(에러 로그 없음)';
@@ -2233,22 +2236,45 @@ function sysStateText(sy) {
   const up = sy.uptime_s >= 0 ? (sy.uptime_s < 3600 ? Math.round(sy.uptime_s/60)+'m' : (sy.uptime_s/3600).toFixed(1)+'h') : '?';
   const resetBad = sy.reset && !/^(POWERON|SW:(rotate|ble_reprov|http_restart|mqtt_reboot))$/.test(sy.reset);
   const rssiTxt = typeof sy.rssi === 'number' ? ` · <span class="${sy.rssi <= -75 ? 'bad' : ''}" title="WiFi RSSI(dBm), -75 이하 = 약함">rssi ${sy.rssi}</span>` : '';
-  return `<span class="${resetBad ? 'bad' : 'muted'}" title="마지막 재부팅 사유 · 가동시간 · 남은 힙">up ${up} · reset ${esc(sy.reset || '?')}${sy.heap ? ' · heap ' + Math.round(sy.heap/1024) + 'K' : ''}${typeof sy.int_free === 'number' ? ` · <span class="${sy.int_free < 80*1024 ? 'bad' : ''}" title="내부 RAM 여유/최대 블록(KB), 80K 미만 빨강">int ${Math.round(sy.int_free/1024)}K/${Math.round((sy.int_largest||0)/1024)}K</span>` : ''}${rssiTxt}</span>`;
+  // 접속 AP(0.3.6~): BSSID 뒤 3옥텟 + 채널. 같은 SSID 의 확장기/공유기 중 어디에 붙었는지.
+  const apTxt = sy.bssid ? ` · <span title="접속 중인 AP BSSID ${esc(sy.bssid)} · 채널 ${sy.ch ?? '?'}. 같은 집 다른 기기와 다르면 확장기에 붙은 것">ap ${esc(sy.bssid.slice(-8))}${sy.ch ? ' ch' + sy.ch : ''}</span>` : '';
+  // net 진단(0.3.6~): WiFi 링크 끊김(연결 상태에서 떨어진 것만) · MQTT 플래핑 · C6 코프로세서 링크.
+  let netTxt = '';
+  const nd = sy.net;
+  if (nd) {
+    const discAge = nd.disc_age_s ?? -1;
+    const ageTxt = discAge < 0 ? '' : (discAge < 3600 ? Math.round(discAge/60) + 'm' : Math.round(discAge/3600) + 'h');
+    const discBad = (nd.disc || 0) > 0 && discAge >= 0 && discAge < 3600;
+    const discDetail = (nd.disc || 0) > 0 ? ` r${nd.reason} ${ageTxt}${nd.disc_bssid ? ' @' + esc(nd.disc_bssid.slice(-8)) : ''}` : '';
+    netTxt += ` · <span class="${discBad ? 'bad' : ''}" title="WiFi 링크 끊김 횟수(부팅 후, 연결 상태에서 떨어진 것만) · 마지막 reason(200=beacon timeout, 201=AP 없음, 8=AP 가 끊음, 15=4-way timeout, 2/4=auth/assoc expire) · 경과 · 당시 AP. 1시간 내면 빨강. 끊길 때 AP 가 바뀌면 확장기 쪽">disc ${nd.disc || 0}${discDetail}</span>`;
+    if (nd.flap) netTxt += ` · <span class="bad" title="MQTT 플래핑: 연결은 되는데 keepalive 응답이 없어 짧게 반복 끊김(10분 6회 이상). 10분 지속 시 다른 AP 로 이동, 20분이면 재부팅(reset=SW:mqtt_flap)">flap!</span>`;
+    const cpSum = (nd.cp_fail || 0) + (nd.cp_down || 0) + (nd.cp_init || 0);
+    netTxt += ` · <span class="${cpSum > 0 ? 'bad' : ''}" title="C6 코프로세서 링크: 전송 실패 / 전송 다운 / C6 재부팅 횟수(부팅 후). 0 이 아니면 WiFi 가 아니라 보드(SDIO/C6) 쪽">c6 ${nd.cp_fail || 0}/${nd.cp_down || 0}/${nd.cp_init || 0}</span>`;
+  }
+  return `<span class="${resetBad ? 'bad' : 'muted'}" title="마지막 재부팅 사유 · 가동시간 · 남은 힙">up ${up} · reset ${esc(sy.reset || '?')}${sy.heap ? ' · heap ' + Math.round(sy.heap/1024) + 'K' : ''}${typeof sy.int_free === 'number' ? ` · <span class="${sy.int_free < 80*1024 ? 'bad' : ''}" title="내부 RAM 여유/최대 블록(KB), 80K 미만 빨강">int ${Math.round(sy.int_free/1024)}K/${Math.round((sy.int_largest||0)/1024)}K</span>` : ''}${rssiTxt}${apTxt}${netTxt}</span>`;
 }
 
 function clipCellHtml(r) {
   const c = r.clip_stats;
   if (!c) return '<small class="muted">—</small>';
-  const bad = (c.skip > 0 || c.skip_lock > 0 || c.up_fail > 0 || c.sd_fail > 0 || (c.up_busy_s ?? -1) >= 300);
+  const bad = (c.skip > 0 || c.skip_lock > 0 || c.up_fail > 0 || c.sd_fail > 0 || (c.up_busy_s ?? -1) >= 300
+    || (c.enc_err || 0) > 0 || (c.sd_fault || 0) >= 3 || !!(c.sys && c.sys.net && c.sys.net.flap));
   const age = c.last_rec_s >= 0 ? (c.last_rec_s < 3600 ? Math.round(c.last_rec_s/60)+'m' : Math.round(c.last_rec_s/3600)+'h') : '없음';
   const stuck = (c.up_busy_s ?? -1) >= 300 ? ` <span class="bad">up ${Math.round(c.up_busy_s/60)}m!</span>` : '';
+  // SD 쓰기 fault 래치 누적(0.3.6~). 부팅마다 반복해서 오르면 카드 불량 → 교체.
+  const sdf = typeof c.sd_fault === 'number' && c.sd_fault > 0 ? ` · <span class="${c.sd_fault >= 3 ? 'bad' : ''}" title="SD 쓰기 fault 래치 횟수(부팅 후). 3회 이상 = 카드 교체 검토">sdfault ${c.sd_fault}${c.sd_fault >= 3 ? ' 교체?' : ''}</span>` : '';
   const sy = c.sys;
   const syTxt = sy ? `<br>${sysStateText(sy)}` : '';
+  // 인코더(0.2.1~): 누적 실패 / 현재 연속. 연속이 임계(50)에 닿으면 펌웨어가 enc_stall 로 재부팅. 0 이 아니면 빨강.
+  const encTxt = typeof c.enc_err === 'number' && (c.enc_err > 0 || (c.enc_streak || 0) > 0)
+    ? ` · <span class="bad" title="H.264 인코더 단계 실패 누적/현재 연속. 연속 50이면 enc_stall 자가 재부팅. 구 빌드(0.2.0 이하)는 1회 실패로 영구 사망·녹화 0">enc ${c.enc_err}/${c.enc_streak || 0}</span>` : '';
   const le = c.last_err;
-  const leTxt = le ? `<br><span class="bad" title="마지막 업로드 실패: stage 1=upload-url 2=R2 PUT 3=meta 4=SD읽기 · esp_err · HTTP 상태(0=전송 실패) · 경과초">last_err stage${le.stage} err${le.err} http${le.http} ${Math.round((le.age_s||0)/60)}m ago</span>` : '';
+  // esp_err_t 이름(0.3.6: 전송 중 끊김도 HTTP_CONNECT 로 통일 → "net"). 모르는 값은 숫자 그대로.
+  const errName = e => ({ '-1': 'FAIL', '28675': 'net', '269': 'NOT_FINISHED(SD읽기)', '263': 'TIMEOUT', '257': 'NO_MEM' })[String(e)] || e;
+  const leTxt = le ? `<br><span class="bad" title="마지막 업로드 실패: stage 1=upload-url 2=R2 PUT 3=meta 4=SD읽기 · esp_err(net=연결불가/전송중 끊김, 클립 시도횟수 미산입) · HTTP 상태(0=전송 실패) · 경과초">last_err stage${le.stage} err=${errName(le.err)} http${le.http} ${Math.round((le.age_s||0)/60)}m ago</span>` : '';
   const im = r.image_state;
   const imTxt = im ? `<br><span class="${im.ae_frozen ? 'bad' : 'muted'}" title="${esc(JSON.stringify(im))}">exp ${im.exp} · luma ${im.luma} · ${im.night ? 'NIGHT' : 'DAY'}${im.ae_frozen ? ' · AE동결' : ''}</span>` : '';
-  return `<small class="${bad ? 'bad' : 'muted'}" title="${esc(JSON.stringify(c))}">rec ${c.rec} · skip ${(c.skip||0)+(c.skip_lock||0)} · fail ${(c.up_fail||0)+(c.sd_fail||0)} · sd ${c.sd_backlog||0} · ${age}${stuck}${syTxt}${leTxt}${imTxt}</small>`;
+  return `<small class="${bad ? 'bad' : 'muted'}" title="${esc(JSON.stringify(c))}">rec ${c.rec} · skip ${(c.skip||0)+(c.skip_lock||0)} · fail ${(c.up_fail||0)+(c.sd_fail||0)} · sd ${c.sd_backlog||0} · ${age}${stuck}${encTxt}${sdf}${syTxt}${leTxt}${imTxt}</small>`;
 }
 
 function onlineCellHtml(r) {

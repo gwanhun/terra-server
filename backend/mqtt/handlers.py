@@ -40,6 +40,7 @@ import re
 import threading
 import time
 from collections.abc import Callable
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -536,6 +537,28 @@ def _sys_state(kind: str, id_text: str, entity_uuid: str, payload: dict[str, Any
         v = payload.get(k)
         if isinstance(v, (int, float)):
             sys_state[k] = int(v)
+    # 2026-10-12 펌웨어(0.3.6)부터: 접속 AP(bssid/ch) 와 net 진단. 한 유닛만 끊기는 현장에서
+    # "AP/확장기 쪽(disc/reason/disc_bssid)" 과 "보드 쪽(cp_fail/cp_down/cp_init)" 을 가른다.
+    bssid = payload.get("bssid")
+    if isinstance(bssid, str) and 0 < len(bssid) <= 17:
+        sys_state["bssid"] = bssid
+    ch = payload.get("ch")
+    if isinstance(ch, (int, float)):
+        sys_state["ch"] = int(ch)
+    net = payload.get("net")
+    if isinstance(net, dict):
+        nd: dict[str, Any] = {}
+        for k in ("disc", "reason", "disc_age_s", "cp_fail", "cp_down", "cp_init"):
+            v = net.get(k)
+            if isinstance(v, (int, float)):
+                nd[k] = int(v)
+        if isinstance(net.get("flap"), bool):
+            nd["flap"] = net["flap"]
+        db = net.get("disc_bssid")
+        if isinstance(db, str) and 0 < len(db) <= 17:
+            nd["disc_bssid"] = db
+        if nd:
+            sys_state["net"] = nd
     prev = _uptime_prev.get(entity_uuid)
     _uptime_prev[entity_uuid] = uptime
     if prev is not None and uptime < prev:
@@ -563,16 +586,28 @@ def _ota_verify_from_heartbeat(
         logger.exception("ota heartbeat 판정 실패 (entity=%s)", entity_uuid)
 
 
-CAMERA_LOG_MAX_LINES = 8
+# 펌웨어 하트비트 errs 는 최대 8줄 + 0.3.6 부터 "링 유실" 합성 줄 1개 = 9. 8 로 두면 9번째(실제 오류)가
+# 조용히 버려진다(2026-10-12).
+CAMERA_LOG_MAX_LINES = 9
 CAMERA_LOG_RETENTION_DAYS = 14
 _camera_log_prune_counter: dict[str, int] = {}
+
+
+# 최근 저장한 (uptime_s, msg) — 카메라별 링. 하행만 죽은 링크에서 펌웨어 QoS1 재전송이 같은
+# 텔레메트리를 여러 번 보내면(2026-10-08: 같은 줄 15번) 그대로 INSERT 돼 로그가 뭉치로 중복됐다.
+# 펌웨어가 연속 동일 줄을 count 로 접으므로 같은 (uptime_s, msg) 가 두 번 오면 재전송 복사본이다.
+_camera_log_recent: dict[str, deque[tuple[int | None, str]]] = {}
+CAMERA_LOG_DEDUPE_WINDOW = 200
 
 
 def _store_camera_errs(sb: Client, camera_id_text: str, camera_uuid: str, errs: list) -> None:
     """하트비트 `errs` (펌웨어 ESP_LOGE 줄) → camera_logs INSERT. 각 줄은
     {"up": 부팅후초, "n": 반복횟수, "prev": 재부팅전여부, "m": "E (ts) tag: msg"}.
-    한 번에 최대 CAMERA_LOG_MAX_LINES, 줄당 200자. 50회 저장마다 14일 넘은 행을 지운다."""
+    한 번에 최대 CAMERA_LOG_MAX_LINES, 줄당 200자. 50회 저장마다 14일 넘은 행을 지운다.
+    최근 CAMERA_LOG_DEDUPE_WINDOW 건 안에 같은 (uptime_s, msg) 가 있으면 재전송 복사본으로 보고 건너뛴다."""
+    recent = _camera_log_recent.setdefault(camera_uuid, deque(maxlen=CAMERA_LOG_DEDUPE_WINDOW))
     rows = []
+    skipped = 0
     for e in errs[:CAMERA_LOG_MAX_LINES]:
         if not isinstance(e, dict):
             continue
@@ -581,6 +616,11 @@ def _store_camera_errs(sb: Client, camera_id_text: str, camera_uuid: str, errs: 
             continue
         up = e.get("up")
         n = e.get("n")
+        key = (int(up) if isinstance(up, (int, float)) else None, msg[:200])
+        if key in recent:
+            skipped += 1
+            continue
+        recent.append(key)
         rows.append({
             "camera_id": camera_uuid,
             "uptime_s": int(up) if isinstance(up, (int, float)) else None,
@@ -588,6 +628,8 @@ def _store_camera_errs(sb: Client, camera_id_text: str, camera_uuid: str, errs: 
             "count": int(n) if isinstance(n, (int, float)) and n >= 1 else 1,
             "msg": msg[:200],
         })
+    if skipped:
+        logger.debug("camera %s 에러로그 중복 %d건 건너뜀(재전송)", camera_id_text, skipped)
     if not rows:
         return
     sb.table("camera_logs").insert(rows).execute()
@@ -612,10 +654,25 @@ def _warn_clip_regression(camera_id_text: str, camera_uuid: str, clips: dict[str
     if not prev:
         return
     for key, label in (("skip", "슬롯 없음 스킵"), ("skip_lock", "H.264 락 스킵"),
-                       ("up_fail", "업로드 실패"), ("sd_fail", "SD 재업로드 실패")):
+                       ("up_fail", "업로드 실패"), ("sd_fail", "SD 재업로드 실패"),
+                       # 2026-10-12: 인코더 단계 실패(0.2.1~), SD 쓰기 fault 래치(0.3.6~)
+                       ("enc_err", "H.264 인코더 실패"), ("sd_fault", "SD 쓰기 fault")):
         cur, old = clips.get(key), prev.get(key)
         if isinstance(cur, (int, float)) and isinstance(old, (int, float)) and cur > old:
             logger.warning("camera %s: %s +%d (누적 %d)", camera_id_text, label, cur - old, cur)
+    # net 진단(0.3.6~, clips.sys.net): 플래핑 진입과 C6 링크 카운터 증가는 "보드 vs AP" 판정 근거라 저널에 남긴다.
+    net, pnet = (clips.get("sys") or {}).get("net"), (prev.get("sys") or {}).get("net")
+    if isinstance(net, dict):
+        pnet = pnet if isinstance(pnet, dict) else {}
+        if net.get("flap") and not pnet.get("flap"):
+            logger.warning("camera %s: MQTT 플래핑 진입 (disc=%s reason=%s bssid=%s)", camera_id_text,
+                           net.get("disc"), net.get("reason"), net.get("disc_bssid"))
+        for key, label in (("cp_fail", "C6 전송 실패"), ("cp_down", "C6 전송 다운"), ("cp_init", "C6 재부팅"),
+                           ("disc", "WiFi 링크 끊김")):
+            cur, old = net.get(key), pnet.get(key)
+            if isinstance(cur, (int, float)) and isinstance(old, (int, float)) and cur > old:
+                logger.warning("camera %s: %s +%d (누적 %d, reason=%s)", camera_id_text, label, cur - old, cur,
+                               net.get("reason"))
 
 
 def _camera_state_patch(camera_uuid: str, **fields: Any) -> None:
@@ -781,7 +838,7 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
             # sys(uptime/reset/heap) 는 별도 컬럼 없이 clip_stats 에 얹는다(마이그레이션 불필요).
             update["clip_stats"] = {**clips, "sys": sys_state} if sys_state else clips
             update["clip_stats_at"] = _now_iso()
-            _warn_clip_regression(device_id_text, entity_uuid, clips)
+            _warn_clip_regression(device_id_text, entity_uuid, update["clip_stats"])  # sys.net 포함
 
         # 노출/야간 상태(2026-09-17): AE 동결 진입 시 경고(야간 헌팅 진단).
         img = payload.get("img")

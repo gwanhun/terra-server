@@ -170,6 +170,8 @@ class CameraOut(BaseModel):
         description=(
             "클립 파이프라인 카운터(부팅 후 누적, 15초 텔레메트리). rec/skip/skip_lock/up_ok/"
             "up_fail/sd_ok/sd_fail/sd_backlog, last_rec_s(마지막 녹화 후 초, -1=없음), "
+            "enc_err/enc_streak(0.2.1~), sd_fault(0.3.6~ SD 쓰기 fault 래치), "
+            "sys.bssid/ch/net{disc,reason,disc_age_s,disc_bssid,flap,cp_fail,cp_down,cp_init}(0.3.6~ 네트워크 진단), "
             "up_busy_s(진행 중 업로드 초, -1=없음). null = 구 펌웨어"
         ),
     )
