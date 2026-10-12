@@ -537,6 +537,9 @@ def _sys_state(kind: str, id_text: str, entity_uuid: str, payload: dict[str, Any
         v = payload.get(k)
         if isinstance(v, (int, float)):
             sys_state[k] = int(v)
+    temp = payload.get("temp")               # 2026-10-12 펌웨어(0.3.6)부터: 칩 온도(℃). SD 오류·PANIC 주간 편중의 열/부하 판별
+    if isinstance(temp, (int, float)) and -40 <= temp <= 150:
+        sys_state["temp"] = round(float(temp), 1)
     # 2026-10-12 펌웨어(0.3.6)부터: 접속 AP(bssid/ch) 와 net 진단. 한 유닛만 끊기는 현장에서
     # "AP/확장기 쪽(disc/reason/disc_bssid)" 과 "보드 쪽(cp_fail/cp_down/cp_init)" 을 가른다.
     bssid = payload.get("bssid")
