@@ -89,6 +89,13 @@ sdkconfig 의 `BT_NIMBLE_HCI_UART_CTS_PIN=23` 은 UART 전송이 꺼져 있어(V
 - [ ] **실기 검증**: DHT22 읽힘 · `mist`/`led_on brightness`/`fan_on duration_ms` ack · 콘솔에 기기 행+카메라 행 둘 다 온라인 · 라이브(WebRTC) 중 센서 telemetry 끊김 없음
 - [ ] DHT22 크리티컬 섹션(~5ms)이 카메라 DQBUF/인코더에 영향 없는지 `clips.enc_err` 로 확인
 
+### K-1b — 허브 OTA (2026-10-14 시작, Stage J 재사용)
+- [x] 서버: `firmware_releases.target` 에 `hub_p4` (마이그레이션 `2026-10-14_firmware_releases_hub_target.sql`), `ota_service.target_for(kind, entity)` 가 `cameras.model == esp32-p4-hub` 면 `hub_p4`, `release.project_name` ↔ target 교차 검증(스펙 J C6 서버측), 업로더 `--target hub_p4` + project_name 거절, 콘솔 OTA 버튼 target 을 model 로 선택. 테스트 4건
+- [ ] 마이그레이션 적용 + 프로덕션 배포 (사용자)
+- [ ] 펌웨어: 파티션 16MB `ota_0/ota_1`(카메라 표 그대로, nvs 0x9000 유지) + sdkconfig FLASHSIZE 16MB — **첫 1회 USB 플래시**
+- [ ] 펌웨어: 카메라 OTA 커밋 이식 (`26354d1` app_ota 2단계 + 부트로더 롤백 + 버전 한 소스, `5f0cd4d` prepare 16KB 태스크) — `app_mqtt.c`/`main.c` 충돌 수동 머지, heartbeat `capabilities.ota=true`
+- [ ] 실기: `p4hub-cfb51bef` 0.1.0(USB) → 0.1.1(OTA) prepare → ready → apply → verified. 허브는 LCD·DHT·PWM 이 얹혀 내부 RAM 이 카메라보다 빠듯 — prepare 재부팅 직후 TLS 다운로드 통과 여부 확인
+
 ### K-2 — 수명주기 묶기
 - [ ] `unlink`/`DELETE /cameras/{id}` 가 링크된 devices 행도 함께 해제/삭제 (`unlink_service`, `cameras.device_id`)
 - [ ] `offline_monitor`: 허브는 두 행이 각자 last_seen 갱신되므로 기본 동작으로 OK — 단 센서 스트림만 죽은 경우(기기 offline 알림만) 가 허브 장애인지 구분하는 로그

@@ -258,3 +258,41 @@ def test_scan_device_unknown_action_maps_to_old_firmware() -> None:
     sb.rows("commands").append({"id": "cmd-1", "status": "rejected", "result": "unknown_action"})
     svc.scan_once(sb)
     assert sb.one("ota_jobs", id="job-1")["error"] == "old_firmware"
+
+
+# ---------- Terra Hub (Stage K): model 로 target 분리 + project_name 교차 검증 (2026-10-14) ----------
+
+def test_target_for_hub_by_model() -> None:
+    assert svc.target_for("camera", _camera()) == "camera_p4"
+    assert svc.target_for("camera", _camera(model="esp32-p4")) == "camera_p4"
+    assert svc.target_for("camera", _camera(model="esp32-p4-hub")) == "hub_p4"
+    assert svc.target_for("device", {}) == "device_nano"
+
+
+def test_create_job_hub_rejects_camera_release() -> None:
+    # 카메라 bin(camera_p4) 을 허브에 — 둘 다 esp32p4 라 chip_id 로는 못 막고 target 으로 막는다
+    sb = FakeSB(firmware_releases=[_release()])
+    hub = _camera(camera_id="p4hub-cfb51bef", model="esp32-p4-hub", firmware_ver="terra-hub-p4 0.1.0-20261006")
+    with pytest.raises(svc.OtaError) as ei:
+        svc.create_job(sb, kind="camera", entity=hub, release_id=REL_CAM, issued_by=None)
+    assert ei.value.status_code == 400 and "hub_p4" in ei.value.detail
+    assert sb.rows("ota_jobs") == []
+
+
+def test_create_job_hub_accepts_hub_release() -> None:
+    rel = {**_release("rel-hub-1", target="hub_p4", version="terra-hub-p4 0.1.1-20261014"),
+           "project_name": "terra_hub_p4"}
+    sb = FakeSB(firmware_releases=[rel])
+    hub = _camera(camera_id="p4hub-cfb51bef", model="esp32-p4-hub", firmware_ver="terra-hub-p4 0.1.0-20261006")
+    job, release, payload = svc.create_job(sb, kind="camera", entity=hub, release_id="rel-hub-1", issued_by=None)
+    assert release["target"] == "hub_p4" and payload["version"] == "terra-hub-p4 0.1.1-20261014"
+    assert sb.one("ota_jobs", id=job["id"])["kind"] == "camera"
+
+
+def test_create_job_rejects_project_name_mismatch() -> None:
+    # target 은 맞춰 올렸지만 실제 빌드가 다른 프로젝트(허브 bin 을 camera_p4 로 등록한 경우)
+    rel = {**_release(), "project_name": "terra_hub_p4"}
+    sb = FakeSB(firmware_releases=[rel])
+    with pytest.raises(svc.OtaError) as ei:
+        svc.create_job(sb, kind="camera", entity=_camera(), release_id=REL_CAM, issued_by=None)
+    assert ei.value.status_code == 400 and "project_name" in ei.value.detail

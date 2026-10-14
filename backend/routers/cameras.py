@@ -644,7 +644,7 @@ def reboot_camera(
 # ---------- OTA (Stage J, specs/stage-j-ota.md) ----------
 
 class OtaRequest(BaseModel):
-    release_id: str = Field(..., description="firmware_releases.id (target=camera_p4)")
+    release_id: str = Field(..., description="firmware_releases.id (target=camera_p4, 허브 model=esp32-p4-hub 는 hub_p4)")
     force: bool = Field(
         False,
         description="사전 점검 게이트(오프라인·약한 WiFi·내부 RAM·부팅 직후·업로드/라이브 중·"
@@ -662,9 +662,9 @@ class OtaJobOut(BaseModel):
 
 
 _OTA_CAMERA_COLUMNS = (
-    "id, owner_id, camera_id, unlinked_at, firmware_ver, capabilities, clip_stats, "
+    "id, owner_id, camera_id, model, unlinked_at, firmware_ver, capabilities, clip_stats, "
     "last_seen_at, is_online, live_session_id"
-)
+)   # model: ota_service.target_for 가 허브(esp32-p4-hub) → hub_p4 를 고르는 기준
 
 
 def _load_camera_for_ota(sb, camera_uuid: str, user_id: str) -> dict[str, Any]:

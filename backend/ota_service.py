@@ -38,6 +38,25 @@ KIND_CAMERA = "camera"
 KIND_DEVICE = "device"
 # release.target ↔ job.kind. supermini 는 범위 밖(owner 결정 2026-10-06).
 TARGET_BY_KIND: dict[str, str] = {KIND_CAMERA: "camera_p4", KIND_DEVICE: "device_nano"}
+# Terra Hub(Stage K): cameras 행이지만 펌웨어가 다른 프로젝트. model 로 target 을 가른다(2026-10-14).
+HUB_MODEL = "esp32-p4-hub"
+TARGET_HUB = "hub_p4"
+# target 별 esp_app_desc.project_name(CMake project()). 카메라·허브가 같은 esp32p4 라 chip_id 로는
+# 못 가르므로 release.project_name 과 교차 검증한다(스펙 J C6). None 이면(구 릴리스) 검사 생략.
+EXPECTED_PROJECT_NAME: dict[str, str] = {
+    "camera_p4": "firebeetle2_p4_yr030",
+    "device_nano": "terra-iot",
+    TARGET_HUB: "terra_hub_p4",
+}
+
+
+def target_for(kind: str, entity: dict[str, Any]) -> str:
+    """이 기기가 받아야 할 release.target. 허브(cameras.model == esp32-p4-hub)만 hub_p4."""
+    if kind not in TARGET_BY_KIND:
+        raise OtaError(f"unknown kind {kind}", 400)
+    if kind == KIND_CAMERA and entity.get("model") == HUB_MODEL:
+        return TARGET_HUB
+    return TARGET_BY_KIND[kind]
 
 ACTIVE_STATUSES: frozenset[str] = frozenset({"pending", "accepted", "downloading", "ready", "applying"})
 TERMINAL_STATUSES: frozenset[str] = frozenset({"verified", "failed", "rolled_back", "timeout"})
@@ -198,9 +217,16 @@ def create_job(
     release = get_release(sb, release_id)
     if not release:
         raise OtaError("release not found", 404)
-    if release.get("target") != TARGET_BY_KIND[kind]:
+    want = target_for(kind, entity)
+    if release.get("target") != want:
         raise OtaError(
-            f"release target {release.get('target')} 은 {kind} 용이 아님", 400
+            f"release target {release.get('target')} 은 이 {kind}(기대 {want}) 용이 아님", 400
+        )
+    pn = release.get("project_name")
+    exp_pn = EXPECTED_PROJECT_NAME.get(want)
+    if pn and exp_pn and pn != exp_pn:
+        raise OtaError(
+            f"release project_name {pn!r} ≠ {want} 기대값 {exp_pn!r} — 다른 프로젝트 빌드", 400
         )
     if release.get("retired_at"):
         raise OtaError(
@@ -437,8 +463,12 @@ __all__ = [
     "KIND_DEVICE",
     "OtaError",
     "OtaMonitor",
+    "EXPECTED_PROJECT_NAME",
+    "HUB_MODEL",
     "TARGET_BY_KIND",
+    "TARGET_HUB",
     "TERMINAL_STATUSES",
+    "target_for",
     "TIMEOUT_BY_STATUS_SEC",
     "active_job_for",
     "apply_ack",

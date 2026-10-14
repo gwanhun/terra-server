@@ -1422,7 +1422,7 @@ async function otaRegistered(email, kind, obj, ident) {
     const token = data.session.access_token;
     await client.auth.signOut({ scope: 'local' });
     const isCam = kind === 'camera';
-    otaEntity(isCam ? 'cameras' : 'devices', obj.id, `${ident} · ${email}`, isCam ? 'camera_p4' : 'device_nano',
+    otaEntity(isCam ? 'cameras' : 'devices', obj.id, `${ident} · ${email}`, otaTargetOf(isCam, obj),
               { token, base: regApiBase() });
   } catch (e) {
     toast('❌ ' + (e.message || e), 'bad');
@@ -1822,7 +1822,12 @@ async function rebootCamera(id, label) {
 
 // ---------- OTA (Stage J, specs/stage-j-ota.md) ----------
 // 한 버튼으로 2단계를 다룬다: 진행 중 작업이 없으면 릴리스를 골라 prepare, ready 면 apply 를 묻는다.
-// kind: 'cameras' | 'devices', target: 'camera_p4' | 'device_nano'
+// kind: 'cameras' | 'devices', target: 'camera_p4' | 'device_nano' | 'hub_p4'
+// 허브(cameras.model == esp32-p4-hub)는 카메라 행이지만 펌웨어 프로젝트가 달라 hub_p4 릴리스만 받는다(서버 target_for 와 동일 규칙).
+function otaTargetOf(isCam, row) {
+  if (!isCam) return 'device_nano';
+  return row && row.model === 'esp32-p4-hub' ? 'hub_p4' : 'camera_p4';
+}
 // ─────────────────────────────────────────────────────────────────────────
 // OTA 모달 (Stage J) — 릴리스 드롭다운 → prepare 발행 → 진행 상태 자동 갱신 → ready 면 apply 버튼
 // ─────────────────────────────────────────────────────────────────────────
@@ -2334,7 +2339,7 @@ async function loadCameras() {
     CAM_LAST[r.id] = r;
     const tr = document.createElement('tr');
     tr.dataset.id = r.id;
-    tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td class="cam-fw">${fwCellHtml(r)}</td><td><select onchange="assignEnclosure('cameras','${r.id}',this.value)" style="max-width:130px">${enclosureOptions(r.enclosure_id)}</select></td><td class="cam-online">${onlineCellHtml(r)}</td><td class="cam-rotate">${rotateCellHtml(r)}</td><td class="cam-clips">${clipCellHtml(r)}</td><td style="white-space:nowrap"><button onclick="openLive('${r.id}', '${esc(r.camera_id)}')">라이브</button> <button onclick="rebootCamera('${r.id}','${esc(r.camera_id)}')" title="MQTT reboot 명령 1회 발행 — 신 펌웨어(≥0.2.0)만 반응, 구 펌웨어는 rejected 로그만">재부팅</button> <button onclick="otaEntity('cameras','${r.id}','${esc(r.camera_id)}','camera_p4')" title="OTA (Stage J) — prepare(다운로드) → ready 면 다시 눌러 apply(전환). capabilities.ota 보고 펌웨어만">OTA</button> <button onclick="toggleCameraLogs('${r.id}','${esc(r.camera_id)}')" title="펌웨어 에러 로그(camera_logs) — 행 아래 펼침, 다시 누르면 닫힘">로그</button> <button onclick="unlinkDevice('cameras','${r.id}')" title="소프트 해제 — 클립·R2 보존">해제</button> <button class="danger" onclick="deleteCamera('${r.id}')" title="hard delete — 클립 메타까지 삭제(운영용)">삭제</button></td>`;
+    tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td class="cam-fw">${fwCellHtml(r)}</td><td><select onchange="assignEnclosure('cameras','${r.id}',this.value)" style="max-width:130px">${enclosureOptions(r.enclosure_id)}</select></td><td class="cam-online">${onlineCellHtml(r)}</td><td class="cam-rotate">${rotateCellHtml(r)}</td><td class="cam-clips">${clipCellHtml(r)}</td><td style="white-space:nowrap"><button onclick="openLive('${r.id}', '${esc(r.camera_id)}')">라이브</button> <button onclick="rebootCamera('${r.id}','${esc(r.camera_id)}')" title="MQTT reboot 명령 1회 발행 — 신 펌웨어(≥0.2.0)만 반응, 구 펌웨어는 rejected 로그만">재부팅</button> <button onclick="otaEntity('cameras','${r.id}','${esc(r.camera_id)}','${otaTargetOf(true, r)}')" title="OTA (Stage J) — prepare(다운로드) → ready 면 다시 눌러 apply(전환). capabilities.ota 보고 펌웨어만. 허브(esp32-p4-hub)는 hub_p4 릴리스">OTA</button> <button onclick="toggleCameraLogs('${r.id}','${esc(r.camera_id)}')" title="펌웨어 에러 로그(camera_logs) — 행 아래 펼침, 다시 누르면 닫힘">로그</button> <button onclick="unlinkDevice('cameras','${r.id}')" title="소프트 해제 — 클립·R2 보존">해제</button> <button class="danger" onclick="deleteCamera('${r.id}')" title="hard delete — 클립 메타까지 삭제(운영용)">삭제</button></td>`;
     tbody.appendChild(tr);
   });
 }

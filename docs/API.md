@@ -814,7 +814,7 @@ POST /cameras/{camera_uuid}/reboot        (본문 없음)
 카메라(P4)·기기(nano)에 펌웨어를 케이블 없이 배포. **2단계**: `prepare`(다운로드·검증·비활성 슬롯 기록, 부팅 파티션 불변) → `apply`(전환+재부팅).
 앱 노출 없음(운영 콘솔·스크립트 전용). supermini 는 범위 밖.
 
-**릴리스 등록** — `uv run python scripts/upload_firmware.py --target camera_p4 --bin build/x.bin [--elf build/x.elf]`.
+**릴리스 등록** — `uv run python scripts/upload_firmware.py --target camera_p4|device_nano|hub_p4 --bin build/x.bin [--elf build/x.elf]`. target 별 `esp_app_desc.project_name`(camera_p4=firebeetle2_p4_yr030, device_nano=terra-iot, hub_p4=terra_hub_p4) 이 다르면 거절. 허브(cameras.model=esp32-p4-hub)의 `POST /cameras/{id}/ota` 는 hub_p4 릴리스만 받는다(`ota_service.target_for`).
 버전은 사람이 넘기지 않고 바이너리의 `esp_app_desc.version` 에서 읽는다. chip_id 불일치·`-dirty`·같은 (target, version)·바이너리 내 자격증명 흔적은 거절.
 
 **릴리스 삭제/퇴역** (2026-10-08) — `uv run python scripts/upload_firmware.py --delete <release_id> --reason "…" [--yes]`.
@@ -835,7 +835,7 @@ POST /devices/{device_uuid}/ota            { "release_id", "force" }     → 201
 POST /devices/{device_uuid}/ota/{job_id}/apply                          → 200 { ..., "command_id" }
    기기는 commands 테이블을 거친다(action ota_prepare / ota_apply, ttl 60) — ack/no_ack/expired 가 commands 에 남는다.
 
-GET  /firmware/releases?target=camera_p4[&include_retired=true]
+GET  /firmware/releases?target=camera_p4|device_nano|hub_p4[&include_retired=true]
                                            → [{ id, target, version, size_bytes, sha256, project_name, idf_ver, notes, created_at, retired_at, retired_reason }]
 GET  /firmware/jobs?target_uuid=…          → [{ id, kind, target_uuid, release_id, version, status, pct, prev_version, error, forced, created_at, updated_at, applied_at, finished_at }]
 GET  /firmware/jobs/{job_id}               → 위 1건 (본인 기기 작업만, 아니면 404)

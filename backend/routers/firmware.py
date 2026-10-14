@@ -94,7 +94,7 @@ def _job_out(j: dict[str, Any], version: str | None) -> JobOut:
 @router.get("/releases", response_model=list[ReleaseOut], summary="OTA 릴리스 목록",
             responses={**_AUTH_REQUIRED})
 def list_releases(
-    target: str | None = Query(None, description="camera_p4 | device_nano"),
+    target: str | None = Query(None, description="camera_p4 | device_nano | hub_p4"),
     limit: int = Query(50, ge=1, le=200),
     include_retired: bool = Query(False, description="퇴역(retired_at 설정) 릴리스도 포함"),
     _user_id: str = Depends(get_current_user_id),

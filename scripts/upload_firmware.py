@@ -44,6 +44,8 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(REPO_ROOT / ".env")
 
+from backend.ota_service import EXPECTED_PROJECT_NAME  # noqa: E402  (target ↔ project_name 한 소스)
+
 # ESP-IDF 이미지: [esp_image_header_t 24B][esp_image_segment_header_t 8B][esp_app_desc_t ...]
 _IMAGE_MAGIC = 0xE9
 _APP_DESC_OFFSET = 24 + 8
@@ -51,7 +53,7 @@ _APP_DESC_MAGIC = 0xABCD5432
 # esp_app_desc_t: magic(4) secure_version(4) reserv1(8) version(32) project_name(32) time(16) date(16) idf_ver(32) app_elf_sha256(32)
 _APP_DESC_FMT = "<II8s32s32s16s16s32s32s"
 # esp_chip_id_t
-CHIP_ID_BY_TARGET: dict[str, int] = {"camera_p4": 0x0012, "device_nano": 0x0009}
+CHIP_ID_BY_TARGET: dict[str, int] = {"camera_p4": 0x0012, "device_nano": 0x0009, "hub_p4": 0x0012}
 CHIP_NAME: dict[int, str] = {0x0012: "esp32p4", 0x0009: "esp32s3", 0x0000: "esp32", 0x0002: "esp32s2",
                              0x0005: "esp32c3", 0x000D: "esp32c6"}
 
@@ -211,6 +213,12 @@ def cmd_upload(args: argparse.Namespace) -> int:
     if not desc.version:
         print("거절: esp_app_desc.version 이 비어 있음 — APP_PROJECT_VER 설정 확인", file=sys.stderr)
         return 2
+    # 카메라·허브는 둘 다 esp32p4 라 chip_id 로 못 가른다 → project_name(CMake project()) 으로 교차 검증.
+    exp_pn = EXPECTED_PROJECT_NAME.get(args.target)
+    if exp_pn and desc.project_name != exp_pn:
+        print(f"거절: project_name={desc.project_name!r} 인데 target {args.target} 은 {exp_pn!r} 빌드여야 함 "
+              f"(카메라 bin 을 hub_p4 로, 허브 bin 을 camera_p4 로 올리는 실수 차단)", file=sys.stderr)
+        return 2
     if "-dirty" in desc.version and not args.allow_dirty:
         print(f"거절: dirty 빌드 {desc.version!r} — 커밋 후 다시 빌드하거나 --allow-dirty", file=sys.stderr)
         return 2
@@ -269,7 +277,7 @@ def cmd_upload(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--target", choices=sorted(CHIP_ID_BY_TARGET), help="camera_p4 | device_nano")
+    p.add_argument("--target", choices=sorted(CHIP_ID_BY_TARGET), help="camera_p4 | device_nano | hub_p4")
     p.add_argument("--bin", help="idf.py build 산출 앱 .bin")
     p.add_argument("--elf", help="같은 빌드의 .elf (코어덤프 해석용, 선택)")
     p.add_argument("--notes", help="릴리스 메모")
