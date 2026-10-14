@@ -94,7 +94,8 @@ sdkconfig 의 `BT_NIMBLE_HCI_UART_CTS_PIN=23` 은 UART 전송이 꺼져 있어(V
 - [x] 마이그레이션 적용 + 프로덕션 배포 (2026-10-14)
 - [x] 펌웨어: 파티션 16MB `ota_0/ota_1`(카메라 표 그대로, nvs 0x9000 유지) + sdkconfig FLASHSIZE 16MB — **첫 1회 USB 플래시**
 - [x] 펌웨어: 카메라 OTA 커밋 이식 (`26354d1` app_ota 2단계 + 부트로더 롤백 + 버전 한 소스, `5f0cd4d` prepare 16KB 태스크) — `app_mqtt.c`/`main.c` 충돌 수동 머지, heartbeat `capabilities.ota=true`
-- [x] 실기 **통과(2026-10-14)**: `p4hub-cfb51bef` 0.1.0 → 0.2.0(USB, release 7913e337) → 0.2.1(OTA, release 00810141, job 543bdbc4). prepare→ready 41초, apply→verified 25초. 게이트 사유 없음(int_largest 46KB, rssi -37). 재부팅 사유 `SW:ota_prepare` → `SW:ota_apply` prepare → ready → apply → verified. 허브는 LCD·DHT·PWM 이 얹혀 내부 RAM 이 카메라보다 빠듯 — prepare 재부팅 직후 TLS 다운로드 통과 여부 확인
+- [x] 실기 **통과(2026-10-14)**: `p4hub-cfb51bef` 0.1.0 → 0.2.0(USB, release 7913e337) → 0.2.1(OTA, release 00810141, job 543bdbc4). prepare→ready 41초, apply→verified 25초. 게이트 사유 없음(int_largest 46KB, rssi -37). 재부팅 사유 `SW:ota_prepare` → `SW:ota_apply`
+- [x] **카메라 개선 동기화 + 2차 OTA 통과(2026-10-14)**: cam `e39b108`(코어덤프·패닉 IRAM) + `787b7d9`(0.3.5) + 카메라 트리 **미커밋 0.3.6~0.3.9 작업**(errlog·app_sys·clip_sd·uploader·net_diag)을 패치로 이식 → 허브 `0.3.0-20261014`(release 2fa43128). OTA 0.2.1→0.3.0 job 5ca936a4 prepare 36s / apply 25s verified. heartbeat 에 net/temp/ch 필드 등장. ⚠ 내부 RAM 이 0.2.1(int_free 134KB / largest 46KB) → 0.3.0(67KB / 31KB) 으로 줄었음(카메라 0.3.x 와 같은 수준). 게이트(8KB)엔 여유 prepare → ready → apply → verified. 허브는 LCD·DHT·PWM 이 얹혀 내부 RAM 이 카메라보다 빠듯 — prepare 재부팅 직후 TLS 다운로드 통과 여부 확인
 
 ### K-2 — 수명주기 묶기
 - [ ] `unlink`/`DELETE /cameras/{id}` 가 링크된 devices 행도 함께 해제/삭제 (`unlink_service`, `cameras.device_id`)
