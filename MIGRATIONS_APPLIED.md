@@ -42,7 +42,7 @@ Supabase 에 적용한 마이그레이션 기록(SOT). `migrations/*.sql` 을 SQ
 | ✅ | `2026-10-07_devices_lcd_text.sql` | 2026-10-07 | `devices.lcd_text` TEXT + `lcd_text_updated_at` — LCD 문구 원문, 기기 ACK ok 시 확정(앱 요청 2026-10-06). 코드 머지 전 적용, 적용 직후 information_schema 로 2컬럼 확인 |
 | ✅ | `2026-10-07_firmware_ota.sql` | 2026-10-07 | `firmware_releases` + `ota_jobs` (Stage J OTA, specs/stage-j-ota.md). 코드(`a45883a`) 서버 배포 전 적용, 적용 직후 `scripts/ota_status.py` 로 두 테이블 조회 확인(0행) |
 | ✅ | `2026-10-08_firmware_releases_retired.sql` | 2026-10-08 | `firmware_releases.retired_at` + `retired_reason` — 릴리스 퇴역(soft-delete). 코드(API 0.9.1, `f289d4a`) 서버 배포 전 적용. 적용 직후 `upload_firmware.py --delete` 로 카메라 0.3.2 퇴역 성공(미적용 때는 PGRST204 로 rc 4, R2 보존 확인) |
-| ⬜ | `2026-10-14_firmware_releases_hub_target.sql` | (미적용) | `firmware_releases.target` CHECK 에 `hub_p4` 추가 — Terra Hub OTA(Stage K-1b). **코드보다 먼저 적용**: 미적용 상태에서 `upload_firmware.py --target hub_p4` 는 CHECK 위반(23514)으로 거절되고 기존 camera_p4/nano OTA 는 영향 없음 |
+| ✅ | `2026-10-14_firmware_releases_hub_target.sql` | 2026-10-14 | `firmware_releases.target` CHECK 에 `hub_p4` 추가 — Terra Hub OTA(Stage K-1b). 코드(`3df8758`) 서버 배포 전 적용. 적용 직후 `upload_firmware.py --target hub_p4` 로 허브 0.2.0 등록 성공(release 7913e337) 으로 CHECK 확장 확인 |
 | ✅ | `2026-10-06_hub_link.sql` | 2026-10-07 | `cameras.device_id` UUID FK → devices — Terra Hub(카메라+센서 통합) 짝 행 링크(Stage K). 코드(90ac2fe)보다 먼저 적용됨 |
 
 ## 규칙
