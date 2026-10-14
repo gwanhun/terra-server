@@ -91,10 +91,10 @@ sdkconfig 의 `BT_NIMBLE_HCI_UART_CTS_PIN=23` 은 UART 전송이 꺼져 있어(V
 
 ### K-1b — 허브 OTA (2026-10-14 시작, Stage J 재사용)
 - [x] 서버: `firmware_releases.target` 에 `hub_p4` (마이그레이션 `2026-10-14_firmware_releases_hub_target.sql`), `ota_service.target_for(kind, entity)` 가 `cameras.model == esp32-p4-hub` 면 `hub_p4`, `release.project_name` ↔ target 교차 검증(스펙 J C6 서버측), 업로더 `--target hub_p4` + project_name 거절, 콘솔 OTA 버튼 target 을 model 로 선택. 테스트 4건
-- [x] 마이그레이션 적용 (2026-10-14, 허브 0.2.0 을 hub_p4 로 등록해 확인) · [ ] 프로덕션 배포 (사용자)
+- [x] 마이그레이션 적용 + 프로덕션 배포 (2026-10-14)
 - [x] 펌웨어: 파티션 16MB `ota_0/ota_1`(카메라 표 그대로, nvs 0x9000 유지) + sdkconfig FLASHSIZE 16MB — **첫 1회 USB 플래시**
 - [x] 펌웨어: 카메라 OTA 커밋 이식 (`26354d1` app_ota 2단계 + 부트로더 롤백 + 버전 한 소스, `5f0cd4d` prepare 16KB 태스크) — `app_mqtt.c`/`main.c` 충돌 수동 머지, heartbeat `capabilities.ota=true`
-- [ ] 실기: `p4hub-cfb51bef` 0.1.0 → 0.2.0(USB, 빌드·release 7913e337 등록 완료, 플래시 대기) → 0.2.1(OTA) prepare → ready → apply → verified. 허브는 LCD·DHT·PWM 이 얹혀 내부 RAM 이 카메라보다 빠듯 — prepare 재부팅 직후 TLS 다운로드 통과 여부 확인
+- [x] 실기 **통과(2026-10-14)**: `p4hub-cfb51bef` 0.1.0 → 0.2.0(USB, release 7913e337) → 0.2.1(OTA, release 00810141, job 543bdbc4). prepare→ready 41초, apply→verified 25초. 게이트 사유 없음(int_largest 46KB, rssi -37). 재부팅 사유 `SW:ota_prepare` → `SW:ota_apply` prepare → ready → apply → verified. 허브는 LCD·DHT·PWM 이 얹혀 내부 RAM 이 카메라보다 빠듯 — prepare 재부팅 직후 TLS 다운로드 통과 여부 확인
 
 ### K-2 — 수명주기 묶기
 - [ ] `unlink`/`DELETE /cameras/{id}` 가 링크된 devices 행도 함께 해제/삭제 (`unlink_service`, `cameras.device_id`)
