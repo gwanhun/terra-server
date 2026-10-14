@@ -1621,15 +1621,13 @@ async function toggleCameraTest(cam, hostDiv, btn, email) {
   logBtn.onclick = async () => {
     logBox.style.display = 'block'; logBox.textContent = '불러오는 중…';
     try {
-      const rows = await api('/cameras/' + cam.id + '/logs?limit=100');
-      // 0.3.6~: "N (ms) …" 는 펌웨어 판단 기록(부팅 표식·재부팅 사유·AP 이동·클립 유실·링 유실).
-      // 부팅 표식 앞엔 구분선을 넣어 타임라인을 부팅 단위로 읽게 한다(최신순이라 선은 아래쪽 경계).
-      logBox.textContent = rows.length ? rows.map(r =>
-        (/^N \(\d+\) boot: /.test(r.msg) ? '──────── 부팅 ────────\n' : '') +
-        (r.created_at || '').slice(5, 19).replace('T', ' ') + (r.prev_boot ? ' [이전 부팅]' : '') +
-        ' up' + (r.uptime_s ?? '?') + 's ' + r.msg + (r.count > 1 ? '  x' + r.count : '')).join('\n')
-        : '(에러 로그 없음)';
-    } catch (e) { logBox.textContent = '조회 실패: ' + e; }
+      // 카메라 소유자는 그 테스트 계정 → 메인 세션 api() 로는 404. 그 계정 토큰으로 조회.
+      const token = await regAccessToken(email);
+      const res = await fetch(regApiBase() + '/cameras/' + cam.id + '/logs?limit=100',
+        { cache: 'no-store', headers: { 'Authorization': 'Bearer ' + token } });
+      if (!res.ok) throw new Error(res.status + ' ' + (await res.text()).slice(0, 80));
+      logBox.textContent = formatCameraLogs(await res.json());
+    } catch (e) { logBox.textContent = '조회 실패: ' + (e.message || e); }
   };
   panel.appendChild(logBtn); panel.appendChild(logBox);
   hostDiv.appendChild(panel); btn.textContent = '닫기';
@@ -2283,6 +2281,44 @@ function onlineCellHtml(r) {
 
 // 펌웨어 버전 셀 — heartbeat 보고값(cameras.firmware_ver). 미보고(구 펌웨어/첫 접속 전)는 —.
 // capabilities.ota 가 true 면 OTA 가능 표시(Stage J).
+// camera_logs 행 → 텍스트. 0.3.6~: "N (ms) …" 는 펌웨어 판단 기록(부팅 표식·재부팅 사유·AP 이동·
+// 클립 유실·링 유실). 부팅 표식 앞엔 구분선을 넣어 타임라인을 부팅 단위로 읽게 한다(최신순이라 선은 아래쪽 경계).
+function formatCameraLogs(rows) {
+  if (!rows || !rows.length) return '(에러 로그 없음)';
+  return rows.map(r =>
+    (/^N \(\d+\) boot: /.test(r.msg) ? '──────── 부팅 ────────\n' : '') +
+    (r.created_at || '').slice(5, 19).replace('T', ' ') + (r.prev_boot ? ' [이전 부팅]' : '') +
+    ' up' + (r.uptime_s ?? '?') + 's ' + r.msg + (r.count > 1 ? '  x' + r.count : '')).join('\n');
+}
+
+// 메인 카메라 패널 [로그] — 행 바로 아래에 펼침 행을 넣어 GET /cameras/{id}/logs 를 보여준다. 다시 누르면 닫힘.
+// 펼침 행은 data-id 가 없어 Realtime updateCameraRow 가 건드리지 않는다(새로고침으로 표를 다시 그리면 닫힘).
+async function toggleCameraLogs(id, label) {
+  const tr = document.querySelector(`#cam-table tr[data-id="${id}"]`);
+  if (!tr) return;
+  const open = tr.nextElementSibling;
+  if (open && open.classList.contains('cam-log-row')) { open.remove(); return; }
+  const row = document.createElement('tr'); row.className = 'cam-log-row';
+  const td = document.createElement('td'); td.colSpan = tr.children.length; td.style.padding = '4px 8px 8px 24px';
+  const head = document.createElement('div'); head.style.cssText = 'font-size:11px;display:flex;gap:6px;align-items:center';
+  head.innerHTML = `<b>${esc(label)}</b> <span class="muted">에러 로그 (펌웨어 ESP_LOGE · heartbeat errs → camera_logs, 최신순 200줄)</span>`;
+  const rf = document.createElement('button'); rf.textContent = '새로고침'; rf.style.cssText = 'font-size:10px;padding:1px 6px';
+  const cl = document.createElement('button'); cl.textContent = '닫기'; cl.style.cssText = 'font-size:10px;padding:1px 6px';
+  cl.onclick = () => row.remove();
+  head.appendChild(rf); head.appendChild(cl);
+  const pre = document.createElement('pre');
+  pre.style.cssText = 'margin:4px 0 0;max-height:320px;overflow:auto;font-size:10.5px;white-space:pre-wrap';
+  const load = async () => {
+    pre.textContent = '불러오는 중…';
+    const rows = await api('/cameras/' + id + '/logs?limit=200');
+    pre.textContent = rows ? formatCameraLogs(rows) : '조회 실패';
+  };
+  rf.onclick = load;
+  td.appendChild(head); td.appendChild(pre); row.appendChild(td);
+  tr.after(row);
+  load();
+}
+
 function fwCellHtml(r) {
   if (!r.firmware_ver) return '<small class="muted">—</small>';
   const cap = r.capabilities || {};
@@ -2298,7 +2334,7 @@ async function loadCameras() {
     CAM_LAST[r.id] = r;
     const tr = document.createElement('tr');
     tr.dataset.id = r.id;
-    tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td class="cam-fw">${fwCellHtml(r)}</td><td><select onchange="assignEnclosure('cameras','${r.id}',this.value)" style="max-width:130px">${enclosureOptions(r.enclosure_id)}</select></td><td class="cam-online">${onlineCellHtml(r)}</td><td class="cam-rotate">${rotateCellHtml(r)}</td><td class="cam-clips">${clipCellHtml(r)}</td><td style="white-space:nowrap"><button onclick="openLive('${r.id}', '${esc(r.camera_id)}')">라이브</button> <button onclick="rebootCamera('${r.id}','${esc(r.camera_id)}')" title="MQTT reboot 명령 1회 발행 — 신 펌웨어(≥0.2.0)만 반응, 구 펌웨어는 rejected 로그만">재부팅</button> <button onclick="otaEntity('cameras','${r.id}','${esc(r.camera_id)}','camera_p4')" title="OTA (Stage J) — prepare(다운로드) → ready 면 다시 눌러 apply(전환). capabilities.ota 보고 펌웨어만">OTA</button> <button onclick="unlinkDevice('cameras','${r.id}')" title="소프트 해제 — 클립·R2 보존">해제</button> <button class="danger" onclick="deleteCamera('${r.id}')" title="hard delete — 클립 메타까지 삭제(운영용)">삭제</button></td>`;
+    tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td class="cam-fw">${fwCellHtml(r)}</td><td><select onchange="assignEnclosure('cameras','${r.id}',this.value)" style="max-width:130px">${enclosureOptions(r.enclosure_id)}</select></td><td class="cam-online">${onlineCellHtml(r)}</td><td class="cam-rotate">${rotateCellHtml(r)}</td><td class="cam-clips">${clipCellHtml(r)}</td><td style="white-space:nowrap"><button onclick="openLive('${r.id}', '${esc(r.camera_id)}')">라이브</button> <button onclick="rebootCamera('${r.id}','${esc(r.camera_id)}')" title="MQTT reboot 명령 1회 발행 — 신 펌웨어(≥0.2.0)만 반응, 구 펌웨어는 rejected 로그만">재부팅</button> <button onclick="otaEntity('cameras','${r.id}','${esc(r.camera_id)}','camera_p4')" title="OTA (Stage J) — prepare(다운로드) → ready 면 다시 눌러 apply(전환). capabilities.ota 보고 펌웨어만">OTA</button> <button onclick="toggleCameraLogs('${r.id}','${esc(r.camera_id)}')" title="펌웨어 에러 로그(camera_logs) — 행 아래 펼침, 다시 누르면 닫힘">로그</button> <button onclick="unlinkDevice('cameras','${r.id}')" title="소프트 해제 — 클립·R2 보존">해제</button> <button class="danger" onclick="deleteCamera('${r.id}')" title="hard delete — 클립 메타까지 삭제(운영용)">삭제</button></td>`;
     tbody.appendChild(tr);
   });
 }
