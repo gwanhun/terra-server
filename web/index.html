@@ -408,7 +408,7 @@ hr { border: none; border-top: 1px solid #333; margin: 12px 0; }
     </div>
     <div id="cam-token" class="hidden"></div>
     <table id="cam-table">
-      <thead><tr><th>camera_id</th><th>이름</th><th>model</th><th>사육장</th><th>online</th><th title="rotate_180 설정(진실). capabilities.rotate_180 보고 전엔 비활성">회전 180°</th><th title="클립 파이프라인: 녹화/스킵/업로드실패/SD백로그 · 마지막 녹화 경과">클립</th><th></th></tr></thead>
+      <thead><tr><th>camera_id</th><th>이름</th><th>model</th><th title="heartbeat 가 보고한 펌웨어 버전(esp_app_desc.version). 마우스 올리면 capabilities">fw</th><th>사육장</th><th>online</th><th title="rotate_180 설정(진실). capabilities.rotate_180 보고 전엔 비활성">회전 180°</th><th title="클립 파이프라인: 녹화/스킵/업로드실패/SD백로그 · 마지막 녹화 경과">클립</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </div>
@@ -2281,6 +2281,14 @@ function onlineCellHtml(r) {
   return r.is_online ? '<span class="good">●</span>' : '<span class="muted">○</span>';
 }
 
+// 펌웨어 버전 셀 — heartbeat 보고값(cameras.firmware_ver). 미보고(구 펌웨어/첫 접속 전)는 —.
+// capabilities.ota 가 true 면 OTA 가능 표시(Stage J).
+function fwCellHtml(r) {
+  if (!r.firmware_ver) return '<small class="muted">—</small>';
+  const cap = r.capabilities || {};
+  return `<small title="${esc(JSON.stringify(cap))}"><code>${esc(r.firmware_ver)}</code>${cap.ota ? ' <span class="good" title="capabilities.ota — OTA 지원 펌웨어">OTA</span>' : ''}</small>`;
+}
+
 async function loadCameras() {
   const rows = await api('/cameras');
   const tbody = document.querySelector('#cam-table tbody');
@@ -2290,7 +2298,7 @@ async function loadCameras() {
     CAM_LAST[r.id] = r;
     const tr = document.createElement('tr');
     tr.dataset.id = r.id;
-    tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td><select onchange="assignEnclosure('cameras','${r.id}',this.value)" style="max-width:130px">${enclosureOptions(r.enclosure_id)}</select></td><td class="cam-online">${onlineCellHtml(r)}</td><td class="cam-rotate">${rotateCellHtml(r)}</td><td class="cam-clips">${clipCellHtml(r)}</td><td style="white-space:nowrap"><button onclick="openLive('${r.id}', '${esc(r.camera_id)}')">라이브</button> <button onclick="rebootCamera('${r.id}','${esc(r.camera_id)}')" title="MQTT reboot 명령 1회 발행 — 신 펌웨어(≥0.2.0)만 반응, 구 펌웨어는 rejected 로그만">재부팅</button> <button onclick="otaEntity('cameras','${r.id}','${esc(r.camera_id)}','camera_p4')" title="OTA (Stage J) — prepare(다운로드) → ready 면 다시 눌러 apply(전환). capabilities.ota 보고 펌웨어만">OTA</button> <button onclick="unlinkDevice('cameras','${r.id}')" title="소프트 해제 — 클립·R2 보존">해제</button> <button class="danger" onclick="deleteCamera('${r.id}')" title="hard delete — 클립 메타까지 삭제(운영용)">삭제</button></td>`;
+    tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td class="cam-fw">${fwCellHtml(r)}</td><td><select onchange="assignEnclosure('cameras','${r.id}',this.value)" style="max-width:130px">${enclosureOptions(r.enclosure_id)}</select></td><td class="cam-online">${onlineCellHtml(r)}</td><td class="cam-rotate">${rotateCellHtml(r)}</td><td class="cam-clips">${clipCellHtml(r)}</td><td style="white-space:nowrap"><button onclick="openLive('${r.id}', '${esc(r.camera_id)}')">라이브</button> <button onclick="rebootCamera('${r.id}','${esc(r.camera_id)}')" title="MQTT reboot 명령 1회 발행 — 신 펌웨어(≥0.2.0)만 반응, 구 펌웨어는 rejected 로그만">재부팅</button> <button onclick="otaEntity('cameras','${r.id}','${esc(r.camera_id)}','camera_p4')" title="OTA (Stage J) — prepare(다운로드) → ready 면 다시 눌러 apply(전환). capabilities.ota 보고 펌웨어만">OTA</button> <button onclick="unlinkDevice('cameras','${r.id}')" title="소프트 해제 — 클립·R2 보존">해제</button> <button class="danger" onclick="deleteCamera('${r.id}')" title="hard delete — 클립 메타까지 삭제(운영용)">삭제</button></td>`;
     tbody.appendChild(tr);
   });
 }
@@ -2315,6 +2323,7 @@ function updateCameraRow(r) {
   const tr = document.querySelector(`#cam-table tr[data-id="${r.id}"]`);
   if (!tr) { loadCameras(); return; }
   const on = tr.querySelector('.cam-online'); if (on) on.innerHTML = onlineCellHtml(r);
+  const fw = tr.querySelector('.cam-fw'); if (fw) fw.innerHTML = fwCellHtml(r);
   const rc = tr.querySelector('.cam-rotate'); if (rc) rc.innerHTML = rotateCellHtml(r);
   const cc = tr.querySelector('.cam-clips'); if (cc) cc.innerHTML = clipCellHtml(r);
 }
