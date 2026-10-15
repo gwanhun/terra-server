@@ -1480,3 +1480,21 @@ def test_camera_telemetry_sys_state_net_diag(fake_sb: MagicMock, published: list
     assert sy["net"] == {"disc": 3, "reason": 200, "disc_age_s": 120, "cp_fail": 0, "cp_down": 0,
                          "cp_init": 1, "flap": True, "disc_bssid": "b0:38:6c:37:ba:ea"}
     assert cs["sd_fault"] == 4
+
+
+def test_camera_telemetry_sys_state_txpwr(fake_sb: MagicMock, published: list) -> None:
+    """0.4.x txpwr_q4(0.25dBm, /ctrl txpower 진단 노브 적용값) → clip_stats.sys. 범위 밖·비숫자는 버림."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _camera_state_table_factory(updates, rotate_180=True)
+    handlers.handle_telemetry(CAMERA_TEXT, {
+        "ts": 1, "uptime_sec": 300, "wifi_rssi": -40, "bssid": "b0:38:6c:37:ba:ea", "ch": 9,
+        "txpwr_q4": 8, "clips": {"rec": 0},
+    })
+    sy = [u for u in updates if "clip_stats" in u][-1]["clip_stats"]["sys"]
+    assert sy["txpwr_q4"] == 8 and sy["rssi"] == -40
+
+    for bad in (200, -5, "84", None):
+        updates.clear()
+        handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "uptime_sec": 301, "txpwr_q4": bad, "clips": {"rec": 0}})
+        sy = [u for u in updates if "clip_stats" in u][-1]["clip_stats"]["sys"]
+        assert "txpwr_q4" not in sy, bad

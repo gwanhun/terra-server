@@ -548,6 +548,11 @@ def _sys_state(kind: str, id_text: str, entity_uuid: str, payload: dict[str, Any
     ch = payload.get("ch")
     if isinstance(ch, (int, float)):
         sys_state["ch"] = int(ch)
+    # 2026-10-15 펌웨어(0.4.1)부터: WiFi 최대 송신 출력(0.25dBm 단위). /ctrl?var=txpower 진단
+    # 노브(SD 0x108 전원 가설 판별)의 실제 적용값을 콘솔에서 확인하기 위함. 기본 84(=21dBm).
+    txpwr = payload.get("txpwr_q4")
+    if isinstance(txpwr, (int, float)) and -1 <= txpwr <= 127:
+        sys_state["txpwr_q4"] = int(txpwr)
     net = payload.get("net")
     if isinstance(net, dict):
         nd: dict[str, Any] = {}
