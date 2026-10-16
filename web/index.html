@@ -734,7 +734,7 @@ async function loadEnclosures() {
   tbody.innerHTML = '';
   ENCLOSURES.forEach(r => {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td><code>${r.id.slice(0,8)}</code></td><td>${esc(r.name)}</td><td>${esc(r.species || '-')}</td><td>${r.camera_count ?? 0}</td><td>${r.device_count ?? 0}</td><td><small>${esc(r.created_at?.slice(0,16) || '')}</small></td><td><button class="danger" onclick="deleteEnclosure('${r.id}')">삭제</button></td>`;
+    tr.innerHTML = `<td><code>${r.id.slice(0,8)}</code></td><td>${esc(r.name)}</td><td>${esc(r.species || '-')}</td><td>${r.camera_count ?? 0}</td><td>${r.device_count ?? 0}</td><td><small>${esc(fmtKst(r.created_at))}</small></td><td><button class="danger" onclick="deleteEnclosure('${r.id}')">삭제</button></td>`;
     tbody.appendChild(tr);
   });
   // 캐시 갱신됐으니 배정 드롭다운/폼도 최신화
@@ -2288,11 +2288,17 @@ function onlineCellHtml(r) {
 // capabilities.ota 가 true 면 OTA 가능 표시(Stage J).
 // camera_logs 행 → 텍스트. 0.3.6~: "N (ms) …" 는 펌웨어 판단 기록(부팅 표식·재부팅 사유·AP 이동·
 // 클립 유실·링 유실). 부팅 표식 앞엔 구분선을 넣어 타임라인을 부팅 단위로 읽게 한다(최신순이라 선은 아래쪽 경계).
+// created_at(UTC ISO) → "MM-DD HH:MM:SS" KST. 문자열을 그대로 자르면 UTC 로 보여서(2026-10-16) +9h 로 변환.
+function fmtKstSec(iso) {
+  const t = Date.parse(iso || '');
+  if (Number.isNaN(t)) return (iso || '').slice(5, 19).replace('T', ' ');
+  return new Date(t + 9 * 3600e3).toISOString().slice(5, 19).replace('T', ' ');
+}
 function formatCameraLogs(rows) {
   if (!rows || !rows.length) return '(에러 로그 없음)';
   return rows.map(r =>
     (/^N \(\d+\) boot: /.test(r.msg) ? '──────── 부팅 ────────\n' : '') +
-    (r.created_at || '').slice(5, 19).replace('T', ' ') + (r.prev_boot ? ' [이전 부팅]' : '') +
+    fmtKstSec(r.created_at) + (r.prev_boot ? ' [이전 부팅]' : '') +
     ' up' + (r.uptime_s ?? '?') + 's ' + r.msg + (r.count > 1 ? '  x' + r.count : '')).join('\n');
 }
 
