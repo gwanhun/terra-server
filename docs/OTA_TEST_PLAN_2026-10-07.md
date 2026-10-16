@@ -61,7 +61,8 @@ uv run python scripts/upload_firmware.py --list
 | 3-8 | 사후 | 회전·ROI·자격증명 그대로(NVS). 콘솔 OTA 버튼 다시 누르면 "같은 버전" 409 | — |
 
 실패 분기:
-- 3-1 에서 409 `precheck failed: …` → 사유대로(offline/weak_wifi/low_internal_ram/just_booted/uploading/live_active/no_ota_capability). 개발 중엔 콘솔 입력에 `1 force`.
+- 3-1 에서 409 `precheck failed: …` → 사유대로(offline/weak_wifi/low_internal_ram/just_booted/no_ota_capability). 개발 중엔 콘솔 입력에 `1 force`.
+  `uploading`/`live_active` 는 2026-10-16 폐지(펌웨어 0.4.5 가 보류 처리), `just_booted` 는 크래시 직후 5분·정상 재부팅 60초.
 - 3-2 에서 `busy` → 녹화·업로드·라이브 중. 끝난 뒤 재시도.
 - 3-3 에서 `failed` + error → [펌웨어 docs/OTA.md 실패 사유 표](../../esp32/firebeetle2-p4-yr030/docs/OTA.md). `connect`/`tls` 면 서버 URL·인증서, `http_401` 이면 토큰, `http_409` 면 작업 상태.
 - 3-7 에서 10분 무소식 → `timeout`. 시리얼로 어디서 멈췄는지 확인.

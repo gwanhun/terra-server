@@ -60,15 +60,43 @@ def test_gate_passes_healthy_camera() -> None:
         ({"last_seen_at": None}, "never_seen"),
         ({"capabilities": {"rotate_180": True}}, "no_ota_capability"),
         ({"capabilities": None}, "no_ota_capability"),
-        ({"clip_stats": {"up_busy_s": 12, "sys": {"uptime_s": 3600, "rssi": -55, "int_largest": 60_000}}}, "uploading"),
         ({"clip_stats": {"up_busy_s": -1, "sys": {"uptime_s": 3600, "rssi": -80, "int_largest": 60_000}}}, "weak_wifi"),
         ({"clip_stats": {"up_busy_s": -1, "sys": {"uptime_s": 3600, "rssi": -55, "int_largest": 6_000}}}, "low_internal_ram"),
         ({"clip_stats": {"up_busy_s": -1, "sys": {"uptime_s": 20, "rssi": -55, "int_largest": 60_000}}}, "just_booted"),
-        ({"live_session_id": "sess-1"}, "live_active"),
     ],
 )
 def test_gate_reasons_camera(over: dict, expected: str) -> None:
     assert expected in svc.gate_reasons("camera", _camera(**over))
+
+
+# 2026-10-16: 펌웨어 0.4.5 가 바쁠 때 거절 대신 보류하므로 서버는 더 막지 않는다.
+@pytest.mark.parametrize(
+    "over",
+    [
+        {"clip_stats": {"up_busy_s": 12, "sys": {"uptime_s": 3600, "rssi": -55, "int_largest": 60_000}}},
+        {"live_session_id": "sess-1"},
+    ],
+)
+def test_gate_allows_busy_camera(over: dict) -> None:
+    assert svc.gate_reasons("camera", _camera(**over)) == []
+
+
+# just_booted 창은 재부팅 사유로 갈린다: 크래시 직후 5분, 정상 재부팅 60초.
+@pytest.mark.parametrize(
+    ("reset", "uptime", "blocked"),
+    [
+        ("PANIC", 120, True),              # 크래시 + 2분 → 부팅 루프 의심
+        ("PANIC", 400, False),             # 크래시 + 6분 → 통과
+        ("SW:ota_apply(WDT)", 120, True),  # 괄호 안 하드웨어 사유도 크래시로 본다
+        ("SW:ota_apply", 120, False),      # 정상 재부팅 + 2분 → 통과
+        ("POWERON", 30, True),             # 정상 재부팅이어도 60초 미만은 막는다
+    ],
+)
+def test_gate_just_booted_depends_on_reset(reset: str, uptime: int, blocked: bool) -> None:
+    cam = _camera(clip_stats={"up_busy_s": -1,
+                              "sys": {"uptime_s": uptime, "rssi": -55,
+                                      "int_largest": 60_000, "reset": reset}})
+    assert ("just_booted" in svc.gate_reasons("camera", cam)) is blocked
 
 
 def test_gate_device_uses_sys_state() -> None:

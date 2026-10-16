@@ -1861,7 +1861,9 @@ const OTA_STATUS_KO = {
 };
 const OTA_GATE_KO = {
   offline: '오프라인', never_seen: 'heartbeat 없음', no_ota_capability: '구 펌웨어(OTA 미지원)', weak_wifi: 'WiFi 약함(< -75dBm)',
-  low_internal_ram: '내부 RAM 부족', just_booted: '부팅 5분 이내', uploading: '클립 업로드 중', live_active: '라이브 시청 중',
+  // uploading/live_active 는 2026-10-16 폐지(펌웨어 0.4.5 가 거절 대신 보류) — 옛 작업 기록 표시용으로만 남긴다.
+  low_internal_ram: '내부 RAM 부족', just_booted: '부팅 직후(크래시 후 5분·정상 1분)',
+  uploading: '클립 업로드 중(폐지)', live_active: '라이브 시청 중(폐지)',
 };
 
 function otaEntity(kind, id, label, target, auth) {
@@ -1923,7 +1925,8 @@ async function otaRefresh() {
     const opts = rels.map(r => `<option value="${esc(r.id)}">${esc(r.version)} — ${(r.size_bytes / 1048576).toFixed(2)}MB${r.notes ? ' · ' + esc(r.notes) : ''}</option>`).join('');
     html += `<label style="display:block;margin-bottom:6px">릴리스
         <select id="ota-release" style="width:100%;margin-top:4px;font-size:13px">${opts}</select></label>
-      <label style="display:block;margin-bottom:10px"><input type="checkbox" id="ota-force"> 사전 점검 무시(force) — 오프라인·약한 WiFi·부팅 5분 이내 등도 강행 (개발용)</label>
+      <label style="display:block;margin-bottom:10px"><input type="checkbox" id="ota-force"> 사전 점검 무시(force) — 오프라인·약한 WiFi·내부 RAM 부족·부팅 직후도 강행 (개발용)<br>
+      <small class="muted">녹화·업로드·라이브 중은 더 이상 막지 않는다 — 펌웨어 0.4.5+ 가 한가해질 때까지 최대 240초 미룬 뒤 재부팅한다.</small></label>
       <button onclick="otaPrepare()" style="font-size:14px;padding:6px 14px">1단계 다운로드 (prepare)</button>
       <div class="muted" style="margin-top:6px">기기가 한 번 재부팅해 받아 두기만 한다. 부팅 파티션은 안 바뀌어서 지금 버전으로 계속 동작.</div>`;
   }

@@ -845,7 +845,9 @@ GET  /firmware/jobs/{job_id}/bin           Authorization: Bearer <camera_token |
 → 401 토큰 불일치(작업 대상 기기의 토큰이어야 함)   → 404 작업 미존재   → 409 작업 상태가 pending/accepted/downloading 이 아님   → 410 릴리스 퇴역
 ```
 
-**사전 점검 게이트** (`force=true` 로만 우회, 작업에 `forced=true` 기록): `offline` · `never_seen` · `no_ota_capability`(heartbeat `capabilities.ota` 미보고 = 구 펌웨어) · `weak_wifi`(rssi < −75) · `low_internal_ram`(int_largest < 8KB — 다운로드는 재부팅 직후에 하므로 평시 값은 고갈 판별용. 운영 중 15KB 가 정상, 2026-10-08) · `just_booted`(uptime < 5분) · `uploading` · `live_active`.
+**사전 점검 게이트** (`force=true` 로만 우회, 작업에 `forced=true` 기록): `offline` · `never_seen` · `no_ota_capability`(heartbeat `capabilities.ota` 미보고 = 구 펌웨어) · `weak_wifi`(rssi < −75) · `low_internal_ram`(int_largest < 8KB — 다운로드는 재부팅 직후에 하므로 평시 값은 고갈 판별용. 운영 중 15KB 가 정상, 2026-10-08) · `just_booted`(부팅 직후 — 재부팅 사유가 크래시(PANIC/WDT/INT_WDT/TASK_WDT/BROWNOUT)면 uptime < 5분, 정상 재부팅이면 < 60초. 막으려는 것은 부팅 루프 중 OTA 시작이다, 2026-10-16).
+
+`uploading` · `live_active` 는 **2026-10-16 폐지**: 카메라 펌웨어 0.4.5 부터 `ota_prepare` 를 거절(ack `busy`)하지 않고 녹화·업로드·라이브가 끝날 때까지 최대 240초 미룬 뒤 재부팅한다. 서버가 먼저 막으면 운영자가 매번 `force` 를 눌러야 하고 그러면 쓸모 있는 게이트까지 함께 무력화된다.
 
 **작업 상태**: `pending → accepted(ack ok) → downloading(pct) → ready → applying → verified | rolled_back` / 언제든 `failed`(error: `old_firmware`·`busy`·`publish_failed`·펌웨어 보고 사유) / 시한 초과 `timeout`(pending 3분·accepted 10분·downloading 15분·applying 10분, `ready` 는 무기한).
 `verified` = apply 뒤 heartbeat `fw` 가 릴리스 버전. `rolled_back` = heartbeat `fw` 가 `prev_version` 으로 돌아옴(부트로더 롤백).

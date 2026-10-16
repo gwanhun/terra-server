@@ -67,7 +67,14 @@ GATE_MIN_RSSI_DBM = -75          # 약한 WiFi 설치 판별선(앱 안내와 �
 # OTA 자체와 거의 무관 — 이 게이트는 "heartbeat 도 간신히 보내는 고갈 상태" 만 거른다.
 # 2026-10-08: 베타 카메라 0.3.4 가 운영 중 15,360 을 정상으로 보고해 20KB 는 전부 막혔음 → 8KB.
 GATE_MIN_INT_LARGEST_BYTES = 8 * 1024
-GATE_MIN_UPTIME_SEC = 300        # 부팅 직후 5분은 센서/AE 수렴 중
+# 부팅 직후 창. 원래 근거("센서/AE 수렴 중")는 OTA 와 무관하다 — prepare 는 어차피 재부팅해서
+# 받는다. 실제로 막아야 하는 것은 **부팅 루프 중 OTA 시작** 하나뿐이다. 2026-10-16: 크래시가 잦은
+# 보드에서 5분 창이 거의 열리지 않아(테스트마다 force) 재부팅 사유로 구분한다.
+#   크래시(PANIC/WDT/INT_WDT/TASK_WDT/BROWNOUT) 직후 → 5분(부팅 루프 판별)
+#   정상 재부팅(POWERON/SW:*/USB)                    → 60초(heartbeat·MQTT 안정화면 충분)
+GATE_MIN_UPTIME_SEC = 300
+GATE_MIN_UPTIME_CLEAN_SEC = 60
+CRASH_RESETS: frozenset[str] = frozenset({"PANIC", "WDT", "INT_WDT", "TASK_WDT", "BROWNOUT"})
 GATE_ONLINE_WITHIN_SEC = 90      # last_seen 이 이보다 오래되면 오프라인 취급
 
 # 단계별 시한 (OtaMonitor). ready 는 운영자 대기라 시한 없음.
@@ -178,21 +185,18 @@ def gate_reasons(kind: str, entity: dict[str, Any], *, now: datetime | None = No
     if isinstance(largest, (int, float)) and largest < GATE_MIN_INT_LARGEST_BYTES:
         reasons.append("low_internal_ram")
     uptime = sys_.get("uptime_s")
-    if isinstance(uptime, (int, float)) and uptime < GATE_MIN_UPTIME_SEC:
+    reset = sys_.get("reset")
+    # "SW:ota_apply(WDT)" 처럼 괄호로 하드웨어 사유가 덧붙는 형식도 크래시로 본다.
+    crashed = isinstance(reset, str) and any(r in reset for r in CRASH_RESETS)
+    min_uptime = GATE_MIN_UPTIME_SEC if crashed else GATE_MIN_UPTIME_CLEAN_SEC
+    if isinstance(uptime, (int, float)) and uptime < min_uptime:
         reasons.append("just_booted")
 
-    if kind == KIND_CAMERA:
-        clips = entity.get("clip_stats")
-        if isinstance(clips, dict):
-            busy = clips.get("up_busy_s")
-            if isinstance(busy, (int, float)) and busy >= 0:
-                reasons.append("uploading")
-            last_err = clips.get("last_err")
-            # SD fault 는 heartbeat 에 직접 안 실린다 — sd_fail 급증은 _warn_clip_regression 몫.
-            _ = last_err
-        # 라이브 중 = cameras.live_session_id 가 있음 (backend/live_session.py 가 종료 시 NULL 로 지움).
-        if entity.get("live_session_id"):
-            reasons.append("live_active")
+    # 2026-10-16: "녹화·업로드·라이브 중" 은 더 이상 게이트가 아니다. 카메라 펌웨어 0.4.5 부터
+    # ota_prepare 를 거절(ack busy)하지 않고 한가해질 때까지 최대 240초 미룬 뒤 재부팅한다
+    # (펌웨어 app_ota.c OTA_DEFER_MAX_S). 서버가 먼저 409 로 막으면 운영자가 매번 force 를 눌러야
+    # 하고, force 는 offline·weak_wifi·low_internal_ram 같은 쓸모 있는 게이트까지 함께 무력화한다.
+    # 실측(951c1ba6, 10/16): 0.4.4 시도 8건 중 6건이 uploading 때문에 failed(busy).
     return reasons
 
 
