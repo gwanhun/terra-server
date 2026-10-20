@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from backend import live_session
 from backend.auth import get_current_user_id
+from backend.db_helpers import first_row, parse_uuid_or_404
 from backend.supabase_client import get_supabase_client
 from backend.webrtc_offer_guard import OfferRateLimiter, get_offer_limiter
 from backend.webrtc_relay import get_relay
@@ -148,15 +149,16 @@ def _ice_servers_from_env(user_id: str | None = None) -> list[dict[str, Any]]:
 
 
 def _owned_camera(camera_uuid: str, user_id: str) -> dict[str, Any]:
+    cam_uuid = parse_uuid_or_404(camera_uuid, 'camera not found')
     sb = get_supabase_client()
     res = (
         sb.table('cameras')
         .select('id, owner_id, camera_id, stream_mode, stream_until')
-        .eq('id', camera_uuid)
-        .single()
+        .eq('id', cam_uuid)
+        .limit(1)
         .execute()
     )
-    row = res.data
+    row = first_row(res.data)
     if not row or row.get('owner_id') != user_id:
         raise HTTPException(status_code=404, detail='camera not found')
     return row
@@ -279,6 +281,7 @@ def create_webrtc_offer(
     limiter: OfferRateLimiter = Depends(get_offer_limiter),
 ) -> WebRTCAnswerOut:
     camera = _owned_camera(camera_uuid, user_id)
+    camera_uuid = camera['id']  # 정규화된 uuid (urn:uuid: 등 원본은 DB 캐스트 실패)
     session_id = body.session_id or str(uuid4())
     # 시간당 안전망(2026-09-29 P4): 앱 재연결 루프가 카메라를 멈추게 한 사고 대응. 소유권 확인 뒤에 센다
     # (남이 내 카메라 예산을 못 쓰게). 상세 근거는 backend/webrtc_offer_guard.py.
@@ -388,6 +391,7 @@ def add_webrtc_ice(
     user_id: str = Depends(get_current_user_id),
 ) -> WebRTCCommandOut:
     camera = _owned_camera(camera_uuid, user_id)
+    camera_uuid = camera['id']  # 정규화된 uuid (urn:uuid: 등 원본은 DB 캐스트 실패)
     command = _command(
         'webrtc_ice',
         body.session_id,
@@ -450,6 +454,7 @@ def close_webrtc(
     - DB 의 stream_mode/until 정리는 어떤 경우든 진행해서 다음 라이브 요청 받을 수 있게
     """
     camera = _owned_camera(camera_uuid, user_id)
+    camera_uuid = camera['id']  # 정규화된 uuid (urn:uuid: 등 원본은 DB 캐스트 실패)
     command = _command('webrtc_close', body.session_id, body.ttl_sec)
     publish_ok = True
     try:

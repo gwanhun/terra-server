@@ -31,8 +31,18 @@ def _camera_row(**overrides: object) -> dict:
 
 
 def _setup_owned_camera(fake_sb: MagicMock, row: dict | None = None) -> None:
-    chain = fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value
-    chain.execute.return_value.data = row if row is not None else _camera_row()
+    """cameras.select.eq(id).limit(1) 조회. 실 DB 처럼 요청한 id 를 row 의 id 로 돌려준다.
+
+    row={} 면 0행 (미존재).
+    """
+    base = _camera_row() if row is None else row
+
+    def _eq(_col: str, value: str) -> MagicMock:
+        q = MagicMock()
+        q.limit.return_value.execute.return_value.data = [{**base, 'id': value}] if base else []
+        return q
+
+    fake_sb.table.return_value.select.return_value.eq.side_effect = _eq
 
 
 def test_webrtc_config_returns_default_stun(app_client: TestClient) -> None:

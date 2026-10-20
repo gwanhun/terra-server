@@ -38,6 +38,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from backend.auth import get_current_user_id
 from backend.auth_camera import get_authed_camera
+from backend.db_helpers import first_row, parse_uuid_or_404
 from backend.r2_client import (
     DEFAULT_GET_URL_TTL,
     DEFAULT_PUT_URL_TTL,
@@ -267,21 +268,12 @@ def _parse_key(key: str, expected_camera_id_text: str, expected_ext: str) -> str
     return m.group("clip_id")
 
 
-def _parse_uuid_or_404(value: str, detail: str) -> str:
-    """uuid 형식 아니면 404. DB 까지 보내면 22P02 → APIError → 500 이 된다."""
-    try:
-        return str(uuid.UUID(value))
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=detail) from exc
-
-
 def _load_clip_for_owner(clip_id: str, user_id: str) -> dict[str, Any]:
     """본인 소유 clip row 반환. uuid 형식 아님·미존재·타 유저는 404.
 
-    `.single()` 은 0행이면 PostgREST 406(PGRST116) → APIError → 500 이고, 앱은 5xx 를
-    재시도하므로 없는 id 에 무한 재시도가 된다. `.limit(1)` 리스트 조회로 0행=빈 리스트.
+    이후 쿼리에는 원본 clip_id 대신 반환 row 의 `id`(정규화된 uuid)를 쓴다 (db_helpers 참고).
     """
-    cid = _parse_uuid_or_404(clip_id, "clip not found")
+    cid = parse_uuid_or_404(clip_id, "clip not found")
     sb = get_supabase_client()
     res = (
         sb.table("motion_clips")
@@ -291,7 +283,8 @@ def _load_clip_for_owner(clip_id: str, user_id: str) -> dict[str, Any]:
         .limit(1)
         .execute()
     )
-    row = res.data[0] if res.data else None
+    row = first_row(res.data)
+    # owner_id 재비교: 쿼리 필터가 빠지는 회귀에도 남의 클립이 새지 않게 두는 방어선
     if not row or row["owner_id"] != user_id:
         raise HTTPException(status_code=404, detail="clip not found")
     return row
@@ -429,8 +422,8 @@ def list_enclosure_clips(
     """
     sb = get_supabase_client()
 
-    # 본인 enclosure 확인 (.single() 은 0행 시 500 — _load_clip_for_owner 참고)
-    eid = _parse_uuid_or_404(enclosure_id, "enclosure not found")
+    # 본인 enclosure 확인 (.limit(1) + uuid 파싱 — db_helpers 참고)
+    eid = parse_uuid_or_404(enclosure_id, "enclosure not found")
     enc = (
         sb.table("enclosures")
         .select("owner_id")
@@ -439,7 +432,8 @@ def list_enclosure_clips(
         .limit(1)
         .execute()
     )
-    enc_row = enc.data[0] if enc.data else None
+    enc_row = first_row(enc.data)
+    # owner_id 재비교: _load_clip_for_owner 와 같은 방어선
     if not enc_row or enc_row["owner_id"] != user_id:
         raise HTTPException(status_code=404, detail="enclosure not found")
 
@@ -643,7 +637,8 @@ def upsert_clip_label(
     """
     if body.action not in _VALID_ACTIONS:
         raise HTTPException(status_code=422, detail=f"unknown action: {body.action}")
-    _load_clip_for_owner(clip_id, user_id)  # 본인 소유 clip 만 라벨 (404 else)
+    # 본인 소유 clip 만 라벨 (404 else). 이후엔 정규화된 row id 사용 (urn:uuid: 등 원본은 DB 캐스트 실패)
+    clip_id = _load_clip_for_owner(clip_id, user_id)["id"]
 
     sb = get_supabase_client()
     row = {
@@ -691,7 +686,7 @@ def delete_clip(
     res = (
         sb.table("motion_clips")
         .delete()
-        .eq("id", clip_id)
+        .eq("id", clip["id"])  # 원본 clip_id 아님 — 정규화된 uuid (db_helpers 참고)
         .eq("owner_id", user_id)
         .execute()
     )
