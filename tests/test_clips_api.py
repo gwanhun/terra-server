@@ -16,8 +16,9 @@ from tests.conftest import TEST_USER_ID
 
 
 CAMERA_ID_TEXT = "p4cam-aabbccdd"
-CAMERA_UUID = "cam-uuid"
-ENC_ID = "enc-uuid"
+CAMERA_UUID = "22222222-2222-4222-8222-222222222222"
+ENC_ID = "11111111-2222-4333-8444-555555555555"
+CLIP_ID = "abcdef12-3456-4890-abcd-ef1234567890"
 CAMERA_TOKEN = "test-camera-token"
 
 
@@ -36,8 +37,8 @@ def authed_camera_row() -> dict:
 
 def _setup_camera_lookup(fake_sb: MagicMock, row: dict) -> None:
     """auth_camera 가 cameras 테이블 select 시 row 반환."""
-    chain = fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value
-    chain.execute.return_value.data = row
+    chain = fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value
+    chain.execute.return_value.data = [row]
 
 
 # ---------- 워커: upload-url ----------
@@ -191,9 +192,14 @@ def test_create_clip_meta_rejects_malformed_key(
 # ---------- 사용자: list ----------
 
 
+def _owned_lookup_chain(table: MagicMock) -> MagicMock:
+    """select().eq(id).eq(owner_id).limit(1) 체인 끝."""
+    return table.select.return_value.eq.return_value.eq.return_value.limit.return_value
+
+
 def _setup_enclosure_lookup(fake_sb: MagicMock, owner_id: str = TEST_USER_ID) -> None:
-    chain = fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value
-    chain.execute.return_value.data = {"owner_id": owner_id}
+    chain = _owned_lookup_chain(fake_sb.table.return_value)
+    chain.execute.return_value.data = [{"owner_id": owner_id}]
 
 
 def test_list_enclosure_clips_ok(
@@ -201,16 +207,16 @@ def test_list_enclosure_clips_ok(
 ) -> None:
     # 첫 select 호출은 enclosure 확인, 두 번째는 motion_clips
     enclosure_select_chain = MagicMock()
-    enclosure_select_chain.execute.return_value.data = {"owner_id": TEST_USER_ID}
+    enclosure_select_chain.execute.return_value.data = [{"owner_id": TEST_USER_ID}]
 
     clips_chain = MagicMock()
     clip_row = {
-        "id": "clip-1",
+        "id": CLIP_ID,
         "camera_id": CAMERA_UUID,
         "enclosure_id": ENC_ID,
         "started_at": "2026-05-27T12:00:00Z",
         "duration_sec": 10.0,
-        "r2_key": f"test/{CAMERA_ID_TEXT}/2026-05-27/120000_clip-1.mp4",
+        "r2_key": f"test/{CAMERA_ID_TEXT}/2026-05-27/120000_{CLIP_ID}.mp4",
         "thumbnail_key": None,
         "file_size": 1024,
         "width": 1280,
@@ -226,7 +232,7 @@ def test_list_enclosure_clips_ok(
     def _table(name: str) -> MagicMock:
         t = MagicMock()
         if name == "enclosures":
-            t.select.return_value.eq.return_value.single.return_value = (
+            t.select.return_value.eq.return_value.eq.return_value.limit.return_value = (
                 enclosure_select_chain
             )
         else:  # motion_clips
@@ -241,7 +247,7 @@ def test_list_enclosure_clips_ok(
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["count"] == 1
-    assert body["items"][0]["id"] == "clip-1"
+    assert body["items"][0]["id"] == CLIP_ID
     assert body["has_more"] is False
 
 
@@ -259,20 +265,20 @@ def test_list_enclosure_clips_not_owner(
 
 def _setup_clip_lookup(fake_sb: MagicMock, owner_id: str = TEST_USER_ID) -> dict:
     row = {
-        "id": "clip-1",
+        "id": CLIP_ID,
         "camera_id": CAMERA_UUID,
         "owner_id": owner_id,
-        "r2_key": f"test/{CAMERA_ID_TEXT}/2026-05-27/120000_clip-1.mp4",
+        "r2_key": f"test/{CAMERA_ID_TEXT}/2026-05-27/120000_{CLIP_ID}.mp4",
         "thumbnail_key": None,
     }
-    chain = fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value
-    chain.execute.return_value.data = row
+    chain = _owned_lookup_chain(fake_sb.table.return_value)
+    chain.execute.return_value.data = [row]
     return row
 
 
 def test_get_clip_url_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
     row = _setup_clip_lookup(fake_sb)
-    res = app_client.get("/clips/clip-1/url")
+    res = app_client.get(f"/clips/{CLIP_ID}/url")
     assert res.status_code == 200
     body = res.json()
     assert body["url"].startswith("https://r2.test/get/")
@@ -284,7 +290,7 @@ def test_get_clip_url_not_owner(
     app_client: TestClient, fake_sb: MagicMock
 ) -> None:
     _setup_clip_lookup(fake_sb, owner_id="other-user")
-    res = app_client.get("/clips/clip-1/url")
+    res = app_client.get(f"/clips/{CLIP_ID}/url")
     assert res.status_code == 404
 
 
@@ -293,25 +299,25 @@ def test_get_clip_url_not_owner(
 
 def test_delete_clip_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
     select_chain = MagicMock()
-    select_chain.execute.return_value.data = {
-        "id": "clip-1",
+    select_chain.execute.return_value.data = [{
+        "id": CLIP_ID,
         "camera_id": CAMERA_UUID,
         "owner_id": TEST_USER_ID,
-        "r2_key": f"test/{CAMERA_ID_TEXT}/2026-05-27/120000_clip-1.mp4",
+        "r2_key": f"test/{CAMERA_ID_TEXT}/2026-05-27/120000_{CLIP_ID}.mp4",
         "thumbnail_key": None,
-    }
+    }]
     delete_chain = MagicMock()
-    delete_chain.execute.return_value.data = [{"id": "clip-1"}]
+    delete_chain.execute.return_value.data = [{"id": CLIP_ID}]
 
     def _table(name: str) -> MagicMock:
         t = MagicMock()
-        t.select.return_value.eq.return_value.single.return_value = select_chain
+        t.select.return_value.eq.return_value.eq.return_value.limit.return_value = select_chain
         t.delete.return_value.eq.return_value.eq.return_value = delete_chain
         return t
 
     fake_sb.table.side_effect = _table
 
-    res = app_client.delete("/clips/clip-1")
+    res = app_client.delete(f"/clips/{CLIP_ID}")
     assert res.status_code == 204
 
 
@@ -319,14 +325,132 @@ def test_delete_clip_not_found_in_db(
     app_client: TestClient, fake_sb: MagicMock
 ) -> None:
     select_chain = MagicMock()
-    select_chain.execute.return_value.data = None  # 없음
+    select_chain.execute.return_value.data = []  # 없음 (limit(1) 리스트)
 
     def _table(name: str) -> MagicMock:
         t = MagicMock()
-        t.select.return_value.eq.return_value.single.return_value = select_chain
+        t.select.return_value.eq.return_value.eq.return_value.limit.return_value = select_chain
         return t
 
     fake_sb.table.side_effect = _table
 
+    res = app_client.delete("/clips/99999999-0000-4000-8000-000000000000")
+    assert res.status_code == 404
+
+
+# ---------- 사용자 입력 id 검증 (.single() 500 회귀) ----------
+
+
+@pytest.mark.parametrize("path", ["/clips/not-a-uuid/url", "/clips/clip-1/url"])
+def test_get_clip_url_bad_uuid_404(
+    app_client: TestClient, fake_sb: MagicMock, path: str
+) -> None:
+    """uuid 아닌 id 는 DB 에 안 보내고 404 (실 PostgREST 는 22P02 → 500)."""
+    res = app_client.get(path)
+    assert res.status_code == 404
+    fake_sb.table.assert_not_called()
+
+
+@pytest.mark.parametrize("suffix", ["/url", "/thumbnail/url"])
+def test_get_clip_urls_missing_404(
+    app_client: TestClient, fake_sb: MagicMock, suffix: str
+) -> None:
+    """0행은 빈 리스트 → 404 (.single() 이었다면 실 DB 에서 406 → 500)."""
+    _owned_lookup_chain(fake_sb.table.return_value).execute.return_value.data = []
+    res = app_client.get(f"/clips/{CLIP_ID}{suffix}")
+    assert res.status_code == 404
+    assert res.json()["detail"] == "clip not found"
+
+
+def test_get_thumbnail_url_bad_uuid_404(app_client: TestClient, fake_sb: MagicMock) -> None:
+    res = app_client.get("/clips/not-a-uuid/thumbnail/url")
+    assert res.status_code == 404
+    fake_sb.table.assert_not_called()
+
+
+def test_clip_lookup_filters_by_owner(app_client: TestClient, fake_sb: MagicMock) -> None:
+    """service_role 은 RLS 바이패스 → 쿼리에 owner_id 필터가 걸려야 한다."""
+    _setup_clip_lookup(fake_sb)
+    app_client.get(f"/clips/{CLIP_ID}/url")
+    select = fake_sb.table.return_value.select.return_value
+    select.eq.assert_called_with("id", CLIP_ID)
+    select.eq.return_value.eq.assert_called_with("owner_id", TEST_USER_ID)
+    select.eq.return_value.eq.return_value.limit.assert_called_with(1)
+
+
+# ---------- 사용자: labels ----------
+
+
+def test_upsert_label_bad_uuid_404(app_client: TestClient, fake_sb: MagicMock) -> None:
+    res = app_client.post("/clips/not-a-uuid/labels", json={"action": "drinking"})
+    assert res.status_code == 404
+    fake_sb.table.assert_not_called()
+
+
+def test_upsert_label_missing_404(app_client: TestClient, fake_sb: MagicMock) -> None:
+    _owned_lookup_chain(fake_sb.table.return_value).execute.return_value.data = []
+    res = app_client.post(f"/clips/{CLIP_ID}/labels", json={"action": "drinking"})
+    assert res.status_code == 404
+    fake_sb.table.return_value.upsert.assert_not_called()
+
+
+def test_upsert_label_uses_normalized_clip_id(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """urn:uuid: 형식도 uuid.UUID 는 받지만 Postgres 캐스트는 거부 → row 의 정규화 id 로 저장."""
+    _setup_clip_lookup(fake_sb)
+    res = app_client.post(
+        f"/clips/urn:uuid:{CLIP_ID.upper()}/labels", json={"action": "drinking"}
+    )
+    assert res.status_code == 201, res.text
+    upserted = fake_sb.table.return_value.upsert.call_args.args[0]
+    assert upserted["clip_id"] == CLIP_ID
+    assert res.json()["clip_id"] == CLIP_ID
+    # 조회도 정규화된 id 로
+    fake_sb.table.return_value.select.return_value.eq.assert_called_with("id", CLIP_ID)
+
+
+def test_delete_clip_bad_uuid_404(app_client: TestClient, fake_sb: MagicMock) -> None:
     res = app_client.delete("/clips/missing")
     assert res.status_code == 404
+    fake_sb.table.assert_not_called()
+
+
+def test_list_enclosure_clips_bad_uuid_404(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    res = app_client.get("/enclosures/enc-uuid/clips")
+    assert res.status_code == 404
+    fake_sb.table.assert_not_called()
+
+
+def test_list_enclosure_clips_missing_404(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    _owned_lookup_chain(fake_sb.table.return_value).execute.return_value.data = []
+    res = app_client.get(f"/enclosures/{ENC_ID}/clips")
+    assert res.status_code == 404
+
+
+def test_delete_clip_urn_uuid_uses_normalized_id(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """urn:uuid: 원본을 DELETE 에 쓰면 R2 삭제 뒤 22P02 500 → row 의 정규화 id 로 지운다."""
+    select_chain = MagicMock()
+    select_chain.execute.return_value.data = [{
+        "id": CLIP_ID,
+        "camera_id": CAMERA_UUID,
+        "owner_id": TEST_USER_ID,
+        "r2_key": f"test/{CAMERA_ID_TEXT}/2026-05-27/120000_{CLIP_ID}.mp4",
+        "thumbnail_key": None,
+    }]
+    t = MagicMock()
+    t.select.return_value.eq.return_value.eq.return_value.limit.return_value = select_chain
+    t.delete.return_value.eq.return_value.eq.return_value.execute.return_value.data = [{"id": CLIP_ID}]
+    fake_sb.table.side_effect = lambda name: t
+
+    res = app_client.delete(f"/clips/urn:uuid:{CLIP_ID.upper()}")
+    assert res.status_code == 204, res.text
+    t.select.return_value.eq.assert_called_with("id", CLIP_ID)
+    t.delete.return_value.eq.assert_called_with("id", CLIP_ID)
+    t.delete.return_value.eq.return_value.eq.assert_called_with("owner_id", TEST_USER_ID)

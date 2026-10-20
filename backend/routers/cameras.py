@@ -33,6 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from backend import ota_service
 from backend.auth import get_current_user_id
 from backend.crypto import generate_token, hash_token
+from backend.db_helpers import first_row, parse_uuid, parse_uuid_or_404
 from backend.mqtt import registry
 from backend.mqtt.camera_commands import (
     ota_apply_command,
@@ -239,14 +240,17 @@ def _mqtt_connect_info() -> dict[str, Any]:
 
 def _verify_enclosure_owner(sb, enclosure_id: str, user_id: str) -> None:
     """enclosure_id 가 본인 소유 사육장인지 확인. 아니면 400."""
+    enc_uuid = parse_uuid(enclosure_id)
+    if enc_uuid is None:  # uuid 아님 → 미존재와 같은 400 (db_helpers 참고)
+        raise HTTPException(status_code=400, detail="enclosure_id 가 본인 사육장이 아님.")
     res = (
         sb.table("enclosures")
         .select("owner_id")
-        .eq("id", enclosure_id)
-        .single()
+        .eq("id", enc_uuid)
+        .limit(1)
         .execute()
     )
-    row = res.data
+    row = first_row(res.data)
     if not row or row["owner_id"] != user_id:
         raise HTTPException(status_code=400, detail="enclosure_id 가 본인 사육장이 아님.")
 
@@ -485,15 +489,16 @@ def get_camera(
     user_id: str = Depends(get_current_user_id),
 ) -> CameraOut:
     """본인 카메라가 아니면 404."""
+    cam_uuid = parse_uuid_or_404(camera_uuid, "camera not found")
     sb = get_supabase_client()
     res = (
         sb.table("cameras")
         .select(f"{_CAMERA_OUT_COLUMNS}, owner_id, unlinked_at")
-        .eq("id", camera_uuid)
-        .single()
+        .eq("id", cam_uuid)
+        .limit(1)
         .execute()
     )
-    row = res.data
+    row = first_row(res.data)
     if not row or row["owner_id"] != user_id or row.get("unlinked_at"):
         raise HTTPException(status_code=404, detail="camera not found")
     return CameraOut.model_validate(row)
@@ -580,18 +585,19 @@ def list_camera_logs(
     user_id: str = Depends(get_current_user_id),
 ) -> list[CameraLogOut]:
     """하트비트 `errs` 로 올라온 ESP_LOGE 줄. prev_boot=true 는 재부팅 전 줄(원인 추적용)."""
+    cam_uuid = parse_uuid_or_404(camera_uuid, "camera not found")
     sb = get_supabase_client()
-    cam = (
+    cam = first_row((
         sb.table("cameras").select("id, owner_id, unlinked_at")
-        .eq("id", camera_uuid).single().execute()
-    ).data
+        .eq("id", cam_uuid).limit(1).execute()
+    ).data)
     if not cam or cam["owner_id"] != user_id or cam.get("unlinked_at"):
         raise HTTPException(status_code=404, detail="camera not found")
     limit = max(1, min(int(limit), 500))
     res = (
         sb.table("camera_logs")
         .select("id, created_at, uptime_s, prev_boot, count, msg")
-        .eq("camera_id", camera_uuid)
+        .eq("camera_id", cam_uuid)
         .order("created_at", desc=True)
         .limit(limit)
         .execute()
@@ -619,15 +625,16 @@ def reboot_camera(
     하트비트는 살아 있는데 녹화·업로드가 멈춘 카메라용. 발행 실패는 5xx 대신
     published=false 로 알린다(브로커 일시 장애 시 앱이 재시도).
     """
+    cam_uuid = parse_uuid_or_404(camera_uuid, "camera not found")
     sb = get_supabase_client()
     res = (
         sb.table("cameras")
         .select("id, owner_id, camera_id, unlinked_at")
-        .eq("id", camera_uuid)
-        .single()
+        .eq("id", cam_uuid)
+        .limit(1)
         .execute()
     )
-    row = res.data
+    row = first_row(res.data)
     if not row or row["owner_id"] != user_id or row.get("unlinked_at"):
         raise HTTPException(status_code=404, detail="camera not found")
 

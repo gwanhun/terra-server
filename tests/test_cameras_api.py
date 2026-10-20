@@ -8,10 +8,12 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import TEST_USER_ID
 
+CAMERA_UUID = "22222222-2222-4222-8222-222222222222"
+
 
 def _camera_row(**overrides: object) -> dict:
     base = {
-        "id": "cam-uuid",
+        "id": CAMERA_UUID,
         "owner_id": TEST_USER_ID,
         "camera_id": "p4cam-aabbccdd",
         "enclosure_id": None,
@@ -42,7 +44,7 @@ def test_pair_camera_success(app_client: TestClient, fake_sb: MagicMock) -> None
     )
     assert res.status_code == 201, res.text
     body = res.json()
-    assert body["id"] == "cam-uuid"
+    assert body["id"] == CAMERA_UUID
     assert body["camera_id"].startswith("p4cam-")
     # 평문 토큰이 1회 응답에 노출됨
     assert len(body["camera_token"]) > 20
@@ -90,7 +92,7 @@ def test_pair_camera_same_hw_id_reuses_row_instead_of_inserting(
     app_client: TestClient, fake_sb: MagicMock
 ) -> None:
     """같은 보드 재페어링 → 새 행 없이 기존 행 갱신. 중복 카메라가 생기지 않는다."""
-    _hw_lookup(fake_sb).data = [{"id": "cam-uuid", "camera_id": "p4cam-aabbccdd"}]
+    _hw_lookup(fake_sb).data = [{"id": CAMERA_UUID, "camera_id": "p4cam-aabbccdd"}]
     fake_sb.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [
         _camera_row()
     ]
@@ -118,7 +120,7 @@ def test_pair_camera_reuse_keeps_user_name(
 ) -> None:
     """재페어링이 name 을 덮어쓰지 않는다 (2026-09-23) — petcam 접미사·사용자 개명 보존.
     새 행 INSERT 에는 여전히 name 이 들어간다 (별도 테스트: new_hw_id_inserts)."""
-    _hw_lookup(fake_sb).data = [{"id": "cam-uuid", "camera_id": "p4cam-aabbccdd"}]
+    _hw_lookup(fake_sb).data = [{"id": CAMERA_UUID, "camera_id": "p4cam-aabbccdd"}]
     fake_sb.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [
         _camera_row()
     ]
@@ -136,7 +138,7 @@ def test_pair_camera_reuse_keeps_enclosure_when_not_given(
     app_client: TestClient, fake_sb: MagicMock
 ) -> None:
     """enclosure_id 미지정 재페어링이 기존 사육장 연결을 끊지 않는다."""
-    _hw_lookup(fake_sb).data = [{"id": "cam-uuid", "camera_id": "p4cam-aabbccdd"}]
+    _hw_lookup(fake_sb).data = [{"id": CAMERA_UUID, "camera_id": "p4cam-aabbccdd"}]
     fake_sb.table.return_value.update.return_value.eq.return_value.execute.return_value.data = [
         _camera_row()
     ]
@@ -187,12 +189,12 @@ def test_pair_camera_with_other_users_enclosure(
     app_client: TestClient, fake_sb: MagicMock
 ) -> None:
     # enclosure_owner_verify 가 다른 유저 반환
-    chain = fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value
-    chain.execute.return_value.data = {"owner_id": "other-user"}
+    chain = fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value
+    chain.execute.return_value.data = [{"owner_id": "other-user"}]
 
     res = app_client.post(
         "/cameras/pair",
-        json={"name": "x", "enclosure_id": "enc-99"},
+        json={"name": "x", "enclosure_id": "99999999-9999-4999-8999-999999999999"},
     )
     assert res.status_code == 400
 
@@ -246,27 +248,27 @@ def test_list_and_get_camera_select_every_response_field(
     assert app_client.get("/cameras").status_code == 200
     assert fields - _selected_columns(fake_sb) == set()
 
-    fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value \
-        .execute.return_value.data = _camera_row()
-    assert app_client.get("/cameras/cam-uuid").status_code == 200
+    fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value \
+        .execute.return_value.data = [_camera_row()]
+    assert app_client.get(f"/cameras/{CAMERA_UUID}").status_code == 200
     assert fields - _selected_columns(fake_sb) == set()
 
 
 def test_get_camera_not_owner_404(
     app_client: TestClient, fake_sb: MagicMock
 ) -> None:
-    chain = fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value
-    chain.execute.return_value.data = _camera_row(owner_id="other-user")
+    chain = fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value
+    chain.execute.return_value.data = [_camera_row(owner_id="other-user")]
 
-    res = app_client.get("/cameras/cam-uuid")
+    res = app_client.get(f"/cameras/{CAMERA_UUID}")
     assert res.status_code == 404
 
 
 def test_get_camera_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
-    chain = fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value
-    chain.execute.return_value.data = _camera_row()
+    chain = fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value
+    chain.execute.return_value.data = [_camera_row()]
 
-    res = app_client.get("/cameras/cam-uuid")
+    res = app_client.get(f"/cameras/{CAMERA_UUID}")
     assert res.status_code == 200
     assert res.json()["camera_id"] == "p4cam-aabbccdd"
 
@@ -275,7 +277,7 @@ def test_update_camera_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
     chain = fake_sb.table.return_value.update.return_value.eq.return_value.eq.return_value.is_.return_value
     chain.execute.return_value.data = [_camera_row(name="새이름")]
 
-    res = app_client.patch("/cameras/cam-uuid", json={"name": "새이름"})
+    res = app_client.patch(f"/cameras/{CAMERA_UUID}", json={"name": "새이름"})
     assert res.status_code == 200
     assert res.json()["name"] == "새이름"
 
@@ -283,16 +285,16 @@ def test_update_camera_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
 def test_update_camera_invalid_resolution(
     app_client: TestClient, fake_sb: MagicMock
 ) -> None:
-    res = app_client.patch("/cameras/cam-uuid", json={"resolution": "8K"})
+    res = app_client.patch(f"/cameras/{CAMERA_UUID}", json={"resolution": "8K"})
     assert res.status_code == 400
 
 
 def test_delete_camera_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
     chain = fake_sb.table.return_value.delete.return_value.eq.return_value.eq.return_value
     # camera_id 도 포함 — registry.unregister_device 가 참조
-    chain.execute.return_value.data = [{"id": "cam-uuid", "camera_id": "p4cam-aabbccdd"}]
+    chain.execute.return_value.data = [{"id": CAMERA_UUID, "camera_id": "p4cam-aabbccdd"}]
 
-    res = app_client.delete("/cameras/cam-uuid")
+    res = app_client.delete(f"/cameras/{CAMERA_UUID}")
     assert res.status_code == 204
 
 
@@ -322,7 +324,7 @@ def test_update_camera_rotate_180_publishes_set_rotation(
     chain = fake_sb.table.return_value.update.return_value.eq.return_value.eq.return_value.is_.return_value
     chain.execute.return_value.data = [_camera_row(rotate_180=True)]
 
-    res = app_client.patch("/cameras/cam-uuid", json={"rotate_180": True})
+    res = app_client.patch(f"/cameras/{CAMERA_UUID}", json={"rotate_180": True})
     assert res.status_code == 200
     assert res.json()["rotate_180"] is True
 
@@ -348,7 +350,7 @@ def test_update_camera_without_rotate_does_not_publish(
     chain = fake_sb.table.return_value.update.return_value.eq.return_value.eq.return_value.is_.return_value
     chain.execute.return_value.data = [_camera_row(name="새이름")]
 
-    res = app_client.patch("/cameras/cam-uuid", json={"name": "새이름"})
+    res = app_client.patch(f"/cameras/{CAMERA_UUID}", json={"name": "새이름"})
     assert res.status_code == 200
     assert calls == []
 
@@ -362,34 +364,34 @@ def test_update_camera_rotate_publish_failure_is_best_effort(
     chain = fake_sb.table.return_value.update.return_value.eq.return_value.eq.return_value.is_.return_value
     chain.execute.return_value.data = [_camera_row(rotate_180=False)]
 
-    res = app_client.patch("/cameras/cam-uuid", json={"rotate_180": False})
+    res = app_client.patch(f"/cameras/{CAMERA_UUID}", json={"rotate_180": False})
     assert res.status_code == 200
     assert res.json()["rotate_180"] is False
     assert calls == []
 
 
 def test_get_camera_capabilities_null_and_dict(app_client: TestClient, fake_sb: MagicMock) -> None:
-    chain = fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value
+    chain = fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value
 
     # 구 펌웨어: 컬럼 NULL → null (앱은 토글 숨김)
-    chain.execute.return_value.data = _camera_row()
-    res = app_client.get("/cameras/cam-uuid")
+    chain.execute.return_value.data = [_camera_row()]
+    res = app_client.get(f"/cameras/{CAMERA_UUID}")
     assert res.status_code == 200
     assert res.json()["capabilities"] is None
     assert res.json()["rotate_180"] is False   # 컬럼 없던 행도 기본 False
 
     # 신 펌웨어
-    chain.execute.return_value.data = _camera_row(capabilities={"rotate_180": True}, rotate_180=True)
-    res = app_client.get("/cameras/cam-uuid")
+    chain.execute.return_value.data = [_camera_row(capabilities={"rotate_180": True}, rotate_180=True)]
+    res = app_client.get(f"/cameras/{CAMERA_UUID}")
     assert res.json()["capabilities"] == {"rotate_180": True}
     assert res.json()["rotate_180"] is True
 
 
 def test_get_camera_clip_stats_serialized(app_client: TestClient, fake_sb: MagicMock) -> None:
-    chain = fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value
+    chain = fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value
     stats = {"rec": 5, "skip": 1, "up_fail": 0, "sd_backlog": 2, "last_rec_s": 90, "up_busy_s": -1}
-    chain.execute.return_value.data = _camera_row(clip_stats=stats, clip_stats_at="2026-09-16T01:00:00Z")
-    res = app_client.get("/cameras/cam-uuid")
+    chain.execute.return_value.data = [_camera_row(clip_stats=stats, clip_stats_at="2026-09-16T01:00:00Z")]
+    res = app_client.get(f"/cameras/{CAMERA_UUID}")
     assert res.status_code == 200
     assert res.json()["clip_stats"] == stats
     assert res.json()["clip_stats_at"] == "2026-09-16T01:00:00Z"
@@ -403,10 +405,10 @@ def test_reboot_camera_publishes_reboot_command(
 ) -> None:
     calls: list[tuple[str, dict]] = []
     _install_fake_signaling(monkeypatch, calls)
-    chain = fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value
-    chain.execute.return_value.data = _camera_row()
+    chain = fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value
+    chain.execute.return_value.data = [_camera_row()]
 
-    res = app_client.post("/cameras/cam-uuid/reboot")
+    res = app_client.post(f"/cameras/{CAMERA_UUID}/reboot")
     assert res.status_code == 200
     body = res.json()
     assert body["published"] is True
@@ -423,10 +425,10 @@ def test_reboot_camera_not_owner_404(
 ) -> None:
     calls: list[tuple[str, dict]] = []
     _install_fake_signaling(monkeypatch, calls)
-    chain = fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value
-    chain.execute.return_value.data = _camera_row(owner_id="other-user")
+    chain = fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value
+    chain.execute.return_value.data = [_camera_row(owner_id="other-user")]
 
-    res = app_client.post("/cameras/cam-uuid/reboot")
+    res = app_client.post(f"/cameras/{CAMERA_UUID}/reboot")
     assert res.status_code == 404
     assert calls == []
 
@@ -435,10 +437,10 @@ def test_reboot_camera_publish_failure_is_not_5xx(
     app_client: TestClient, fake_sb: MagicMock, monkeypatch
 ) -> None:
     _install_fake_signaling(monkeypatch, [], raise_exc=True)
-    chain = fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value
-    chain.execute.return_value.data = _camera_row()
+    chain = fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value
+    chain.execute.return_value.data = [_camera_row()]
 
-    res = app_client.post("/cameras/cam-uuid/reboot")
+    res = app_client.post(f"/cameras/{CAMERA_UUID}/reboot")
     assert res.status_code == 200
     assert res.json() == {"published": False, "msg_id": None}
 
@@ -448,12 +450,12 @@ def test_reboot_camera_publish_failure_is_not_5xx(
 
 def test_list_camera_logs_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
     sel = fake_sb.table.return_value.select.return_value
-    sel.eq.return_value.single.return_value.execute.return_value.data = _camera_row()
+    sel.eq.return_value.limit.return_value.execute.return_value.data = [_camera_row()]
     sel.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = [
         {"id": 1, "created_at": "2026-10-01T05:00:00+00:00", "uptime_s": 12, "prev_boot": True,
          "count": 2, "msg": "E (12000) terra_uploader: R2 PUT failed"},
     ]
-    res = app_client.get("/cameras/cam-uuid/logs?limit=10")
+    res = app_client.get(f"/cameras/{CAMERA_UUID}/logs?limit=10")
     assert res.status_code == 200
     body = res.json()
     assert len(body) == 1 and body[0]["prev_boot"] is True and body[0]["count"] == 2
@@ -461,6 +463,6 @@ def test_list_camera_logs_ok(app_client: TestClient, fake_sb: MagicMock) -> None
 
 def test_list_camera_logs_not_owner_404(app_client: TestClient, fake_sb: MagicMock) -> None:
     sel = fake_sb.table.return_value.select.return_value
-    sel.eq.return_value.single.return_value.execute.return_value.data = _camera_row(owner_id="other")
-    res = app_client.get("/cameras/cam-uuid/logs")
+    sel.eq.return_value.limit.return_value.execute.return_value.data = [_camera_row(owner_id="other")]
+    res = app_client.get(f"/cameras/{CAMERA_UUID}/logs")
     assert res.status_code == 404
