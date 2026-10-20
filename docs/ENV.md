@@ -6,7 +6,7 @@
 
 | 등급 | 변수 | 취급 |
 |------|------|------|
-| 🔴 Critical | `SUPABASE_SERVICE_ROLE_KEY`, `MQTT_BRIDGE_PASSWORD`, `R2_SECRET_ACCESS_KEY`, `DOCS_BASIC_PASS` | 절대 커밋 금지, 유출 시 즉시 로테이션 |
+| 🔴 Critical | `SUPABASE_SERVICE_ROLE_KEY`, `MQTT_BRIDGE_PASSWORD`, `R2_SECRET_ACCESS_KEY`, `DOCS_BASIC_PASS`, `OPS_REBOOT_SECRET` | 절대 커밋 금지, 유출 시 즉시 로테이션 |
 | 🟠 Sensitive | `DEV_USER_ID`, `SUPABASE_URL`, `R2_ACCESS_KEY_ID`, `R2_ACCOUNT_ID`, `DOCS_BASIC_USER` | .env / Lightsail 내부에만 |
 | 🟢 Non-secret | `MQTT_BROKER_HOST`, `AUTH_MODE`, `APP_ORIGINS`, `R2_BUCKET`, `R2_PUBLIC_BASE_URL` | .env.example 에 기본값 공개 |
 
@@ -114,6 +114,20 @@ Edge Function 으로 이벤트를 보낸다. 브리지가 `push_outbox` 에 적�
 - secret 은 **헤더로만** 나간다. `push_outbox.body` 나 로그에 들어가지 않는다.
 - `manual`(즉시 제어)·`guard`(가드 스킵)·`timer` 는 기본 제외다. 가드 스킵은 별도 스위치.
 - 계약 상세: [BACKEND_HANDOFF_REPLY_PUSH_2026-09-15.md](BACKEND_HANDOFF_REPLY_PUSH_2026-09-15.md)
+
+### 운영 카메라 재부팅 (2026-10-20)
+
+petcam-lab 감시 스크립트가 `POST /ops/cameras/{id}/reboot` 를 부를 때 `X-Ops-Secret` 헤더로 보내는 서버 시크릿.
+[API.md §4.12](API.md), [BACKEND_HANDOFF_REPLY_OPS_CAMERA_REBOOT_2026-10-20.md](BACKEND_HANDOFF_REPLY_OPS_CAMERA_REBOOT_2026-10-20.md).
+
+| 변수 | 필수 | 설명 |
+|------|:---:|------|
+| `OPS_REBOOT_SECRET` | 기능 사용 시 | 🔴 Critical. 비어 있으면 `/ops` 는 전부 401(기능 꺼짐) + API 시작 시 경고 1회 |
+
+- 생성: `python -c "import secrets; print(secrets.token_urlsafe(32))"`
+- **owner 가 서버 `.env` 에 넣고 petcam-lab 에 안전 채널로 전달**한다. 커밋·채팅·문서 금지. 로그에도 남지 않는다.
+- 로테이션: `.env` 교체 → `sudo systemctl restart terra-api` → petcam 쪽 값 교체.
+- Supabase service_role 키를 대신 쓰지 않는다(권한 범위가 너무 넓다).
 
 ## .env 생성 가이드 (Lightsail)
 

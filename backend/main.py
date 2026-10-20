@@ -40,6 +40,7 @@ from backend.routers import (
     enclosures,
     firmware,
     lcd,
+    ops,
     recordings,
     schedules,
     settings,
@@ -114,6 +115,13 @@ tags_metadata = [
             "complete → 재생 URL·삭제. 목록은 Supabase 직결 SELECT."
         ),
     },
+    {
+        "name": "ops",
+        "description": (
+            "운영 전용(서버 시크릿 `X-Ops-Secret`). petcam-lab 감시 스크립트가 베타 카메라를 "
+            "재부팅. 사용자 JWT 로는 호출 불가."
+        ),
+    },
 ]
 
 @asynccontextmanager
@@ -123,6 +131,9 @@ async def _lifespan(_app: FastAPI):
     펌웨어 → 웹 방향 candidate 를 long-poll 로 전달하기 위해 1개의 long-lived
     MQTT subscriber 가 `esp32/+/ack` 를 구독한다. 자세한 동기는 backend/webrtc_relay.py.
     """
+    # 운영 재부팅(2026-10-20): 시크릿 미설정이면 /ops 는 전부 401. 값은 로그 금지.
+    if not os.getenv("OPS_REBOOT_SECRET", "").strip():
+        logging.getLogger(__name__).warning("OPS_REBOOT_SECRET 미설정 — /ops 운영 재부팅 비활성(401)")
     relay = get_relay()
     loop = asyncio.get_running_loop()
     relay.start(loop)
@@ -238,6 +249,7 @@ app.include_router(schedules.schedules_router)
 app.include_router(settings.router)
 app.include_router(firmware.router)
 app.include_router(recordings.router)
+app.include_router(ops.router)
 
 # 정적 웹 콘솔 — 루트(/) 에 마운트.
 # 라우터들 다음에 등록해야 /devices, /cameras, /web-config 등이 우선 매칭됨.

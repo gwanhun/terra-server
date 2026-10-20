@@ -12,6 +12,7 @@ import pytest
 from postgrest.exceptions import APIError
 
 from backend.mqtt import handlers
+from tests.fake_sb import FakeSB
 
 
 DEVICE_TEXT = "terra-test01"
@@ -1498,3 +1499,60 @@ def test_camera_telemetry_sys_state_txpwr(fake_sb: MagicMock, published: list) -
         handlers.handle_telemetry(CAMERA_TEXT, {"ts": 1, "uptime_sec": 301, "txpwr_q4": bad, "clips": {"rec": 0}})
         sy = [u for u in updates if "clip_stats" in u][-1]["clip_stats"]["sys"]
         assert "txpwr_q4" not in sy, bad
+
+
+# ---------- 운영 재부팅 기록 ack (petcam-lab 요청 6, specs/stage-m-ops-camera-reboot.md) ----------
+
+OPS_MSG = "88888888-8888-8888-8888-888888888888"
+
+
+def _ops_sb(monkeypatch: pytest.MonkeyPatch) -> FakeSB:
+    """이 섹션만 FakeSB — 카메라 1대 + 진행 중 운영 재부팅 기록 1행."""
+    sb = FakeSB(
+        devices=[],
+        cameras=[{"id": CAMERA_UUID, "camera_id": CAMERA_TEXT, "unlinked_at": None}],
+        camera_ops_reboots=[{"id": "r-1", "camera_id": CAMERA_UUID, "msg_id": OPS_MSG,
+                             "published": True, "ack_result": None, "acked_at": None}],
+        ota_jobs=[],
+    )
+    monkeypatch.setattr(handlers, "get_supabase_client", lambda: sb)
+    return sb
+
+
+def test_camera_ack_records_ops_reboot_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    sb = _ops_sb(monkeypatch)
+    handlers.handle_ack(CAMERA_TEXT, {"msg_id": OPS_MSG, "result": "ok"})
+    row = sb.one("camera_ops_reboots", msg_id=OPS_MSG)
+    assert row["ack_result"] == "ok"
+    assert row["acked_at"]
+    # last_seen 갱신은 그대로
+    assert sb.one("cameras", id=CAMERA_UUID)["is_online"] is True
+
+
+def test_camera_ack_rejected_reboot_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
+    sb = _ops_sb(monkeypatch)
+    handlers.handle_ack(CAMERA_TEXT, {"msg_id": OPS_MSG, "result": "rejected_unknown_action"})
+    assert sb.one("camera_ops_reboots", msg_id=OPS_MSG)["ack_result"] == "rejected_unknown_action"
+
+
+@pytest.mark.parametrize("payload", [
+    {"action": "webrtc_answer", "msg_id": OPS_MSG, "result": "ok"},
+    {"msg_id": OPS_MSG, "result": "ok", "ota": {"job_id": "j-1", "phase": "downloading", "pct": 10}},
+    {"msg_id": "m-1", "result": "ok"},
+    {"msg_id": OPS_MSG},
+    {"action": "set_rotation", "msg_id": OPS_MSG, "result": "ok"},
+], ids=["webrtc", "ota_block", "non_uuid_msg_id", "no_result", "other_action"])
+def test_camera_ack_skips_non_ops_acks(monkeypatch: pytest.MonkeyPatch, payload: dict) -> None:
+    sb = _ops_sb(monkeypatch)
+    handlers.handle_ack(CAMERA_TEXT, payload)
+    row = sb.one("camera_ops_reboots", msg_id=OPS_MSG)
+    assert row["ack_result"] is None
+    assert row["acked_at"] is None
+    assert sb.one("cameras", id=CAMERA_UUID)["is_online"] is True
+
+
+def test_camera_ack_reboot_action_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """action 이 실려 오면 reboot 만 기록 대상(없으면 msg_id 로만 매칭 — 위 테스트)."""
+    sb = _ops_sb(monkeypatch)
+    handlers.handle_ack(CAMERA_TEXT, {"action": "reboot", "msg_id": OPS_MSG, "result": "ok", "state": "REBOOT"})
+    assert sb.one("camera_ops_reboots", msg_id=OPS_MSG)["ack_result"] == "ok"

@@ -28,3 +28,15 @@ def test_lt_filters_iso_strings() -> None:
     cutoff = (now - timedelta(hours=24)).isoformat()
     res = sb.table("t").select("*").lt("created_at", cutoff).execute()
     assert [r["id"] for r in res.data] == ["old"]
+
+
+def test_gte_filters_iso_strings() -> None:
+    base = datetime(2026, 10, 20, 10, 0, tzinfo=timezone.utc)
+    sb = FakeSB(t=[
+        {"id": "10", "t": base.isoformat()},
+        {"id": "11", "t": (base + timedelta(hours=1)).isoformat()},
+        {"id": "12", "t": (base + timedelta(hours=2)).isoformat()},
+        {"id": "none", "t": None},
+    ])
+    res = sb.table("t").select("*").gte("t", (base + timedelta(hours=1)).isoformat()).execute()
+    assert sorted(r["id"] for r in res.data) == ["11", "12"]
