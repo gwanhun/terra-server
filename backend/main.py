@@ -132,7 +132,7 @@ async def _lifespan(_app: FastAPI):
     MQTT subscriber 가 `esp32/+/ack` 를 구독한다. 자세한 동기는 backend/webrtc_relay.py.
     """
     # 운영 재부팅(2026-10-20): 시크릿 미설정이면 /ops 는 전부 401. 값은 로그 금지.
-    if not os.getenv("OPS_REBOOT_SECRET"):
+    if not os.getenv("OPS_REBOOT_SECRET", "").strip():
         logging.getLogger(__name__).warning("OPS_REBOOT_SECRET 미설정 — /ops 운영 재부팅 비활성(401)")
     relay = get_relay()
     loop = asyncio.get_running_loop()

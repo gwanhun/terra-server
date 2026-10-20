@@ -1109,13 +1109,14 @@ def _ack_camera(device_id_text: str, camera_uuid: str, payload: dict[str, Any]) 
 def _record_ops_reboot_ack(sb: Any, payload: dict[str, Any]) -> None:
     """운영 재부팅(POST /ops/cameras/{id}/reboot) 기록 행에 카메라 ack 결과를 채운다.
 
-    카메라 ack 에 action 이 실린다는 보장이 없어 msg_id 로만 매칭한다. webrtc 류·OTA 진행 ack·
+    카메라 ack 에 action 이 실린다는 보장이 없어 action 이 있으면 reboot 만, 없으면 msg_id 로만
+    매칭한다. 다른 action(webrtc 류·set_rotation 등)·OTA 진행 ack·
     result 없는 ack·UUID 가 아닌 msg_id(실 DB 에선 22P02)는 건너뛴다. 기록 행이 없는 msg_id
     (set_rotation 등)는 0행 UPDATE 로 끝. 실패해도 last_seen 갱신은 계속돼야 하므로 삼킨다.
     """
     action = payload.get("action")
-    if isinstance(action, str) and action.startswith("webrtc_"):
-        return
+    if isinstance(action, str) and action != "reboot":
+        return   # webrtc_*·set_rotation·ota_* 등 — action 이 실려 오면 reboot 만 본다
     if "ota" in payload:
         return
     result = payload.get("result")

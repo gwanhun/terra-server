@@ -55,6 +55,7 @@ Content-Type: application/json
 | `POST` | `/cameras/{id}/unlink` | JWT | **카메라 등록 해제 (소프트, 클립·R2 보존)** |
 | `DELETE` | `/cameras/{id}` | JWT | 카메라 hard delete (운영·탈퇴용, 앱 미사용) |
 | `POST` | `/cameras/{id}/reboot` | JWT | **카메라 원격 재부팅** (MQTT `reboot` 명령 1회 발행, 2026-09-28) |
+| `POST` | `/ops/cameras/{id}/reboot` | `X-Ops-Secret` | **운영 카메라 재부팅** (petcam 감시 스크립트 전용, 베타 카메라·2시간 쿨다운, §4.12, 2026-10-20) |
 | `POST` | `/cameras/{id}/ota` | JWT | **OTA 1단계** `ota_prepare` 발행 (Stage J, 2026-10-07, §4.10) |
 | `POST` | `/cameras/{id}/ota/{job_id}/apply` | JWT | **OTA 2단계** `ota_apply` 발행 — `ready` 작업만 (§4.10) |
 | `POST` | `/devices/{id}/ota` · `/devices/{id}/ota/{job_id}/apply` | JWT | 기기(nano) OTA — 같은 계약, `commands` 큐잉 (§4.10) |
@@ -915,7 +916,7 @@ X-Ops-Secret: <.env OPS_REBOOT_SECRET>
 ```
 
 - **인증**: 사용자 JWT 가 아니라 서버 시크릿 헤더. `hmac.compare_digest` 상수 시간 비교, 서버 값이 비었으면 헤더와 무관하게 401. 시크릿·헤더 값은 로그에 남기지 않는다.
-- **순서**: 401 → 404 → `not_beta` → `offline` → `live_active` → `ota_active` → (카메라별 락) 쿨다운 → 기록 INSERT(`published=NULL`) → 발행 → `published` UPDATE.
+- **순서**: 401 → (카메라 락) 404 → `not_beta` → `offline` → `live_active` → `ota_active` → 쿨다운 → 기록 INSERT(`published=NULL`) → 발행 → `published` UPDATE. 카메라 락은 라이브 시청 시작(`live_session.claim`)과 같은 락이라, 판정과 발행 사이에 시청이 끼어들지 못한다.
 - **기록 먼저(fail-closed)**: INSERT 가 실패하면 발행하지 않고 503. 마이그레이션 전 배포나 Supabase 순단에도 쿨다운이 뚫리지 않는다.
 - **쿨다운** `OPS_REBOOT_COOLDOWN_SEC = 7200`: 2시간 안의 `published` 가 false 가 **아닌** 행(성공 + 진행 중)을 센다. 발행 실패 행은 세지 않는다.
 - **건너뜀(409)·401·404 는 기록하지 않는다.** 발행 시도만 `camera_ops_reboots` 에 1행.

@@ -12,8 +12,12 @@ petcam-lab 감시 스크립트가 밤 녹화가 2시간 멈춘 베타 카메라�
 나누면 권한이 너무 넓다 → 이 경로 하나만 여는 서버 시크릿. 비교는 상수 시간(hmac.compare_digest).
 
 ## 안전장치 (검사 순서)
-401 시크릿 → 404 카메라 없음/해제 → 409 not_beta → offline → live_active → ota_active
-→ (카메라별 락) 429 쿨다운 → 기록 INSERT → 발행 → 결과 UPDATE.
+401 시크릿 → (카메라 락) 404 카메라 없음/해제 → 409 not_beta → offline → live_active → ota_active
+→ 429 쿨다운 → 기록 INSERT → 발행 → 결과 UPDATE.
+
+카메라 락은 live_session.claim 과 **같은 락**이다. 라이브 판정~발행 사이에 시청이 시작되는 창을
+닫기 위해서다(락 안에서 카메라 행을 읽는다). 발행이 최대 5초라 그동안 같은 카메라 시청 시작이
+기다릴 수 있다 — 밤·드문 호출이라 감수.
 
 ## 왜 기록을 먼저 INSERT 하나? (fail-closed)
 INSERT 가 실패하면 발행하지 않는다(503). 마이그레이션 전 배포·Supabase 순단에도 쿨다운이
@@ -29,7 +33,6 @@ import hmac
 import logging
 import math
 import os
-import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -38,6 +41,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from backend.db_helpers import first_row, parse_uuid_or_404
+from backend.live_session import _lock_for as camera_lock
+from backend.live_session import _ts as parse_ts
 from backend.mqtt.camera_commands import reboot_command
 from backend.ota_service import active_job_for
 from backend.routers.cameras import RebootOut
@@ -54,7 +59,7 @@ _CAMERA_COLUMNS = "id, camera_id, labeling_group, unlinked_at, is_online, live_s
 
 def require_ops_secret(x_ops_secret: str | None = Header(None, alias="X-Ops-Secret")) -> None:
     """서버 시크릿이 비었거나 미설정이면 헤더와 무관하게 401(빈 값끼리 일치 금지). 값은 로그 금지."""
-    expected = os.getenv("OPS_REBOOT_SECRET", "")
+    expected = os.getenv("OPS_REBOOT_SECRET", "").strip()   # push_events 시크릿과 같이 공백·개행 무시
     given = x_ops_secret or ""
     ok = hmac.compare_digest(given.encode(), expected.encode())
     if not (expected and given and ok):
@@ -69,26 +74,6 @@ class OpsRebootIn(BaseModel):
     requested_by: str = Field(..., min_length=1, max_length=64, description="예: beta-camera-watch")
 
 
-# 카메라별 락 — 쿨다운 조회~INSERT~발행~UPDATE 를 직렬화(동시 호출 2건 방지).
-# terra-api 는 단일 uvicorn 프로세스라 프로세스 락으로 충분(live_session._lock_for 와 같은 전제).
-_locks: dict[str, threading.Lock] = {}
-_locks_guard = threading.Lock()
-
-
-def _lock_for(camera_uuid: str) -> threading.Lock:
-    with _locks_guard:
-        return _locks.setdefault(camera_uuid, threading.Lock())
-
-
-def _parse_iso(raw: Any) -> datetime | None:
-    if not raw:
-        return None
-    try:
-        return datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
 def _skipped(reason: str) -> JSONResponse:
     return JSONResponse(status_code=status.HTTP_409_CONFLICT,
                         content={"detail": "skipped", "reason": reason})
@@ -100,7 +85,7 @@ def _skip_reason(sb: Any, cam: dict[str, Any], now: datetime) -> str | None:
         return "not_beta"
     if not cam.get("is_online"):
         return "offline"
-    stream_until = _parse_iso(cam.get("stream_until"))
+    stream_until = parse_ts(cam.get("stream_until"))
     if cam.get("live_session_id") or (stream_until is not None and stream_until > now):
         return "live_active"
     if active_job_for(sb, cam["id"]) is not None:
@@ -109,7 +94,10 @@ def _skip_reason(sb: Any, cam: dict[str, Any], now: datetime) -> str | None:
 
 
 def _cooldown_retry_after(sb: Any, cam_uuid: str, now: datetime) -> int | None:
-    """2시간 안에 published 가 false 가 아닌(성공 + 진행 중) 기록이 있으면 남은 초. 없으면 None."""
+    """2시간 안에 published 가 false 가 아닌(성공 + 진행 중) 기록이 있으면 남은 초. 없으면 None.
+
+    개수 제한 없이 창 전체를 본다 — 성공 뒤에 실패가 여러 건 쌓여도 성공 행을 놓치지 않게.
+    """
     since = (now - timedelta(seconds=OPS_REBOOT_COOLDOWN_SEC)).isoformat()
     rows = (
         sb.table(_LOG_TABLE)
@@ -117,13 +105,12 @@ def _cooldown_retry_after(sb: Any, cam_uuid: str, now: datetime) -> int | None:
         .eq("camera_id", cam_uuid)
         .gte("requested_at", since)
         .order("requested_at", desc=True)
-        .limit(5)
         .execute()
     ).data or []
     for row in rows:
         if row.get("published") is False:
             continue   # 발행 실패는 쿨다운에 안 셈 — 다음 실행에서 재시도
-        at = _parse_iso(row.get("requested_at"))
+        at = parse_ts(row.get("requested_at"))
         if at is None:
             continue
         return max(1, math.ceil(OPS_REBOOT_COOLDOWN_SEC - (now - at).total_seconds()))
@@ -154,19 +141,19 @@ def ops_reboot_camera(camera_uuid: str, body: OpsRebootIn) -> RebootOut | JSONRe
     """베타 카메라에 `reboot` 명령을 1회 발행하고 기록한다. 앱에는 알리지 않는다."""
     cam_uuid = parse_uuid_or_404(camera_uuid, "camera not found")
     sb = get_supabase_client()
-    cam = first_row((
-        sb.table("cameras").select(_CAMERA_COLUMNS).eq("id", cam_uuid).limit(1).execute()
-    ).data)
-    if not cam or cam.get("unlinked_at"):
-        raise HTTPException(status_code=404, detail="camera not found")
+    with camera_lock(cam_uuid):
+        cam = first_row((
+            sb.table("cameras").select(_CAMERA_COLUMNS).eq("id", cam_uuid).limit(1).execute()
+        ).data)
+        if not cam or cam.get("unlinked_at"):
+            raise HTTPException(status_code=404, detail="camera not found")
 
-    now = datetime.now(timezone.utc)
-    reason = _skip_reason(sb, cam, now)
-    if reason:
-        logger.info("ops reboot 건너뜀 camera=%s reason=%s", cam.get("camera_id"), reason)
-        return _skipped(reason)
+        now = datetime.now(timezone.utc)
+        reason = _skip_reason(sb, cam, now)
+        if reason:
+            logger.info("ops reboot 건너뜀 camera=%s reason=%s", cam.get("camera_id"), reason)
+            return _skipped(reason)
 
-    with _lock_for(cam_uuid):
         retry_after = _cooldown_retry_after(sb, cam_uuid, now)
         if retry_after is not None:
             return JSONResponse(status_code=status.HTTP_429_TOO_MANY_REQUESTS,

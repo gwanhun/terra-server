@@ -1540,7 +1540,8 @@ def test_camera_ack_rejected_reboot_recorded(monkeypatch: pytest.MonkeyPatch) ->
     {"msg_id": OPS_MSG, "result": "ok", "ota": {"job_id": "j-1", "phase": "downloading", "pct": 10}},
     {"msg_id": "m-1", "result": "ok"},
     {"msg_id": OPS_MSG},
-], ids=["webrtc", "ota_block", "non_uuid_msg_id", "no_result"])
+    {"action": "set_rotation", "msg_id": OPS_MSG, "result": "ok"},
+], ids=["webrtc", "ota_block", "non_uuid_msg_id", "no_result", "other_action"])
 def test_camera_ack_skips_non_ops_acks(monkeypatch: pytest.MonkeyPatch, payload: dict) -> None:
     sb = _ops_sb(monkeypatch)
     handlers.handle_ack(CAMERA_TEXT, payload)
@@ -1548,3 +1549,10 @@ def test_camera_ack_skips_non_ops_acks(monkeypatch: pytest.MonkeyPatch, payload:
     assert row["ack_result"] is None
     assert row["acked_at"] is None
     assert sb.one("cameras", id=CAMERA_UUID)["is_online"] is True
+
+
+def test_camera_ack_reboot_action_recorded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """action 이 실려 오면 reboot 만 기록 대상(없으면 msg_id 로만 매칭 — 위 테스트)."""
+    sb = _ops_sb(monkeypatch)
+    handlers.handle_ack(CAMERA_TEXT, {"action": "reboot", "msg_id": OPS_MSG, "result": "ok", "state": "REBOOT"})
+    assert sb.one("camera_ops_reboots", msg_id=OPS_MSG)["ack_result"] == "ok"

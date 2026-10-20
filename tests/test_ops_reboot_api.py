@@ -282,3 +282,50 @@ def test_ops_reboot_422_missing_body_fields(monkeypatch: pytest.MonkeyPatch) -> 
     res = env.post(body={"requested_by": "beta-camera-watch"})
     assert res.status_code == 422
     assert env.calls == [] and env.logs == []
+
+
+# ---------------------------------------------------------------- /code-review 후속 (2026-10-20)
+
+
+def test_ops_reboot_cooldown_sees_success_behind_many_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    """2시간 안 성공 1건 뒤에 실패가 여러 건 쌓여도 쿨다운은 성공 행을 본다(조회 개수 제한 없음)."""
+    env = _env(monkeypatch)
+    rows = env.sb.rows("camera_ops_reboots")
+    rows.append(_log(published=True, seconds_ago=3600))
+    for i in range(6):
+        rows.append(_log(published=False, seconds_ago=60 + i))
+    res = env.post()
+    assert res.status_code == 429
+    assert env.calls == []
+
+
+def test_ops_reboot_server_secret_whitespace_trimmed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """.env 에 붙은 공백·개행은 무시(push_events 시크릿과 같은 규칙)."""
+    env = _env(monkeypatch)
+    monkeypatch.setenv("OPS_REBOOT_SECRET", f" {SECRET}\r\n")
+    assert env.post().status_code == 200
+
+
+def test_ops_reboot_live_recheck_under_live_session_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """라이브 판정은 live_session.claim 과 같은 카메라 락 안에서 다시 읽는다 —
+    락을 기다리는 사이 시청이 시작되면 재부팅하지 않는다."""
+    import threading
+    import time
+
+    from backend import live_session
+
+    env = _env(monkeypatch)
+    out: dict[str, Any] = {}
+    lock = live_session._lock_for(CAM)
+    with lock:
+        worker = threading.Thread(target=lambda: out.setdefault("res", env.post()))
+        worker.start()
+        time.sleep(0.3)
+        assert worker.is_alive()   # 같은 락을 기다린다
+        env.sb.rows("cameras")[0]["live_session_id"] = "s-late"   # 그 사이 시청 시작(claim)
+    worker.join(5)
+    res = out["res"]
+    assert res.status_code == 409
+    assert res.json() == {"detail": "skipped", "reason": "live_active"}
+    assert env.calls == []
+    assert env.logs == []
