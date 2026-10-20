@@ -2,7 +2,7 @@
 
 > 요청: petcam-lab `docs/requests/2026-10-20-terra-server-ops-camera-reboot.md` (요청 6)
 > 계획서: [specs/stage-m-ops-camera-reboot.md](../specs/stage-m-ops-camera-reboot.md) (교차 검수 반영, owner 2026-10-20 승인)
-> PR: PR 링크는 생성 후 기입
+> PR: https://github.com/gwanhun/terra-server/pull/22
 > 요청서 frontmatter 의 `commit_sha`·`implementation_host` 는 owner 가 채운다.
 
 ## 결론
@@ -100,4 +100,4 @@ petcam 스크립트는 409 `ota_active` 를 `live_active` 와 같이 "건너뜀"
 - 테이블: [DATABASE.md](DATABASE.md) `camera_ops_reboots`
 - 환경변수: [ENV.md](ENV.md) "운영 카메라 재부팅"
 - 계획서: [specs/stage-m-ops-camera-reboot.md](../specs/stage-m-ops-camera-reboot.md)
-- PR: PR 링크는 생성 후 기입
+- PR: https://github.com/gwanhun/terra-server/pull/22
