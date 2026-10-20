@@ -568,3 +568,96 @@ def test_complete_concurrent_ready_200(monkeypatch: pytest.MonkeyPatch) -> None:
     res = e.client.post(f"/recordings/{row['id']}/complete")
     assert res.status_code == 200
     assert res.json() == {"status": "ready"}
+
+
+# ---------------------------------------------------------------- GET url / DELETE
+
+
+def test_get_url_ready(env: Env) -> None:
+    row = _seed(env, status="ready")
+    res = env.client.get(f"/recordings/{row['id']}/url")
+    assert res.status_code == 200
+    assert res.json() == {"url": f"https://r2.test/get/{row['r2_key']}?sig=test", "expires_in": 3600}
+    assert env.r2.get_calls == [(row["r2_key"], 3600)]
+
+
+def test_get_thumbnail_url_ready(env: Env) -> None:
+    row = _seed(env, status="ready")
+    res = env.client.get(f"/recordings/{row['id']}/thumbnail/url")
+    assert res.status_code == 200
+    assert res.json() == {
+        "url": f"https://r2.test/get/{row['thumbnail_key']}?sig=test", "expires_in": 3600,
+    }
+
+
+def test_get_url_presign_failure_502(env: Env) -> None:
+    row = _seed(env, status="ready")
+    env.r2.fail_get = True
+    res = env.client.get(f"/recordings/{row['id']}/url")
+    assert res.status_code == 502
+    assert isinstance(res.json()["detail"], str)
+
+
+def test_get_url_pending_404(env: Env) -> None:
+    row = _seed(env)
+    for path in ("url", "thumbnail/url"):
+        res = env.client.get(f"/recordings/{row['id']}/{path}")
+        assert res.status_code == 404
+        assert res.json()["detail"] == "recording not found"
+
+
+def test_get_thumbnail_url_none_404(env: Env) -> None:
+    row = _seed(env, status="ready", thumb=False)
+    res = env.client.get(f"/recordings/{row['id']}/thumbnail/url")
+    assert res.status_code == 404
+    assert res.json()["detail"] == "thumbnail not found"
+
+
+def test_get_url_other_users_404(env: Env) -> None:
+    row = _seed(env, status="ready", user=OTHER_USER_ID, cam=OTHER_CAM)
+    for path in ("url", "thumbnail/url"):
+        res = env.client.get(f"/recordings/{row['id']}/{path}")
+        assert res.status_code == 404
+        assert res.json()["detail"] == "recording not found"
+    assert env.client.get("/recordings/xyz/url").status_code == 404
+
+
+def test_delete_ready_removes_row_and_objects(env: Env) -> None:
+    row = _seed(env, status="ready")
+    keep = _seed(env, status="ready")
+    env.r2.objects[row["r2_key"]] = 1
+    env.r2.objects[row["thumbnail_key"]] = 1
+    res = env.client.delete(f"/recordings/{row['id']}")
+    assert res.status_code == 204
+    assert res.content == b""
+    assert [r["id"] for r in env.recs] == [keep["id"]]
+    assert env.r2.deleted == [row["r2_key"], row["thumbnail_key"]]
+
+
+def test_delete_pending_204(env: Env) -> None:
+    row = _seed(env, thumb=False)       # 객체가 아직 없어도 성공
+    res = env.client.delete(f"/recordings/{row['id']}")
+    assert res.status_code == 204
+    assert env.recs == []
+    assert env.r2.deleted == [row["r2_key"]]
+
+
+def test_delete_other_users_404(env: Env) -> None:
+    row = _seed(env, status="ready", user=OTHER_USER_ID, cam=OTHER_CAM)
+    res = env.client.delete(f"/recordings/{row['id']}")
+    assert res.status_code == 404
+    assert res.json()["detail"] == "recording not found"
+    assert len(env.recs) == 1
+    assert env.r2.deleted == []
+    assert env.client.delete("/recordings/not-a-uuid").status_code == 404
+
+
+def test_delete_r2_failure_still_deletes_row(env: Env, caplog: pytest.LogCaptureFixture) -> None:
+    row = _seed(env, status="ready")
+    env.r2.fail_delete = True
+    with caplog.at_level("ERROR"):
+        res = env.client.delete(f"/recordings/{row['id']}")
+    assert res.status_code == 204
+    assert env.recs == []
+    assert f"recording r2 delete failed key={row['r2_key']}" in caplog.text
+    assert f"recording r2 delete failed key={row['thumbnail_key']}" in caplog.text

@@ -196,9 +196,9 @@ create index if not exists live_recordings_status_created_idx
 - Must know: URL 은 `ready` 만, `pending` 은 404. 썸네일 키 없으면 404. 삭제는 `pending` 포함 본인 행이면 204: 영상·썸네일 `delete_object`(실패 시 `logger.error("recording r2 delete failed key=%s", key)` 후 계속) → 행 delete `.eq("id").eq("user_id")`. 남의 것·없음 404.
 - Acceptance: 아래 테스트 PASS
 
-- [ ] Step 1: 테스트 — `test_get_url_ready`(`expires_in == 3600`), `test_get_thumbnail_url_ready`, `test_get_url_presign_failure_502`, `test_get_url_pending_404`, `test_get_thumbnail_url_none_404`, `test_get_url_other_users_404`, `test_delete_ready_removes_row_and_objects`, `test_delete_pending_204`, `test_delete_other_users_404`, `test_delete_r2_failure_still_deletes_row`(delete stub 이 ClientError → 204, 행 없음, caplog 에 키)
-- [ ] Step 2~4: 실패 확인 → 구현 → PASS
-- [ ] Step 5: 커밋 `feat(recordings): 재생 URL + 삭제`
+- [x] Step 1: 테스트 — `test_get_url_ready`(`expires_in == 3600`), `test_get_thumbnail_url_ready`, `test_get_url_presign_failure_502`, `test_get_url_pending_404`, `test_get_thumbnail_url_none_404`, `test_get_url_other_users_404`, `test_delete_ready_removes_row_and_objects`, `test_delete_pending_204`, `test_delete_other_users_404`, `test_delete_r2_failure_still_deletes_row`(delete stub 이 ClientError → 204, 행 없음, caplog 에 키)
+- [x] Step 2~4: 실패 확인 → 구현 → PASS
+- [x] Step 5: 커밋 `feat(recordings): 재생 URL + 삭제`
 
 ### Task 6: `pending` 24시간 정리 스레드
 

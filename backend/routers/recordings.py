@@ -359,6 +359,77 @@ def complete_recording(
     return RecordingComplete(status="ready")
 
 
+# ---------------------------------------------------------------- GET url / DELETE
+
+
+def _load_ready(sb: Any, recording_id: str, user_id: str) -> dict:
+    row = _load_recording_for_owner(sb, recording_id, user_id)
+    if row.get("status") != "ready":
+        # 업로드가 안 끝난 녹화는 재생 대상이 아니다
+        raise HTTPException(status_code=404, detail="recording not found")
+    return row
+
+
+def _get_url(key: str) -> ClipUrl:
+    try:
+        url = generate_presigned_get_url(key, expires_in=DEFAULT_GET_URL_TTL)
+    except (BotoCoreError, ClientError) as exc:
+        logger.exception("recording presigned GET URL 발급 실패")
+        raise HTTPException(status_code=502, detail=f"R2 error: {exc}") from exc
+    return ClipUrl(url=url, expires_in=DEFAULT_GET_URL_TTL)
+
+
+@router.get(
+    "/{recording_id}/url",
+    response_model=ClipUrl,
+    summary="재생용 presigned GET URL (ready 만)",
+    responses={**_USER_AUTH, **_NOT_FOUND, **_R2_ERROR},
+)
+def get_recording_url(
+    recording_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> ClipUrl:
+    row = _load_ready(get_supabase_client(), recording_id, user_id)
+    return _get_url(row["r2_key"])
+
+
+@router.get(
+    "/{recording_id}/thumbnail/url",
+    response_model=ClipUrl,
+    summary="썸네일 presigned GET URL (ready 만, 썸네일 없으면 404)",
+    responses={**_USER_AUTH, **_NOT_FOUND, **_R2_ERROR},
+)
+def get_recording_thumbnail_url(
+    recording_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> ClipUrl:
+    row = _load_ready(get_supabase_client(), recording_id, user_id)
+    thumbnail_key = row.get("thumbnail_key")
+    if not thumbnail_key:
+        raise HTTPException(status_code=404, detail="thumbnail not found")
+    return _get_url(thumbnail_key)
+
+
+@router.delete(
+    "/{recording_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="녹화 삭제 (행 + R2 영상·썸네일, pending 포함)",
+    responses={**_USER_AUTH, **_NOT_FOUND},
+)
+def delete_recording(
+    recording_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> Response:
+    """R2 삭제 실패는 로그만 남기고 행은 지운다 (객체가 아직 없어도 성공)."""
+    sb = get_supabase_client()
+    row = _load_recording_for_owner(sb, recording_id, user_id)
+    for key in (row.get("r2_key"), row.get("thumbnail_key")):
+        if key:
+            _delete_quietly(key)
+    sb.table(TABLE).delete().eq("id", row["id"]).eq("user_id", user_id).execute()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 __all__ = [
     "MAX_DURATION_MS",
     "MAX_THUMB_BYTES",
