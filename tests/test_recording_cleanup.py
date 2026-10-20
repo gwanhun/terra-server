@@ -104,3 +104,80 @@ def test_reaper_runs_periodically(monkeypatch: pytest.MonkeyPatch) -> None:
         assert any(t.name == "recording-pending-reaper" for t in threading.enumerate())
     finally:
         reaper.stop()
+
+
+# ---------------------------------------------------------------- 고아 객체 스캔 (앱 3차 회신 6번, B안)
+
+from backend.recording_cleanup import ORPHAN_PREFIX, purge_orphan_objects  # noqa: E402
+
+
+def _listing(*items: tuple[str, float]) -> Any:
+    """(key, hours_ago) → list_fn(prefix) stub."""
+    def _list(prefix: str) -> list[tuple[str, datetime]]:
+        assert prefix == ORPHAN_PREFIX
+        return [(k, NOW - timedelta(hours=h)) for k, h in items]
+    return _list
+
+
+def _key(rid: str, ext: str) -> str:
+    return f"terra-clips/recordings/{UID}/{CAM}/{rid}.{ext}"
+
+
+RID_A = "aaaaaaaa-0000-4000-8000-000000000001"
+RID_B = "bbbbbbbb-0000-4000-8000-000000000002"
+RID_C = "cccccccc-0000-4000-8000-000000000003"
+
+
+def test_orphan_scan_deletes_only_unreferenced_old_objects() -> None:
+    sb = FakeSB(live_recordings=[_row(RID_A, hours_ago=5, status="ready")])
+    deleted: list[str] = []
+    n = purge_orphan_objects(sb, NOW, _listing(
+        (_key(RID_A, "mp4"), 5),        # 행 있음 → 유지
+        (_key(RID_A, "jpg"), 5),        # 행의 thumbnail_key → 유지
+        (_key(RID_B, "mp4"), 2),        # 행 없음 + 1h 넘음 → 삭제
+        (_key(RID_C, "mp4"), 0.5),      # 행 없음이지만 1h 이내(업로드 중일 수 있음) → 유지
+    ), deleted.append)
+    assert n == 1
+    assert deleted == [_key(RID_B, "mp4")]
+
+
+def test_orphan_scan_deletes_dropped_thumbnail() -> None:
+    """complete 에서 썸네일을 버려 thumbnail_key=None 인데 객체가 남은 경우."""
+    sb = FakeSB(live_recordings=[_row(RID_A, hours_ago=5, status="ready", thumb=False)])
+    deleted: list[str] = []
+    purge_orphan_objects(sb, NOW, _listing((_key(RID_A, "mp4"), 5), (_key(RID_A, "jpg"), 5)),
+                         deleted.append)
+    assert deleted == [_key(RID_A, "jpg")]
+
+
+def test_orphan_scan_skips_unparseable_keys() -> None:
+    deleted: list[str] = []
+    purge_orphan_objects(FakeSB(live_recordings=[]), NOW,
+                         _listing(("terra-clips/recordings/readme.txt", 5)), deleted.append)
+    assert deleted == []
+
+
+def test_orphan_scan_continues_on_delete_error() -> None:
+    calls: list[str] = []
+
+    def _delete(key: str) -> None:
+        calls.append(key)
+        if len(calls) == 1:
+            raise ClientError({"Error": {"Code": "InternalError", "Message": "x"}}, "DeleteObject")
+
+    n = purge_orphan_objects(FakeSB(live_recordings=[]), NOW,
+                             _listing((_key(RID_B, "mp4"), 2), (_key(RID_C, "mp4"), 2)), _delete)
+    assert len(calls) == 2 and n == 1
+
+
+def test_reaper_runs_orphan_scan_when_list_fn_given(monkeypatch: pytest.MonkeyPatch) -> None:
+    ran = threading.Event()
+    monkeypatch.setattr(recording_cleanup, "purge_orphan_objects",
+                        lambda *a, **k: ran.set() or 0)
+    reaper = PendingRecordingReaper(lambda: FakeSB(), lambda key: None, interval_sec=0.01,
+                                    list_fn=lambda prefix: [])
+    reaper.start()
+    try:
+        assert ran.wait(2)
+    finally:
+        reaper.stop()

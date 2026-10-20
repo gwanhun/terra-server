@@ -125,3 +125,32 @@ def test_head_object_size_other_error_raises(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(r2_client, "get_r2_client", lambda: _StubS3(error_code="AccessDenied"))
     with pytest.raises(ClientError):
         r2_client.head_object_size("k")
+
+
+class _StubPaginator:
+    def __init__(self, pages: list[dict]) -> None:
+        self._pages = pages
+        self.kwargs: dict = {}
+
+    def paginate(self, **kwargs: object) -> list[dict]:
+        self.kwargs = dict(kwargs)
+        return self._pages
+
+
+class _StubS3List:
+    def __init__(self, pages: list[dict]) -> None:
+        self.paginator = _StubPaginator(pages)
+
+    def get_paginator(self, name: str) -> _StubPaginator:
+        assert name == "list_objects_v2"
+        return self.paginator
+
+
+def test_list_objects_yields_key_and_last_modified(monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import datetime, timezone
+
+    t = datetime(2026, 10, 20, tzinfo=timezone.utc)
+    stub = _StubS3List([{"Contents": [{"Key": "p/a.mp4", "LastModified": t}]}, {}])
+    monkeypatch.setattr(r2_client, "get_r2_client", lambda: stub)
+    assert list(r2_client.list_objects("p/")) == [("p/a.mp4", t)]
+    assert stub.paginator.kwargs == {"Bucket": "test-bucket", "Prefix": "p/"}

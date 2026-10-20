@@ -887,7 +887,7 @@ DELETE /recordings/{id}                 → 204   (pending 포함, R2 삭제 실
 - **재호출(같은 `client_id`)** 은 한도 검사보다 먼저 본다: `pending`(23시간 30분 이내) → 200 + 저장된 키로 새 URL(바디 무시, 범위 검사도 안 함) / `ready` → 200, URL·`expires_at` 전부 null / 23시간 30분 넘은 `pending` → 옛 행·객체 삭제 후 새 등록(201, 새 id, 한도 검사 포함). 기준이 24h 보다 30분 이른 이유: 30분 URL 이 24h 정리와 겹치면 업로드 중 행이 사라진다(`REISSUE_STALE_AFTER`). 동시 중복은 UNIQUE(user_id, client_id) 23505 를 잡아 기존 행을 돌려주고, 충돌 행이 그새 사라졌으면 INSERT 를 한 번 더 한다. 한도는 24h 넘은 `pending` 을 세지 않는다.
 - **한도** `RECORDING_QUOTA = 50` — `pending` + `ready`. count 후 INSERT 라 동시 등록이면 1~2개 넘칠 수 있다(허용).
 - **썸네일**: complete 때 없거나 5MB(`MAX_THUMB_BYTES`) 초과면 **썸네일만 버리고** `ready`(`thumbnail_key=null` → `has_thumbnail=false`). 영상 재업로드 없음.
-- **pending 정리**: API 프로세스 스레드 `recording-pending-reaper`(`backend/recording_cleanup.py`)가 1시간마다 `created_at` 24시간 넘은 `pending` 을 최대 200행 지운다. 행을 먼저 조건부(pending) 삭제하고, 지워진 행의 객체만 지운다(complete 와 경합 안전).
+- **pending 정리**: API 프로세스 스레드 `recording-pending-reaper`(`backend/recording_cleanup.py`)가 1시간마다 `created_at` 24시간 넘은 `pending` 을 최대 200행 지운다. 행을 먼저 조건부(pending) 삭제하고, 지워진 행의 객체만 지운다(complete 와 경합 안전). 같은 스레드가 6시간마다 `terra-clips/recordings/` 를 훑어 1시간 넘었고 어떤 행의 `r2_key`·`thumbnail_key` 도 아닌 고아 객체를 최대 1,000개 지운다(`purge_orphan_objects`).
 - `/recordings` 경로의 요청 검증 오류만 422 대신 **400** + `"invalid request: <loc>: <msg>"` (앱은 400 만 비재시도). 다른 경로는 기존 422 그대로.
 - 이 라우터는 소유권 위반을 **403**(남의 카메라)·**404**(남의 녹화)로 구분한다 — 아래 §5 "403 사용 안 함" 의 예외.
 

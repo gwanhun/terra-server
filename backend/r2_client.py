@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterator
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -166,6 +168,15 @@ def head_object_size(key: str) -> int | None:
     return int(res["ContentLength"])
 
 
+def list_objects(prefix: str) -> Iterator[tuple[str, datetime]]:
+    """prefix 아래 (key, LastModified). 페이지네이션은 boto3 paginator 가 처리."""
+    client = get_r2_client()
+    bucket = get_r2_bucket()
+    for page in client.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            yield obj["Key"], obj["LastModified"]
+
+
 def reset_client_cache() -> None:
     # monkeypatch 로 함수가 교체된 상태에서도 안전하게 no-op
     clear = getattr(get_r2_client, "cache_clear", None)
@@ -185,5 +196,6 @@ __all__ = [
     "get_r2_bucket",
     "get_r2_client",
     "head_object_size",
+    "list_objects",
     "reset_client_cache",
 ]
