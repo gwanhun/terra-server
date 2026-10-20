@@ -3,6 +3,7 @@
 > 요청: tera-ai-flutter `docs/handoffs/2026-10-20-live-recording-server-requests.md`
 > 오류 형식 회신(앱 → 서버, 2026-10-20) 반영
 > 앱 2차 회신(2026-10-20) 반영 — 확인 요청 A·B 수용, 추가 확인 4건 답변(맨 아래)
+> **3차 갱신(2026-10-20, 구현 전 검수 반영)** — 썸네일 정책·재호출 규칙·형식 오류 400. 아래 "변경 사항 (3차)" 참고
 
 ## 결론
 
@@ -26,20 +27,22 @@
   "status": "pending" | "ready",
   "video_upload_url": "https://...presigned PUT" | null,
   "thumb_upload_url": "https://...presigned PUT" | null,
-  "expires_at": "..."
+  "expires_at": "..." | null     // ready 재호출이면 null
 }
 ```
 
 서버 처리 순서:
 
 1. **같은 `(user_id, client_id)` 행 조회 — 한도 검사보다 먼저** (회신 확인 1)
-   - `pending` 행이 있으면 → 200, 같은 `recording_id` + **새 업로드 URL**
-   - `ready` 행이 있으면 → 200, `status: "ready"`, 업로드 URL은 `null` (아래 "앱 확인 요청 A")
+   - `pending` 행이 있으면 → 200, 같은 `recording_id` + **새 업로드 URL**. 재호출 바디는 무시하고 처음 등록한 값을 기준으로 합니다
+   - `ready` 행이 있으면 → 200, `status: "ready"`, 업로드 URL·`expires_at` 은 `null` (아래 "앱 확인 요청 A")
+   - 등록한 지 24시간 넘은 `pending` 이면 → 옛 행을 지우고 **새 녹화로 등록**(201, 새 `recording_id`)
 2. 없으면 카메라 소유 확인 → 한도 검사 → 새 행 `pending` 등록 → 201
 
 - **카메라 소유 확인은 `owner_id`만 봅니다. 등록 해제(unlink)한 카메라도 허용합니다.**
   녹화 뒤 카메라를 해제하고 다음 실행 때 업로드해도 거절되지 않게 하려는 것입니다. 남의 카메라는 403.
-- 검사: `duration_ms` 3,000~60,000 / `size_bytes` ≤ 30MB / 썸네일 ≤ 1MB. 위반은 400(문자열 `detail`).
+- 검사: `duration_ms` 3,000~60,000 / `size_bytes` ≤ 30MB. 위반·필드 누락·형식 오류는 400(문자열 `detail`).
+- 썸네일 크기는 등록 때 알 수 없어서 `complete` 에서 봅니다(아래).
 - 업로드 URL 유효 시간: **30분.** 만료되면 같은 `client_id`로 다시 부르면 됩니다.
 - PUT 할 때 `Content-Type`을 영상은 `video/mp4`, 썸네일은 `image/jpeg`로 보내야 서명이 맞습니다.
 - 24시간이 지나 정리된 녹화를 같은 `client_id`로 다시 부르면 **새 녹화로 등록**합니다(이때는 한도 검사 포함). (회신 확인 2)
@@ -52,7 +55,8 @@
 → 409 { "detail": { "code": "upload_missing", "reason": "size_mismatch" } } 크기 불일치
 ```
 
-- 서버가 R2의 영상(+ 썸네일)이 있는지, 크기가 등록값과 맞는지 확인합니다. (회신 확인 3)
+- 서버가 R2의 영상이 있는지, 크기가 등록값과 맞는지 확인합니다. (회신 확인 3)
+- **썸네일이 없거나 5MB를 넘으면 썸네일만 버리고 `ready`로 처리합니다.** 영상을 다시 올릴 필요가 없습니다. 이때 목록의 `has_thumbnail` 은 `false` 입니다.
 - 이미 `ready`면 그대로 200.
 
 ### `GET /recordings/{id}/url` · `GET /recordings/{id}/thumbnail/url` (JWT)
@@ -101,7 +105,7 @@ supabase.from('live_recordings')
 
 | 항목 | 결정 |
 |---|---|
-| 한도 | 계정당 **50개.** `ready` + `pending`을 함께 셉니다(대기 행으로 한도를 피해 가지 못하게) |
+| 한도 | 계정당 **50개.** `ready` + `pending`을 함께 셉니다(대기 행으로 한도를 피해 가지 못하게). 거의 동시에 여러 개를 등록하면 1~2개 넘칠 수 있습니다 |
 | 보관 기간 | **무기한**(사용자가 지울 때까지). 일괄 정리 정책은 나중에 따로 정합니다 |
 | `pending` 정리 | 서버가 **24시간** 넘은 `pending` 행과 R2 객체를 지웁니다 |
 | R2 경로 | `terra-clips/recordings/{user_id}/{camera_id}/{recording_id}.mp4` (+ `.jpg`). 앱은 경로를 만들거나 파싱하지 않습니다 |
@@ -144,8 +148,19 @@ INSERT/UPDATE/DELETE는 서버(service_role)만 합니다.
    경로는 `recordings/{user_id}/`가 아니라 **`terra-clips/recordings/{user_id}/`** 입니다.
 4. **R2 lifecycle** — 확인되면 아래 첫 항목에 체크해 알려 드립니다.
 
+## 변경 사항 (3차, 2026-10-20)
+
+구현 전 검수에서 나온 것들입니다. **앱 쪽 확인 부탁드립니다** — 특히 1번은 계약 변경입니다.
+
+1. **썸네일:** "≤ 1MB, 위반 400" → **`complete` 때 썸네일이 없거나 5MB를 넘으면 썸네일만 버리고 `ready`.** 등록 시점엔 썸네일 크기를 알 수 없고, 409로 거절하면 앱이 영상까지 다시 올리게 돼서 바꿨습니다.
+2. **`ready` 재호출:** `expires_at` 도 `null`.
+3. **재호출 바디:** 무시하고 처음 등록한 값 기준(업로드 URL 경로가 바뀌지 않게).
+4. **24시간 넘은 `pending` 재호출:** 정리 전이어도 옛 행을 지우고 새로 등록(201, 새 `recording_id`). 앱은 새 `recording_id` 로 갈아 끼워 주세요.
+5. **형식 오류(필드 누락·타입 오류):** FastAPI 기본 422 대신 **400.** 앱의 "400은 비재시도" 규칙에 맞추려는 것입니다.
+
 ## 배포 상태
 
 - [ ] 운영 R2 lifecycle 규칙 확인 — 녹화 경로가 30일 자동 삭제 대상이 아닌지(서버 사전 작업)
+- [ ] 앱 3차 변경 사항 확인
 - [ ] 운영 DB 마이그레이션 `live_recordings`
 - [ ] 서버 배포 (API + `pending` 정리 배치)
