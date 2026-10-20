@@ -103,11 +103,11 @@ create index if not exists live_recordings_status_created_idx
   on public.live_recordings (status, created_at);
 ```
 
-- [ ] Step 1: 테스트 — `test_delete_removes_matching_rows`(eq 매칭 행만 사라지고 반환값에 들어감), `test_lt_filters_iso_strings`
-- [ ] Step 2: 실패 확인 `uv run pytest tests/test_fake_sb_ext.py -q` → AttributeError
-- [ ] Step 3: `_Query.delete(self) -> _Query`, `_Query.lt(self, col: str, val: Any) -> _Query` 추가, `_match`·`execute` 에 반영
-- [ ] Step 4: PASS 확인 + 기존 `uv run pytest -q` 전체 PASS
-- [ ] Step 5: 커밋 `feat(recordings): live_recordings 마이그레이션 + FakeSB delete/lt`
+- [x] Step 1: 테스트 — `test_delete_removes_matching_rows`(eq 매칭 행만 사라지고 반환값에 들어감), `test_lt_filters_iso_strings`
+- [x] Step 2: 실패 확인 `uv run pytest tests/test_fake_sb_ext.py -q` → AttributeError
+- [x] Step 3: `_Query.delete(self) -> _Query`, `_Query.lt(self, col: str, val: Any) -> _Query` 추가, `_match`·`execute` 에 반영
+- [x] Step 4: PASS 확인 + 기존 `uv run pytest -q` 전체 PASS
+- [x] Step 5: 커밋 `feat(recordings): live_recordings 마이그레이션 + FakeSB delete/lt`
 
 ### Task 2: R2 크기 조회 헬퍼
 
