@@ -33,6 +33,7 @@ from postgrest.exceptions import APIError
 from pydantic import BaseModel, Field
 
 from backend.auth import get_current_user_id
+from backend.db_helpers import first_row, parse_uuid_or_404
 from backend.r2_client import (
     DEFAULT_GET_URL_TTL,
     BotoCoreError,
@@ -108,21 +109,12 @@ def _build_key(user_id: str, camera_id: str, recording_id: str, ext: str) -> str
     return f"terra-clips/recordings/{user_id}/{camera_id}/{recording_id}.{ext}"
 
 
-def _first(data: Any) -> dict[str, Any] | None:
-    if isinstance(data, list) and data and isinstance(data[0], dict):
-        return data[0]
-    return None
-
-
 def _load_recording_for_owner(sb: Any, recording_id: str, user_id: str) -> dict:
     """본인 녹화 1행. uuid 형식 아님·없음·남의 것 → 404 "recording not found"."""
-    try:
-        rid = str(uuid.UUID(recording_id))
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail="recording not found") from exc
+    rid = parse_uuid_or_404(recording_id, "recording not found")
     res = (sb.table(TABLE).select("*")
            .eq("id", rid).eq("user_id", user_id).limit(1).execute())
-    row = _first(res.data)
+    row = first_row(res.data)
     if row is None:
         raise HTTPException(status_code=404, detail="recording not found")
     return row
@@ -173,7 +165,7 @@ def _existing_upload(sb: Any, user_id: str, client_id: str) -> RecordingUpload |
     for _ in range(2):    # 오래된 pending 삭제가 complete 와 엇갈리면 한 번 다시 읽는다
         res = (sb.table(TABLE).select("*")
                .eq("user_id", user_id).eq("client_id", client_id).limit(1).execute())
-        row = _first(res.data)
+        row = first_row(res.data)
         if row is None:
             return None
         if not _is_stale_pending(row, datetime.now(timezone.utc), REISSUE_STALE_AFTER):
@@ -237,7 +229,7 @@ def create_recording(
     # unlinked_at 은 보지 않는다 — 녹화 뒤 카메라를 해제하고 나중에 올려도 받는다.
     cam = (sb.table("cameras").select("id")
            .eq("id", camera_id).eq("owner_id", user_id).limit(1).execute())
-    if _first(cam.data) is None:
+    if first_row(cam.data) is None:
         raise HTTPException(status_code=403, detail="camera not found or not owned")
 
     # 정리 스레드가 아직 안 지운 24h 넘은 pending 은 이미 무효라 세지 않는다.
