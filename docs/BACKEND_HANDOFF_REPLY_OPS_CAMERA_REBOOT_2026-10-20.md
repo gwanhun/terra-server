@@ -10,7 +10,9 @@
 요청 2-1·2-2·2-3을 모두 받습니다. **경로·헤더는 요청서 그대로**(`POST /ops/cameras/{camera_uuid}/reboot`, `X-Ops-Secret`)입니다.
 요청서와 다른 점은 세 가지입니다 — ① 응답 2개 추가(409 `ota_active`, 503 `ops log unavailable`), ② 기록의 `result` 를 `published`·`ack_result`·`acked_at` 으로 나눔, ③ 2-3은 **푸시 미발행만으로 끝**(`last_ops_reboot_at` 컬럼 안 만듦).
 
-상태: **구현 완료, 배포 전.** 아래 "배포 순서"대로 반영합니다.
+상태: **배포 완료 (2026-10-20, main `d289194`).** 마이그레이션 적용 → `OPS_REBOOT_SECRET` 설정 → API·브리지 재시작 → 시크릿 없는 호출 401 확인까지 마침. 실기 검증(요청서 4절)은 petcam 담당.
+
+배포 시 beta 카메라 수가 **13** 으로 나옴 — 현재 베타 10계정 소유 9대(전부 온라인) + 옛 테스트 4대(`p4cam-ac5cd849` 01036554738, `p4cam-f1c767e0` 01097361840, `p4cam-7f1fac88` beard, `p4cam-07383099` plantimal — 전부 오프라인, 9/23~10/09 이후 미접속). 4대는 오프라인이라 `409 offline` 으로 걸러지지만, 다시 켜지면 재부팅 대상이 되므로 **petcam 쪽에서 `labeling_group` 을 빼야 함**(terra-server 가 관리하는 컬럼이 아니라 건드리지 않음).
 
 ---
 
