@@ -85,6 +85,10 @@ class RecordingCreate(BaseModel):
     has_thumbnail: bool
 
 
+class RecordingComplete(BaseModel):
+    status: str = Field(..., description="항상 ready")
+
+
 class RecordingUpload(BaseModel):
     recording_id: str
     status: str = Field(..., description="pending | ready")
@@ -280,6 +284,81 @@ def create_recording(
     )
 
 
+# ---------------------------------------------------------------- POST /recordings/{id}/complete
+
+
+def _head_size(key: str) -> int | None:
+    try:
+        return head_object_size(key)
+    except (BotoCoreError, ClientError) as exc:
+        logger.exception("recording R2 HEAD 실패 key=%s", key)
+        raise HTTPException(status_code=502, detail=f"R2 error: {exc}") from exc
+
+
+def _delete_quietly(key: str) -> None:
+    try:
+        delete_object(key)
+    except (BotoCoreError, ClientError):
+        logger.error("recording r2 delete failed key=%s", key)
+
+
+@router.post(
+    "/{recording_id}/complete",
+    response_model=RecordingComplete,
+    summary="업로드 완료 — R2 영상 존재·크기 확인 후 ready",
+    responses={
+        409: {"description": "{code: upload_missing} / {code: upload_missing, reason: size_mismatch}"},
+        **_USER_AUTH,
+        **_NOT_FOUND,
+        **_R2_ERROR,
+    },
+)
+def complete_recording(
+    recording_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> RecordingComplete:
+    """
+    영상이 없거나 크기가 다르면 409 (앱은 처음부터 다시 업로드).
+    썸네일이 없거나 MAX_THUMB_BYTES 초과면 **썸네일만 버리고** ready — 409 를 주면 앱이 영상까지
+    다시 올리고, 초과 파일은 같은 걸 또 올려 무한 반복된다.
+    """
+    sb = get_supabase_client()
+    row = _load_recording_for_owner(sb, recording_id, user_id)
+    if row.get("status") == "ready":
+        return RecordingComplete(status="ready")
+
+    size = _head_size(row["r2_key"])
+    if size is None:
+        raise HTTPException(status_code=409, detail={"code": "upload_missing"})
+    if size != row.get("size_bytes"):
+        raise HTTPException(
+            status_code=409, detail={"code": "upload_missing", "reason": "size_mismatch"},
+        )
+
+    thumb_key = row.get("thumbnail_key")
+    drop_thumb = False
+    if thumb_key:
+        thumb_size = _head_size(thumb_key)
+        drop_thumb = thumb_size is None or thumb_size > MAX_THUMB_BYTES
+
+    update: dict[str, Any] = {"status": "ready"}
+    if drop_thumb:
+        update["thumbnail_key"] = None
+    res = (sb.table(TABLE).update(update)
+           .eq("id", row["id"]).eq("user_id", user_id).eq("status", "pending").execute())
+    if not (isinstance(res.data, list) and res.data):
+        # 0행 — 다른 요청이 먼저 ready 로 바꿨거나 그 사이 삭제됐다.
+        again = _load_recording_for_owner(sb, row["id"], user_id)
+        if again.get("status") == "ready":
+            return RecordingComplete(status="ready")
+        raise HTTPException(status_code=404, detail="recording not found")
+
+    if drop_thumb and thumb_key:
+        logger.info("recording %s: 썸네일 없음/초과 → 썸네일만 버림", row["id"])
+        _delete_quietly(thumb_key)
+    return RecordingComplete(status="ready")
+
+
 __all__ = [
     "MAX_DURATION_MS",
     "MAX_THUMB_BYTES",
@@ -287,6 +366,7 @@ __all__ = [
     "MIN_DURATION_MS",
     "RECORDING_PUT_URL_TTL",
     "RECORDING_QUOTA",
+    "RecordingComplete",
     "RecordingCreate",
     "RecordingUpload",
     "router",

@@ -385,3 +385,186 @@ def test_other_routes_keep_default_422(env: Env) -> None:
     res = env.client.post("/devices/pair", json={})
     assert res.status_code == 422
     assert isinstance(res.json()["detail"], list)
+
+
+# ---------------------------------------------------------------- POST /recordings/{id}/complete
+
+
+def _seed(env: Env, **kw: Any) -> dict[str, Any]:
+    """행을 넣고 그 **복사본**을 돌려준다 (저장된 행은 핸들러가 고치므로 기대값은 따로 보관)."""
+    row = _rec(**kw)
+    env.recs.append(row)
+    return dict(row)
+
+
+def _row(env: Env, rid: str) -> dict[str, Any] | None:
+    return env.sb.one("live_recordings", id=rid)
+
+
+def test_complete_marks_ready(env: Env) -> None:
+    row = _seed(env)
+    env.r2.objects[row["r2_key"]] = row["size_bytes"]
+    env.r2.objects[row["thumbnail_key"]] = 50_000
+    res = env.client.post(f"/recordings/{row['id']}/complete")
+    assert res.status_code == 200
+    assert res.json() == {"status": "ready"}
+    stored = _row(env, row["id"])
+    assert stored["status"] == "ready"
+    assert stored["thumbnail_key"] == row["thumbnail_key"]
+    assert env.r2.deleted == []
+
+
+def test_complete_without_thumbnail_marks_ready(env: Env) -> None:
+    row = _seed(env, thumb=False)
+    env.r2.objects[row["r2_key"]] = row["size_bytes"]
+    res = env.client.post(f"/recordings/{row['id']}/complete")
+    assert res.status_code == 200
+    assert _row(env, row["id"])["status"] == "ready"
+
+
+def test_complete_missing_video_409(env: Env) -> None:
+    row = _seed(env)
+    res = env.client.post(f"/recordings/{row['id']}/complete")
+    assert res.status_code == 409
+    assert res.json()["detail"] == {"code": "upload_missing"}
+    assert _row(env, row["id"])["status"] == "pending"
+
+
+def test_complete_size_mismatch_409_reason(env: Env) -> None:
+    row = _seed(env)
+    env.r2.objects[row["r2_key"]] = row["size_bytes"] - 1
+    res = env.client.post(f"/recordings/{row['id']}/complete")
+    assert res.status_code == 409
+    assert res.json()["detail"] == {"code": "upload_missing", "reason": "size_mismatch"}
+    assert _row(env, row["id"])["status"] == "pending"
+
+
+def test_complete_missing_thumbnail_dropped(env: Env) -> None:
+    row = _seed(env)
+    env.r2.objects[row["r2_key"]] = row["size_bytes"]
+    res = env.client.post(f"/recordings/{row['id']}/complete")
+    assert res.status_code == 200
+    stored = _row(env, row["id"])
+    assert stored["status"] == "ready"
+    assert stored["thumbnail_key"] is None
+
+
+def test_complete_oversized_thumbnail_dropped(env: Env) -> None:
+    row = _seed(env)
+    env.r2.objects[row["r2_key"]] = row["size_bytes"]
+    env.r2.objects[row["thumbnail_key"]] = 5 * MB + 1
+    res = env.client.post(f"/recordings/{row['id']}/complete")
+    assert res.status_code == 200
+    stored = _row(env, row["id"])
+    assert stored["status"] == "ready"
+    assert stored["thumbnail_key"] is None
+    assert env.r2.deleted == [row["thumbnail_key"]]
+    assert row["thumbnail_key"] not in env.r2.objects
+
+
+def test_complete_thumbnail_exactly_5mb_kept(env: Env) -> None:
+    row = _seed(env)
+    env.r2.objects[row["r2_key"]] = row["size_bytes"]
+    env.r2.objects[row["thumbnail_key"]] = 5 * MB
+    res = env.client.post(f"/recordings/{row['id']}/complete")
+    assert res.status_code == 200
+    assert _row(env, row["id"])["thumbnail_key"] == row["thumbnail_key"]
+
+
+def test_complete_thumbnail_delete_failure_still_ready(
+    env: Env, caplog: pytest.LogCaptureFixture
+) -> None:
+    row = _seed(env)
+    env.r2.objects[row["r2_key"]] = row["size_bytes"]
+    env.r2.objects[row["thumbnail_key"]] = 6 * MB
+    env.r2.fail_delete = True
+    with caplog.at_level("ERROR"):
+        res = env.client.post(f"/recordings/{row['id']}/complete")
+    assert res.status_code == 200
+    assert _row(env, row["id"])["thumbnail_key"] is None
+    assert f"recording r2 delete failed key={row['thumbnail_key']}" in caplog.text
+
+
+def test_complete_already_ready_200(env: Env) -> None:
+    row = _seed(env, status="ready")
+    res = env.client.post(f"/recordings/{row['id']}/complete")
+    assert res.status_code == 200
+    assert res.json() == {"status": "ready"}
+
+
+def test_complete_other_users_404(env: Env) -> None:
+    row = _seed(env, user=OTHER_USER_ID, cam=OTHER_CAM)
+    env.r2.objects[row["r2_key"]] = row["size_bytes"]
+    res = env.client.post(f"/recordings/{row['id']}/complete")
+    assert res.status_code == 404
+    assert res.json()["detail"] == "recording not found"
+    assert _row(env, row["id"])["status"] == "pending"
+
+
+def test_complete_bad_uuid_404(env: Env) -> None:
+    res = env.client.post("/recordings/not-a-uuid/complete")
+    assert res.status_code == 404
+    assert res.json()["detail"] == "recording not found"
+
+
+def test_complete_head_error_502(env: Env) -> None:
+    row = _seed(env)
+    env.r2.fail_head = True
+    res = env.client.post(f"/recordings/{row['id']}/complete")
+    assert res.status_code == 502
+    assert isinstance(res.json()["detail"], str)
+
+
+class _VanishOnUpdate(FakeSB):
+    """complete 의 UPDATE 직전에 행이 지워진 것처럼(삭제·정리와 경합)."""
+
+    def table(self, name: str) -> Any:
+        q = super().table(name)
+        if name == "live_recordings":
+            orig_update = q.update
+            store = self.store
+
+            def _update(payload: dict[str, Any]) -> Any:
+                store["live_recordings"].clear()
+                return orig_update(payload)
+
+            q.update = _update
+        return q
+
+
+def test_complete_row_vanished_during_update_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    row = _rec()
+    e = _make_env(monkeypatch, _VanishOnUpdate(cameras=_cameras(), live_recordings=[row]))
+    e.r2.objects[row["r2_key"]] = row["size_bytes"]
+    e.r2.objects[row["thumbnail_key"]] = 1000
+    res = e.client.post(f"/recordings/{row['id']}/complete")
+    assert res.status_code == 404
+    assert res.json()["detail"] == "recording not found"
+
+
+class _ReadyOnUpdate(FakeSB):
+    """다른 complete 요청이 먼저 ready 로 바꾼 경우 — 조건부 UPDATE 가 0행."""
+
+    def table(self, name: str) -> Any:
+        q = super().table(name)
+        if name == "live_recordings":
+            orig_update = q.update
+            store = self.store
+
+            def _update(payload: dict[str, Any]) -> Any:
+                for r in store["live_recordings"]:
+                    r["status"] = "ready"
+                return orig_update(payload)
+
+            q.update = _update
+        return q
+
+
+def test_complete_concurrent_ready_200(monkeypatch: pytest.MonkeyPatch) -> None:
+    row = _rec()
+    e = _make_env(monkeypatch, _ReadyOnUpdate(cameras=_cameras(), live_recordings=[row]))
+    e.r2.objects[row["r2_key"]] = row["size_bytes"]
+    e.r2.objects[row["thumbnail_key"]] = 1000
+    res = e.client.post(f"/recordings/{row['id']}/complete")
+    assert res.status_code == 200
+    assert res.json() == {"status": "ready"}

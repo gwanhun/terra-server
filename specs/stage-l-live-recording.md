@@ -180,11 +180,11 @@ create index if not exists live_recordings_status_created_idx
 - Must know: 이미 `ready` → 바로 200. 영상 `head_object_size(r2_key)` None → 409 `{"code":"upload_missing"}`; `!= size_bytes` → 409 `{"code":"upload_missing","reason":"size_mismatch"}`. 썸네일(`thumbnail_key` 있을 때)이 None 이거나 `> MAX_THUMB_BYTES` → **버린다**: UPDATE 를 `{"status":"ready","thumbnail_key":None}` 한 번으로 하고, 그다음 썸네일 객체 `delete_object`(실패는 로그만). 상태 갱신은 `.eq("id").eq("user_id").eq("status","pending")`; **0행이면 재조회** → `ready` 면 200, 없으면 404. R2 오류 → 502.
 - Acceptance: 아래 테스트 PASS
 
-- [ ] Step 1: 테스트 — `test_complete_marks_ready`, `test_complete_missing_video_409`(detail 정확값), `test_complete_size_mismatch_409_reason`, `test_complete_missing_thumbnail_dropped`(200, `thumbnail_key is None`), `test_complete_oversized_thumbnail_dropped`(200, `thumbnail_key is None`, 썸네일 객체 삭제됨), `test_complete_already_ready_200`, `test_complete_other_users_404`, `test_complete_bad_uuid_404`, `test_complete_head_error_502`, `test_complete_row_vanished_during_update_404`
-- [ ] Step 2: 실패 확인
-- [ ] Step 3: 구현
-- [ ] Step 4: PASS
-- [ ] Step 5: 커밋 `feat(recordings): complete — R2 존재·크기 확인`
+- [x] Step 1: 테스트 — `test_complete_marks_ready`, `test_complete_missing_video_409`(detail 정확값), `test_complete_size_mismatch_409_reason`, `test_complete_missing_thumbnail_dropped`(200, `thumbnail_key is None`), `test_complete_oversized_thumbnail_dropped`(200, `thumbnail_key is None`, 썸네일 객체 삭제됨), `test_complete_already_ready_200`, `test_complete_other_users_404`, `test_complete_bad_uuid_404`, `test_complete_head_error_502`, `test_complete_row_vanished_during_update_404`
+- [x] Step 2: 실패 확인
+- [x] Step 3: 구현
+- [x] Step 4: PASS
+- [x] Step 5: 커밋 `feat(recordings): complete — R2 존재·크기 확인`
 
 ### Task 5: 재생·썸네일 URL + 삭제
 
