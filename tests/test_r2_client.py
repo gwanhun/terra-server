@@ -86,3 +86,71 @@ def test_delete_object_calls_client(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert called["Bucket"] == "test-bucket"
     assert called["Key"] == "clips/x.mp4"
+
+
+# ---------- head_object_size (Stage L 녹화 complete 용) ----------
+
+class _StubS3:
+    def __init__(self, result: dict | None = None, error_code: str | None = None) -> None:
+        self._result = result
+        self._error_code = error_code
+        self.calls: list[dict] = []
+
+    def head_object(self, **kwargs: object) -> dict:
+        self.calls.append(kwargs)
+        if self._error_code is not None:
+            from botocore.exceptions import ClientError
+
+            raise ClientError({"Error": {"Code": self._error_code, "Message": "x"}}, "HeadObject")
+        assert self._result is not None
+        return self._result
+
+
+def test_head_object_size_returns_length(monkeypatch: pytest.MonkeyPatch) -> None:
+    stub = _StubS3(result={"ContentLength": 123})
+    monkeypatch.setattr(r2_client, "get_r2_client", lambda: stub)
+    assert r2_client.head_object_size("terra-clips/recordings/a.mp4") == 123
+    assert stub.calls == [{"Bucket": "test-bucket", "Key": "terra-clips/recordings/a.mp4"}]
+
+
+@pytest.mark.parametrize("code", ["404", "NoSuchKey", "NotFound"])
+def test_head_object_size_missing_returns_none(monkeypatch: pytest.MonkeyPatch, code: str) -> None:
+    monkeypatch.setattr(r2_client, "get_r2_client", lambda: _StubS3(error_code=code))
+    assert r2_client.head_object_size("k") is None
+
+
+def test_head_object_size_other_error_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    from botocore.exceptions import ClientError
+
+    monkeypatch.setattr(r2_client, "get_r2_client", lambda: _StubS3(error_code="AccessDenied"))
+    with pytest.raises(ClientError):
+        r2_client.head_object_size("k")
+
+
+class _StubPaginator:
+    def __init__(self, pages: list[dict]) -> None:
+        self._pages = pages
+        self.kwargs: dict = {}
+
+    def paginate(self, **kwargs: object) -> list[dict]:
+        self.kwargs = dict(kwargs)
+        return self._pages
+
+
+class _StubS3List:
+    def __init__(self, pages: list[dict]) -> None:
+        self.paginator = _StubPaginator(pages)
+
+    def get_paginator(self, name: str) -> _StubPaginator:
+        assert name == "list_objects_v2"
+        return self.paginator
+
+
+def test_list_objects_yields_key_and_last_modified(monkeypatch: pytest.MonkeyPatch) -> None:
+    from datetime import datetime, timezone
+
+    t = datetime(2026, 10, 20, tzinfo=timezone.utc)
+    stub = _StubS3List([{"Contents": [{"Key": "p/a.mp4", "LastModified": t}]}, {}])
+    monkeypatch.setattr(r2_client, "get_r2_client", lambda: stub)
+    assert list(r2_client.list_objects("p/")) == [("p/a.mp4", t)]
+    assert stub.paginator.kwargs == {"Bucket": "test-bucket", "Prefix": "p/"}

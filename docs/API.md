@@ -65,6 +65,10 @@ Content-Type: application/json
 | `GET` | `/enclosures/{id}/clips` | JWT | 사육장의 모션 클립 목록 (cursor pagination) |
 | `GET` | `/clips/{id}/url` | JWT | 영상 재생용 presigned GET URL |
 | `DELETE` | `/clips/{id}` | JWT | 클립 삭제 (R2 객체 + DB 행) |
+| `POST` | `/recordings` | JWT | **라이브 직접 녹화** 등록 + presigned PUT URL (새 201 / 같은 `client_id` 200, 2026-10-20, §4.11) |
+| `POST` | `/recordings/{id}/complete` | JWT | 녹화 업로드 완료 — R2 영상 존재·크기 확인 후 `ready` (§4.11) |
+| `GET` | `/recordings/{id}/url` · `/recordings/{id}/thumbnail/url` | JWT | 녹화 재생·썸네일 presigned GET URL (`ready` 만, §4.11) |
+| `DELETE` | `/recordings/{id}` | JWT | 녹화 삭제 (행 + R2 영상·썸네일, `pending` 포함, §4.11) |
 
 > **참고 (RPi 워커)**: BLE 가 불안정한 RPi 환경은 별도 QR 페어링 흐름 (`POST /cameras/prepare-pair` + Pair Token) 필요. **현재 미구현.** ESP32-P4 는 BLE 5.0 안정적이라 위 `/cameras/pair` 그대로 사용.
 
@@ -854,6 +858,39 @@ GET  /firmware/jobs/{job_id}/bin           Authorization: Bearer <camera_token |
 
 **ENV**: `API_PUBLIC_BASE_URL`(기본 `https://api.terra-server.uk`) — 명령의 `url` 을 만든다.
 
+### 4.11 라이브 직접 녹화 — Stage L (2026-10-20, [specs/stage-l-live-recording.md](../specs/stage-l-live-recording.md))
+
+앱이 라이브 화면에서 폰으로 직접 녹화한 영상(≤60초 mp4 + jpg)을 R2 에 올린다. 계약 SOT: [BACKEND_HANDOFF_REPLY_LIVE_RECORDING_2026-10-20.md](BACKEND_HANDOFF_REPLY_LIVE_RECORDING_2026-10-20.md).
+`motion_clips` 와 섞지 않는다 — 테이블 `live_recordings`, 라우터 `backend/routers/recordings.py`. **목록 REST 는 없다**(앱이 Supabase 직결 SELECT, RLS 본인 행만).
+
+```
+POST /recordings     { camera_id, client_id, started_at, duration_ms, size_bytes, width, height, has_thumbnail }
+→ 201 새 등록 / 200 같은 client_id 재호출
+  { "recording_id", "status": "pending"|"ready", "video_upload_url"|null, "thumb_upload_url"|null, "expires_at"|null }
+→ 400 duration_ms 3000~60000 · size_bytes 1~31457280(30MB) 위반, 필드 누락·형식 오류 (문자열 detail)
+→ 403 "camera not found or not owned"   (cameras.owner_id 만 봄 — unlink 된 본인 카메라는 허용)
+→ 409 { "detail": { "code": "recording_quota_exceeded", "used": 50, "limit": 50 } }
+→ 502 R2 presign 실패
+
+POST /recordings/{id}/complete          → 200 { "status": "ready" }
+→ 409 { "detail": { "code": "upload_missing" } }                            영상 객체 없음
+→ 409 { "detail": { "code": "upload_missing", "reason": "size_mismatch" } } 크기 ≠ size_bytes
+→ 404 "recording not found"   → 502 R2 HEAD 실패
+
+GET  /recordings/{id}/url               → 200 { "url", "expires_in": 3600 }   (ready 만, pending·남의 것 404)
+GET  /recordings/{id}/thumbnail/url     → 200 { "url", "expires_in": 3600 }   (썸네일 없으면 404 "thumbnail not found")
+DELETE /recordings/{id}                 → 204   (pending 포함, R2 삭제 실패는 로그만. 앱은 업로드 취소 후 호출)
+```
+
+- **업로드**: presigned PUT 유효 **1800초**(30분, `RECORDING_PUT_URL_TTL`). `Content-Type` 은 영상 `video/mp4`, 썸네일 `image/jpeg` 이어야 서명이 맞는다.
+- **R2 키**: `terra-clips/recordings/{user_id}/{camera_id}/{recording_id}.mp4` (+ `.jpg`). `recording_id` 는 서버가 INSERT 전에 uuid4 로 만든다(키 = 행 id).
+- **재호출(같은 `client_id`)** 은 한도 검사보다 먼저 본다: `pending`(23시간 30분 이내) → 200 + 저장된 키로 새 URL(바디 무시, 범위 검사도 안 함) / `ready` → 200, URL·`expires_at` 전부 null / 23시간 30분 넘은 `pending` → 옛 행·객체 삭제 후 새 등록(201, 새 id, 한도 검사 포함). 기준이 24h 보다 30분 이른 이유: 30분 URL 이 24h 정리와 겹치면 업로드 중 행이 사라진다(`REISSUE_STALE_AFTER`). 동시 중복은 UNIQUE(user_id, client_id) 23505 를 잡아 기존 행을 돌려주고, 충돌 행이 그새 사라졌으면 INSERT 를 한 번 더 한다. 한도는 24h 넘은 `pending` 을 세지 않는다.
+- **한도** `RECORDING_QUOTA = 50` — `pending` + `ready`. count 후 INSERT 라 동시 등록이면 1~2개 넘칠 수 있다(허용).
+- **썸네일**: complete 때 없거나 5MB(`MAX_THUMB_BYTES`) 초과면 **썸네일만 버리고** `ready`(`thumbnail_key=null` → `has_thumbnail=false`). 영상 재업로드 없음.
+- **pending 정리**: API 프로세스 스레드 `recording-pending-reaper`(`backend/recording_cleanup.py`)가 1시간마다 `created_at` 24시간 넘은 `pending` 을 최대 200행 지운다. 행을 먼저 조건부(pending) 삭제하고, 지워진 행의 객체만 지운다(complete 와 경합 안전). 같은 스레드가 6시간마다 `terra-clips/recordings/` 를 훑어 1시간 넘었고 어떤 행의 `r2_key`·`thumbnail_key` 도 아닌 고아 객체를 최대 1,000개 지운다(`purge_orphan_objects`).
+- `/recordings` 경로의 요청 검증 오류만 422 대신 **400** + `"invalid request: <loc>: <msg>"` (앱은 400 만 비재시도). 다른 경로는 기존 422 그대로.
+- 이 라우터는 소유권 위반을 **403**(남의 카메라)·**404**(남의 녹화)로 구분한다 — 아래 §5 "403 사용 안 함" 의 예외.
+
 ---
 
 ## 5. 에러 코드 표
@@ -865,7 +902,7 @@ GET  /firmware/jobs/{job_id}/bin           Authorization: Bearer <camera_token |
 | 204 | 성공 (응답 본문 없음) | |
 | 400 | 잘못된 요청 (필수 필드 누락 등) | `{ "detail": "변경 필드 없음" }` |
 | 401 | 인증 실패 | `{ "detail": "Authorization 헤더가 없음." }` |
-| ~~403~~ | **사용하지 않음.** 소유권 위반은 404(조회·수정·삭제) 또는 400(그룹 배정)으로 응답합니다 | — |
+| ~~403~~ | **사용하지 않음.** 소유권 위반은 404(조회·수정·삭제) 또는 400(그룹 배정)으로 응답합니다. 예외: `POST /recordings` 의 남의 카메라 403 (§4.11) | — |
 | 404 | 리소스 없음 | `{ "detail": "device not found" }` |
 | 422 | Pydantic 유효성 검증 실패 | (FastAPI 자동 응답, field 별 detail) |
 | 500 | 서버 내부 오류 | `{ "detail": "..." }` |
@@ -970,5 +1007,6 @@ supabase
 | 2026-05-27 | 0.2.0 | 카메라 페어링 흐름 RPi/QR 기반으로 변경 (prepare-pair + pair_token) |
 | 2026-05-27 | 0.3.0 | 메인 카메라 워커 ESP32-P4 로 변경 (BLE 페어링), Stage G(라이브 스트리밍) 엔드포인트 추가 |
 | 2026-05-27 | 0.4.0 | **Stage F 구현 완료** — enclosures/cameras/clips 라우터 + R2 presigned URL + Camera Token Bearer 인증 (44 tests passing). Swagger UI 메타데이터 보강 (`/docs` 즉시 사용 가능) |
+| 2026-10-20 | 0.10.0 | **Stage L 라이브 직접 녹화** — `POST /recordings`·`/complete`, `GET …/url`·`…/thumbnail/url`, `DELETE /recordings/{id}`, `live_recordings` 테이블, pending 24h 정리 스레드 (§4.11) |
 | 2026-10-08 | 0.9.1 | OTA 릴리스 퇴역 — `firmware_releases.retired_at/retired_reason`, `GET /firmware/releases?include_retired`, 퇴역 릴리스 `POST …/ota` 409 · `/bin` 410, `upload_firmware.py --delete` (§4.10) |
 | 2026-10-07 | 0.9.0 | **Stage J OTA** — `POST /{cameras,devices}/{id}/ota` + `…/apply`, `GET /firmware/releases·jobs`, `GET /firmware/jobs/{id}/bin`(Camera/Device Token, R2 프록시). 2단계(prepare/apply), 사전 점검 게이트, `ota_jobs` 상태 전이 (§4.10) |

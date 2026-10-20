@@ -2,7 +2,7 @@
 
 MagicMock 체인(select→eq→in_→order→limit→execute)은 호출 순서가 조금만 달라도 깨져서,
 필터·정렬·갱신이 실제로 동작하는 가짜를 둔다. 지원: table / select / eq / neq / in_ / is_ /
-order / limit / single / insert / update / execute. 그 외 메서드는 AttributeError.
+lt / order / limit / single / insert / update / delete / execute. 그 외 메서드는 AttributeError.
 """
 
 from __future__ import annotations
@@ -44,6 +44,10 @@ class _Query:
     def is_(self, col: str, val: Any) -> "_Query":
         self._filters.append(("is", col, None if val == "null" else val)); return self
 
+    def lt(self, col: str, val: Any) -> "_Query":
+        # ISO 문자열 비교 — 테스트 시각은 aware datetime.isoformat()(+00:00) 로 통일할 것
+        self._filters.append(("lt", col, val)); return self
+
     def order(self, col: str, desc: bool = False) -> "_Query":
         self._order = (col, desc); return self
 
@@ -59,6 +63,9 @@ class _Query:
     def update(self, payload: dict[str, Any]) -> "_Query":
         self._op, self._payload = "update", payload; return self
 
+    def delete(self) -> "_Query":
+        self._op = "delete"; return self
+
     # --- exec ---
     def _match(self, row: dict[str, Any]) -> bool:
         for op, col, val in self._filters:
@@ -70,6 +77,8 @@ class _Query:
             if op == "in" and v not in val:
                 return False
             if op == "is" and v != val:
+                return False
+            if op == "lt" and (v is None or not v < val):
                 return False
         return True
 
@@ -87,6 +96,10 @@ class _Query:
         if self._op == "update":
             for r in matched:
                 r.update(self._payload)
+            return _Result([dict(r) for r in matched])
+        if self._op == "delete":
+            # supabase-py 처럼 지운 행 목록을 돌려준다. store 리스트는 제자리 수정.
+            self._rows[:] = [r for r in self._rows if not self._match(r)]
             return _Result([dict(r) for r in matched])
         if self._order:
             col, desc = self._order
