@@ -58,6 +58,9 @@ MIN_DURATION_MS = 3000
 MAX_DURATION_MS = 60000
 MAX_VIDEO_BYTES = 30 * 1024 * 1024
 MAX_THUMB_BYTES = 5 * 1024 * 1024
+# 재호출 때 이보다 오래된 pending 은 새로 등록한다. 24h 직전에 30분 URL 을 주면 업로드 도중
+# 정리 스레드(PENDING_TTL)가 행을 지워 complete 가 404 → 앱은 비재시도라 녹화를 잃는다.
+REISSUE_STALE_AFTER = PENDING_TTL - timedelta(seconds=RECORDING_PUT_URL_TTL)
 
 # INSERT 컬럼 화이트리스트 — has_thumbnail 은 생성 컬럼이라 넣으면 Postgres 가 거부한다.
 _INSERT_COLUMNS = (
@@ -135,9 +138,9 @@ def _parse_ts(value: Any) -> datetime | None:
     return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
 
 
-def _is_stale_pending(row: dict[str, Any], now: datetime) -> bool:
+def _is_stale_pending(row: dict[str, Any], now: datetime, age: timedelta = PENDING_TTL) -> bool:
     created = _parse_ts(row.get("created_at"))
-    return row.get("status") == "pending" and created is not None and created < now - PENDING_TTL
+    return row.get("status") == "pending" and created is not None and created < now - age
 
 
 def _put_urls(video_key: str, thumb_key: str | None) -> tuple[str, str | None]:
@@ -173,10 +176,10 @@ def _existing_upload(sb: Any, user_id: str, client_id: str) -> RecordingUpload |
         row = _first(res.data)
         if row is None:
             return None
-        if not _is_stale_pending(row, datetime.now(timezone.utc)):
+        if not _is_stale_pending(row, datetime.now(timezone.utc), REISSUE_STALE_AFTER):
             return _upload_response(row)
         if purge_one(sb, row, delete_object):
-            logger.info("recording %s: 24시간 넘은 pending 재호출 → 옛 행 삭제 후 새로 등록", row["id"])
+            logger.info("recording %s: 오래된 pending 재호출 → 옛 행 삭제 후 새로 등록", row["id"])
             return None
     return None
 
@@ -216,10 +219,10 @@ def create_recording(
     user_id: str = Depends(get_current_user_id),
 ) -> RecordingUpload:
     """
-    처리 순서(고정): ① 같은 client_id 행 → 있으면 200 (바디 무시) ② 카메라 소유 ③ 한도 ④ INSERT.
+    처리 순서(고정): ① 같은 client_id 행 → 있으면 200 (바디 무시 — 범위 검사도 안 함)
+    ② 범위 검사 ③ 카메라 소유 ④ 한도 ⑤ INSERT.
     동시 같은 client_id 는 UNIQUE(user_id, client_id) 23505 를 잡아 ① 로 다시 읽는다.
     """
-    _validate_create(body)
     sb = get_supabase_client()
     client_id = str(body.client_id)
 
@@ -228,6 +231,8 @@ def create_recording(
         response.status_code = status.HTTP_200_OK
         return existing
 
+    _validate_create(body)
+
     camera_id = str(body.camera_id)
     # unlinked_at 은 보지 않는다 — 녹화 뒤 카메라를 해제하고 나중에 올려도 받는다.
     cam = (sb.table("cameras").select("id")
@@ -235,8 +240,11 @@ def create_recording(
     if _first(cam.data) is None:
         raise HTTPException(status_code=403, detail="camera not found or not owned")
 
-    used_res = sb.table(TABLE).select("id").eq("user_id", user_id).execute()
-    used = len(used_res.data) if isinstance(used_res.data, list) else 0
+    # 정리 스레드가 아직 안 지운 24h 넘은 pending 은 이미 무효라 세지 않는다.
+    used_res = sb.table(TABLE).select("id, status, created_at").eq("user_id", user_id).execute()
+    now = datetime.now(timezone.utc)
+    used = sum(1 for r in (used_res.data if isinstance(used_res.data, list) else [])
+               if isinstance(r, dict) and not _is_stale_pending(r, now))
     if used >= RECORDING_QUOTA:
         raise HTTPException(
             status_code=409,
@@ -263,17 +271,21 @@ def create_recording(
         "thumbnail_key": thumb_key,
     }
     payload = {k: values[k] for k in _INSERT_COLUMNS}
-    try:
-        sb.table(TABLE).insert(payload).execute()
-    except APIError as exc:
-        if exc.code != "23505":
-            raise
-        # 같은 client_id 가 거의 동시에 들어와 다른 요청이 먼저 INSERT 했다 → 그 행을 돌려준다.
-        existing = _existing_upload(sb, user_id, client_id)
-        if existing is None:
-            raise
-        response.status_code = status.HTTP_200_OK
-        return existing
+    for attempt in range(2):
+        try:
+            sb.table(TABLE).insert(payload).execute()
+            break
+        except APIError as exc:
+            if exc.code != "23505":
+                raise
+            # 같은 client_id 가 거의 동시에 들어와 다른 요청이 먼저 INSERT 했다 → 그 행을 돌려준다.
+            existing = _existing_upload(sb, user_id, client_id)
+            if existing is not None:
+                response.status_code = status.HTTP_200_OK
+                return existing
+            # 충돌 행이 그새 사라졌다(오래된 pending 정리 등) → 한 번만 다시 INSERT
+            if attempt == 1:
+                raise
 
     return RecordingUpload(
         recording_id=recording_id,

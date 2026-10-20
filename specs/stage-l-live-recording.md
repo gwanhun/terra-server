@@ -51,7 +51,7 @@
 **Files:** Modify `docs/BACKEND_HANDOFF_REPLY_LIVE_RECORDING_2026-10-20.md`
 
 - 썸네일: "≤ 1MB, 위반 400" → "**complete 때 썸네일이 없거나 5MB를 넘으면 썸네일만 버리고 `ready`**(영상 재업로드 없음). 목록 `has_thumbnail=false`".
-- `POST /recordings`: `ready` 재호출이면 `expires_at` 도 `null`. 재호출 시 바디는 무시하고 처음 등록한 값 기준. 24시간 넘은 `pending` 재호출은 새 녹화로 등록(201, 새 `recording_id`).
+- `POST /recordings`: `ready` 재호출이면 `expires_at` 도 `null`. 재호출 시 바디는 무시하고 처음 등록한 값 기준. 24시간 넘은 `pending` 재호출은 새 녹화로 등록(201, 새 `recording_id`). → 코드리뷰(2026-10-20)로 23시간 30분으로 당김 + 업로드 중 삭제는 앱이 업로드 취소 후 호출.
 - 요청 형식 오류(필드 누락·타입)는 400.
 - 한도 50은 동시 등록 시 1~2개 넘을 수 있음(설명 한 줄).
 - Acceptance: 회신서와 이 계획의 숫자·동작이 일치. 커밋 `docs(recordings): 회신서 — 썸네일 버림 정책·재호출 규칙 명시`

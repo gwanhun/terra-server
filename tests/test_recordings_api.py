@@ -661,3 +661,72 @@ def test_delete_r2_failure_still_deletes_row(env: Env, caplog: pytest.LogCapture
     assert env.recs == []
     assert f"recording r2 delete failed key={row['r2_key']}" in caplog.text
     assert f"recording r2 delete failed key={row['thumbnail_key']}" in caplog.text
+
+
+# ---------------------------------------------------------------- 코드리뷰 #20 반영 (2026-10-20)
+
+
+def test_retry_pending_near_24h_registers_new(env: Env) -> None:
+    """23.5h 넘은 pending 재호출에 30분 URL 을 주면 24h 정리와 겹친다 → 새로 등록."""
+    old = _rec(hours_ago=23.75)
+    env.recs.append(old)
+    res = env.client.post("/recordings", json=_body(client_id=old["client_id"]))
+    assert res.status_code == 201
+    assert res.json()["recording_id"] != old["id"]
+    assert old["id"] not in [r["id"] for r in env.recs]
+
+
+def test_retry_pending_23h_returns_existing(env: Env) -> None:
+    old = _rec(hours_ago=23.0)
+    env.recs.append(old)
+    res = env.client.post("/recordings", json=_body(client_id=old["client_id"]))
+    assert res.status_code == 200
+    assert res.json()["recording_id"] == old["id"]
+
+
+def test_quota_ignores_stale_pending(env: Env) -> None:
+    """정리 스레드가 아직 안 지운 24h 넘은 pending 은 한도에 안 센다."""
+    env.recs.extend(_rec(status="ready") for _ in range(45))
+    env.recs.extend(_rec(hours_ago=24.5) for _ in range(5))
+    res = env.client.post("/recordings", json=_body())
+    assert res.status_code == 201, res.text
+
+
+def test_retry_ready_with_invalid_body_returns_200(env: Env) -> None:
+    """재호출 바디는 무시 — 범위 밖 바디여도 기존 ready 행을 돌려준다."""
+    old = _rec(status="ready")
+    env.recs.append(old)
+    res = env.client.post("/recordings", json=_body(client_id=old["client_id"], size_bytes=0))
+    assert res.status_code == 200
+    assert res.json()["status"] == "ready"
+
+
+class _DupOnceThenOk(FakeSB):
+    """첫 INSERT 만 23505(충돌 행은 이미 사라짐), 두 번째는 정상."""
+
+    calls = 0
+
+    def table(self, name: str) -> Any:
+        q = super().table(name)
+        if name != "live_recordings":
+            return q
+        orig_insert = q.insert
+        owner = self
+
+        def _insert(payload: Any) -> Any:
+            owner.calls += 1
+            if owner.calls == 1:
+                raise APIError({"message": "duplicate key", "code": "23505",
+                                "details": None, "hint": None})
+            return orig_insert(payload)
+
+        q.insert = _insert
+        return q
+
+
+def test_create_dup_then_row_gone_retries_insert(monkeypatch: pytest.MonkeyPatch) -> None:
+    sb = _DupOnceThenOk(cameras=_cameras(), live_recordings=[])
+    e = _make_env(monkeypatch, sb)
+    res = e.client.post("/recordings", json=_body())
+    assert res.status_code == 201, res.text
+    assert len(e.recs) == 1 and sb.calls == 2
