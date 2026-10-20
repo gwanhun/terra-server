@@ -27,6 +27,8 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.health import register_health
 from backend.live_session import LiveSessionReaper
+from backend.r2_client import delete_object
+from backend.recording_cleanup import PendingRecordingReaper
 from backend.routers import (
     cameras,
     clips,
@@ -116,9 +118,13 @@ async def _lifespan(_app: FastAPI):
     # 라이브 15분 상한 집행(2026-09-29): 만료 세션을 카메라에서 닫고 5분 쉼을 건다(backend/live_session.py).
     reaper = LiveSessionReaper(get_supabase_client, close_camera_session)
     reaper.start()
+    # 라이브 직접 녹화(2026-10-20): 24시간 넘은 pending 행·R2 객체 정리(backend/recording_cleanup.py).
+    recording_reaper = PendingRecordingReaper(get_supabase_client, delete_object)
+    recording_reaper.start()
     try:
         yield
     finally:
+        recording_reaper.stop()
         reaper.stop()
         relay.stop()
 

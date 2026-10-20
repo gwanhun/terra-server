@@ -213,9 +213,9 @@ create index if not exists live_recordings_status_created_idx
 - Must know: 대상 = `status='pending'` and `created_at < now-24h`. `purge_one` 순서: **행 먼저** `.delete().eq("id").eq("status","pending")` → 지워진 행이 있을 때만 영상·썸네일 객체 삭제(실패는 `logger.error("recording r2 delete failed key=%s", key)` 후 계속). 그 사이 complete 된 행은 0행 삭제라 객체도 안 건드린다. Task 3 이 import 하므로 Task 3 보다 먼저 한다(실행 순서 참고). 한 번에 최대 200행(`limit`). 루프 예외는 `logger.exception` 후 계속.
 - Acceptance: `uv run pytest tests/test_recording_cleanup.py -q` PASS
 
-- [ ] Step 1: 테스트 — `test_purges_pending_older_than_24h`(25h 전 pending 지움, 23h 전 pending·25h 전 ready 남김, 반환 1, 삭제된 키 = mp4+jpg), `test_purge_continues_on_delete_error`, `test_purge_skips_row_completed_meanwhile`(대상 조회 뒤 행을 ready 로 바꿔 두면 → 행 남고 객체 삭제 호출 0)
-- [ ] Step 2~4: 실패 확인 → 구현 → PASS, 전체 `uv run pytest -q` PASS
-- [ ] Step 5: 커밋 `feat(recordings): pending 24h 정리 스레드`
+- [x] Step 1: 테스트 — `test_purges_pending_older_than_24h`(25h 전 pending 지움, 23h 전 pending·25h 전 ready 남김, 반환 1, 삭제된 키 = mp4+jpg), `test_purge_continues_on_delete_error`, `test_purge_skips_row_completed_meanwhile`(대상 조회 뒤 행을 ready 로 바꿔 두면 → 행 남고 객체 삭제 호출 0)
+- [x] Step 2~4: 실패 확인 → 구현 → PASS, 전체 `uv run pytest -q` PASS
+- [x] Step 5: 커밋 `feat(recordings): pending 24h 정리 스레드`
 
 ### Task 7: 문서
 
