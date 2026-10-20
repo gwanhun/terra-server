@@ -8,6 +8,8 @@
 
 **Tech Stack:** FastAPI, supabase-py(service_role), boto3(R2), pytest + `tests/fake_sb.py`
 
+**상태 (2026-10-20):** Task 0~7 구현 완료 — 브랜치 `feat/live-recordings`(미푸시), `uv run pytest -q` 전체 PASS. 남은 것: 사전 조건(R2 lifecycle 확인·앱 3차 변경 확인), 사용자 `/code-review`, PR·마이그레이션 적용·실 Supabase/R2 스모크·배포.
+
 **Spec:** `docs/BACKEND_HANDOFF_REPLY_LIVE_RECORDING_2026-10-20.md` (계약 SOT). 원 요청: tera-ai-flutter `docs/handoffs/2026-10-20-live-recording-server-requests.md`
 
 ## Global Constraints
@@ -223,11 +225,11 @@ create index if not exists live_recordings_status_created_idx
 
 - Depends on: Task 3~6
 - Acceptance: 문서의 경로·코드·상수가 구현과 일치(`grep -n "1800\|recording_quota_exceeded\|terra-clips/recordings" docs/API.md`)
-- [ ] 커밋 `docs(recordings): API·DB 문서`
+- [x] 커밋 `docs(recordings): API·DB 문서`
 
 ### 마무리
 
-- [ ] `uv run pytest -q` 전체 PASS (exit 0)
+- [x] `uv run pytest -q` 전체 PASS (exit 0)
 - [ ] PR 생성 (base `main`). 본문에 배포 순서: ① lifecycle 사전 조건 ② 마이그레이션 SQL Editor 적용 → `MIGRATIONS_APPLIED.md` 기록 ③ **스모크**: 실제 Supabase·R2 로 POST→curl PUT(`Content-Type: video/mp4`)→complete→GET url→DELETE 한 바퀴(생성 컬럼 INSERT·`.limit(1)`·HEAD 확인 — FakeSB 로는 못 잡음) ④ 서버 배포 ⑤ 회신서 "배포 상태" 체크
 - [ ] 코드 검수는 사용자가 `/code-review` 호출
 
