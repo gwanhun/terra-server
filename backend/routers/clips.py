@@ -267,17 +267,31 @@ def _parse_key(key: str, expected_camera_id_text: str, expected_ext: str) -> str
     return m.group("clip_id")
 
 
+def _parse_uuid_or_404(value: str, detail: str) -> str:
+    """uuid 형식 아니면 404. DB 까지 보내면 22P02 → APIError → 500 이 된다."""
+    try:
+        return str(uuid.UUID(value))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=detail) from exc
+
+
 def _load_clip_for_owner(clip_id: str, user_id: str) -> dict[str, Any]:
-    """본인 소유 clip row 반환. 미존재/타 유저는 404."""
+    """본인 소유 clip row 반환. uuid 형식 아님·미존재·타 유저는 404.
+
+    `.single()` 은 0행이면 PostgREST 406(PGRST116) → APIError → 500 이고, 앱은 5xx 를
+    재시도하므로 없는 id 에 무한 재시도가 된다. `.limit(1)` 리스트 조회로 0행=빈 리스트.
+    """
+    cid = _parse_uuid_or_404(clip_id, "clip not found")
     sb = get_supabase_client()
     res = (
         sb.table("motion_clips")
         .select("*")
-        .eq("id", clip_id)
-        .single()
+        .eq("id", cid)
+        .eq("owner_id", user_id)
+        .limit(1)
         .execute()
     )
-    row = res.data
+    row = res.data[0] if res.data else None
     if not row or row["owner_id"] != user_id:
         raise HTTPException(status_code=404, detail="clip not found")
     return row
@@ -415,21 +429,24 @@ def list_enclosure_clips(
     """
     sb = get_supabase_client()
 
-    # 본인 enclosure 확인
+    # 본인 enclosure 확인 (.single() 은 0행 시 500 — _load_clip_for_owner 참고)
+    eid = _parse_uuid_or_404(enclosure_id, "enclosure not found")
     enc = (
         sb.table("enclosures")
         .select("owner_id")
-        .eq("id", enclosure_id)
-        .single()
+        .eq("id", eid)
+        .eq("owner_id", user_id)
+        .limit(1)
         .execute()
     )
-    if not enc.data or enc.data["owner_id"] != user_id:
+    enc_row = enc.data[0] if enc.data else None
+    if not enc_row or enc_row["owner_id"] != user_id:
         raise HTTPException(status_code=404, detail="enclosure not found")
 
     q = (
         sb.table("motion_clips")
         .select("*")
-        .eq("enclosure_id", enclosure_id)
+        .eq("enclosure_id", eid)
         .eq("owner_id", user_id)
         .order("started_at", desc=True)
         .limit(limit + 1)
