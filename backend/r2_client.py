@@ -150,6 +150,22 @@ def delete_object(key: str) -> None:
     logger.info("r2 delete ok: bucket=%s key=%s", bucket, key)
 
 
+_MISSING_CODES = frozenset({"404", "NoSuchKey", "NotFound"})
+
+
+def head_object_size(key: str) -> int | None:
+    """객체 크기(바이트). 없으면 None. 404 외 오류(권한·네트워크)는 그대로 raise — 호출 측이 502."""
+    client = get_r2_client()
+    bucket = get_r2_bucket()
+    try:
+        res = client.head_object(Bucket=bucket, Key=key)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in _MISSING_CODES:
+            return None
+        raise
+    return int(res["ContentLength"])
+
+
 def reset_client_cache() -> None:
     # monkeypatch 로 함수가 교체된 상태에서도 안전하게 no-op
     clear = getattr(get_r2_client, "cache_clear", None)
@@ -168,5 +184,6 @@ __all__ = [
     "generate_presigned_put_url",
     "get_r2_bucket",
     "get_r2_client",
+    "head_object_size",
     "reset_client_cache",
 ]

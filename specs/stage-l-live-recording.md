@@ -121,11 +121,11 @@ create index if not exists live_recordings_status_created_idx
 - Must know: boto3 `head_object` 의 없는 키는 `ClientError` 이고 `response["Error"]["Code"]` 가 `"404"` / `"NoSuchKey"` / `"NotFound"` 중 하나.
 - Acceptance: `uv run pytest tests/test_r2_client.py -q` PASS
 
-- [ ] Step 1: 테스트 — `test_head_object_size_returns_length`(stub client `head_object` → `{"ContentLength": 123}` → 123), `test_head_object_size_missing_returns_none`(ClientError code "404" → None), `test_head_object_size_other_error_raises`(code "AccessDenied" → raise)
-- [ ] Step 2: 실패 확인
-- [ ] Step 3: 구현
-- [ ] Step 4: PASS
-- [ ] Step 5: 커밋 `feat(r2): head_object_size`
+- [x] Step 1: 테스트 — `test_head_object_size_returns_length`(stub client `head_object` → `{"ContentLength": 123}` → 123), `test_head_object_size_missing_returns_none`(ClientError code "404" → None), `test_head_object_size_other_error_raises`(code "AccessDenied" → raise)
+- [x] Step 2: 실패 확인
+- [x] Step 3: 구현
+- [x] Step 4: PASS
+- [x] Step 5: 커밋 `feat(r2): head_object_size`
 
 ### Task 3: `POST /recordings` 등록 + 업로드 URL
 
