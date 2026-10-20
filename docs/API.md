@@ -891,6 +891,38 @@ DELETE /recordings/{id}                 → 204   (pending 포함, R2 삭제 실
 - `/recordings` 경로의 요청 검증 오류만 422 대신 **400** + `"invalid request: <loc>: <msg>"` (앱은 400 만 비재시도). 다른 경로는 기존 422 그대로.
 - 이 라우터는 소유권 위반을 **403**(남의 카메라)·**404**(남의 녹화)로 구분한다 — 아래 §5 "403 사용 안 함" 의 예외.
 
+### 4.12 운영 카메라 재부팅 — `POST /ops/cameras/{id}/reboot` (2026-10-20, [specs/stage-m-ops-camera-reboot.md](../specs/stage-m-ops-camera-reboot.md))
+
+petcam-lab 감시 스크립트(`beta_camera_watch.py`)가 밤 녹화가 2시간 멈춘 **베타 카메라**를 사용자 로그인 없이 재부팅한다.
+계약 SOT: [BACKEND_HANDOFF_REPLY_OPS_CAMERA_REBOOT_2026-10-20.md](BACKEND_HANDOFF_REPLY_OPS_CAMERA_REBOOT_2026-10-20.md). 라우터 `backend/routers/ops.py`.
+
+```
+POST /ops/cameras/{camera_uuid}/reboot
+X-Ops-Secret: <.env OPS_REBOOT_SECRET>
+{ "reason": "night_rec_stall", "requested_by": "beta-camera-watch" }     (각 1~64자)
+
+→ 200 { "published": true,  "msg_id": "uuid" }          MQTT `reboot` 발행됨 (기존 §4.8 과 같은 명령)
+→ 200 { "published": false, "msg_id": null }            브로커 발행 실패 — 쿨다운 안 걸림, 다음 실행에서 재시도
+→ 401 { "detail": "invalid ops secret" }                 헤더 없음/불일치, 서버 OPS_REBOOT_SECRET 미설정
+→ 404 { "detail": "camera not found" }                   없음·해제됨·uuid 형식 아님
+→ 409 { "detail": "skipped", "reason": "not_beta" }      labeling_group <> 'beta'
+→ 409 { "detail": "skipped", "reason": "offline" }       is_online=false
+→ 409 { "detail": "skipped", "reason": "live_active" }   live_session_id NOT NULL 또는 stream_until > now()
+→ 409 { "detail": "skipped", "reason": "ota_active" }    진행 중 OTA 작업 있음
+→ 429 { "detail": "cooldown", "retry_after": <초> }       + `Retry-After` 헤더. 같은 카메라 운영 재부팅 후 2시간 이내
+→ 503 { "detail": "ops log unavailable" }                기록(camera_ops_reboots) INSERT 실패 — 재부팅 안 함
+→ 422 바디 필드 누락·길이 위반 (FastAPI 기본)
+```
+
+- **인증**: 사용자 JWT 가 아니라 서버 시크릿 헤더. `hmac.compare_digest` 상수 시간 비교, 서버 값이 비었으면 헤더와 무관하게 401. 시크릿·헤더 값은 로그에 남기지 않는다.
+- **순서**: 401 → 404 → `not_beta` → `offline` → `live_active` → `ota_active` → (카메라별 락) 쿨다운 → 기록 INSERT(`published=NULL`) → 발행 → `published` UPDATE.
+- **기록 먼저(fail-closed)**: INSERT 가 실패하면 발행하지 않고 503. 마이그레이션 전 배포나 Supabase 순단에도 쿨다운이 뚫리지 않는다.
+- **쿨다운** `OPS_REBOOT_COOLDOWN_SEC = 7200`: 2시간 안의 `published` 가 false 가 **아닌** 행(성공 + 진행 중)을 센다. 발행 실패 행은 세지 않는다.
+- **건너뜀(409)·401·404 는 기록하지 않는다.** 발행 시도만 `camera_ops_reboots` 에 1행.
+- **ack**: 브리지(`terra-bridge`)가 카메라 ack 의 `msg_id` 로 같은 행의 `ack_result`·`acked_at` 을 채운다(`ok` / `rejected_*`).
+- **앱 알림 없음**: 푸시·알림 outbox 를 만들지 않는다. `cameras` 컬럼도 추가하지 않는다.
+- `labeling_group` 은 petcam 감시 스크립트가 직접 쓰는 값이다 — 이 가드는 잘못된 UUID 를 막을 뿐, 스크립트가 엉뚱한 카메라를 beta 로 찍으면 막지 못한다.
+
 ---
 
 ## 5. 에러 코드 표
@@ -1007,6 +1039,7 @@ supabase
 | 2026-05-27 | 0.2.0 | 카메라 페어링 흐름 RPi/QR 기반으로 변경 (prepare-pair + pair_token) |
 | 2026-05-27 | 0.3.0 | 메인 카메라 워커 ESP32-P4 로 변경 (BLE 페어링), Stage G(라이브 스트리밍) 엔드포인트 추가 |
 | 2026-05-27 | 0.4.0 | **Stage F 구현 완료** — enclosures/cameras/clips 라우터 + R2 presigned URL + Camera Token Bearer 인증 (44 tests passing). Swagger UI 메타데이터 보강 (`/docs` 즉시 사용 가능) |
+| 2026-10-20 | 0.11.0 | **운영 카메라 재부팅** — `POST /ops/cameras/{id}/reboot`(서버 시크릿 `X-Ops-Secret`, 베타 한정, 라이브·OTA 보호, 2시간 쿨다운), `camera_ops_reboots` 테이블, 카메라 ack 기록 (§4.12) |
 | 2026-10-20 | 0.10.0 | **Stage L 라이브 직접 녹화** — `POST /recordings`·`/complete`, `GET …/url`·`…/thumbnail/url`, `DELETE /recordings/{id}`, `live_recordings` 테이블, pending 24h 정리 스레드 (§4.11) |
 | 2026-10-08 | 0.9.1 | OTA 릴리스 퇴역 — `firmware_releases.retired_at/retired_reason`, `GET /firmware/releases?include_retired`, 퇴역 릴리스 `POST …/ota` 409 · `/bin` 410, `upload_firmware.py --delete` (§4.10) |
 | 2026-10-07 | 0.9.0 | **Stage J OTA** — `POST /{cameras,devices}/{id}/ota` + `…/apply`, `GET /firmware/releases·jobs`, `GET /firmware/jobs/{id}/bin`(Camera/Device Token, R2 프록시). 2단계(prepare/apply), 사전 점검 게이트, `ota_jobs` 상태 전이 (§4.10) |
