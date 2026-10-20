@@ -44,6 +44,7 @@ Supabase 에 적용한 마이그레이션 기록(SOT). `migrations/*.sql` 을 SQ
 | ✅ | `2026-10-08_firmware_releases_retired.sql` | 2026-10-08 | `firmware_releases.retired_at` + `retired_reason` — 릴리스 퇴역(soft-delete). 코드(API 0.9.1, `f289d4a`) 서버 배포 전 적용. 적용 직후 `upload_firmware.py --delete` 로 카메라 0.3.2 퇴역 성공(미적용 때는 PGRST204 로 rc 4, R2 보존 확인) |
 | ✅ | `2026-10-14_firmware_releases_hub_target.sql` | 2026-10-14 | `firmware_releases.target` CHECK 에 `hub_p4` 추가 — Terra Hub OTA(Stage K-1b). 코드(`3df8758`) 서버 배포 전 적용. 적용 직후 `upload_firmware.py --target hub_p4` 로 허브 0.2.0 등록 성공(release 7913e337) 으로 CHECK 확장 확인 |
 | ✅ | `2026-10-06_hub_link.sql` | 2026-10-07 | `cameras.device_id` UUID FK → devices — Terra Hub(카메라+센서 통합) 짝 행 링크(Stage K). 코드(90ac2fe)보다 먼저 적용됨 |
+| ✅ | `2026-10-20_live_recordings.sql` | 2026-10-20 | `live_recordings` 테이블 + RLS(SELECT 본인) + `has_thumbnail` 생성 컬럼 — 라이브 직접 녹화(Stage L, #20). **코드 배포가 먼저 나가 적용 전까지 `/recordings` 가 PGRST205(테이블 없음)** — 앱 미연동이라 영향 없었음. 적용 후 service_role 로 전 컬럼 SELECT 확인 |
 
 ## 규칙
 - 새 마이그레이션은 `migrations/YYYY-MM-DD_설명.sql` 로 추가하고, 적용 후 이 표에 행 추가.

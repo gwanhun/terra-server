@@ -10,7 +10,7 @@
 요청 1·2·4·5·6을 받습니다. **요청 3(목록)은 Supabase 직결 SELECT**로 합니다(REST 목록 엔드포인트 없음).
 움직임 영상(`motion_clips`)과 섞지 않고 별도 테이블 `live_recordings`·별도 R2 경로를 씁니다.
 
-상태: **설계 합의 — 구현 전.** 배포되면 아래 "배포 상태"에 체크해 알려 드릴게요.
+상태: **배포 완료 (2026-10-20, terra-server #20).** 실기 스모크는 앱 업로드 연동 때 함께 확인합니다.
 
 ---
 
@@ -172,5 +172,5 @@ INSERT/UPDATE/DELETE는 서버(service_role)만 합니다.
 
 - [x] 운영 R2 lifecycle 규칙 확인 — 녹화 경로는 자동 삭제 대상 아님 (2026-10-20 대시보드 확인: `petcam-clips` 규칙은 미완료 멀티파트 7일 중단 + `terra-derived/gme/v1/debug-14d/` 14일 삭제 두 개뿐)
 - [ ] 앱 3차 변경 사항 확인
-- [ ] 운영 DB 마이그레이션 `live_recordings`
-- [ ] 서버 배포 (API + `pending` 정리 배치)
+- [x] 운영 DB 마이그레이션 `live_recordings` (2026-10-20)
+- [x] 서버 배포 (API + `pending`·고아 객체 정리) (2026-10-20)
