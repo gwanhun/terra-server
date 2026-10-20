@@ -2,7 +2,7 @@
 
 MagicMock 체인(select→eq→in_→order→limit→execute)은 호출 순서가 조금만 달라도 깨져서,
 필터·정렬·갱신이 실제로 동작하는 가짜를 둔다. 지원: table / select / eq / neq / in_ / is_ /
-lt / order / limit / single / insert / update / delete / execute. 그 외 메서드는 AttributeError.
+lt / gte / order / limit / single / insert / update / delete / execute. 그 외 메서드는 AttributeError.
 """
 
 from __future__ import annotations
@@ -48,6 +48,10 @@ class _Query:
         # ISO 문자열 비교 — 테스트 시각은 aware datetime.isoformat()(+00:00) 로 통일할 것
         self._filters.append(("lt", col, val)); return self
 
+    def gte(self, col: str, val: Any) -> "_Query":
+        # lt 와 같은 ISO 문자열 비교. None 값 행은 불일치
+        self._filters.append(("gte", col, val)); return self
+
     def order(self, col: str, desc: bool = False) -> "_Query":
         self._order = (col, desc); return self
 
@@ -79,6 +83,8 @@ class _Query:
             if op == "is" and v != val:
                 return False
             if op == "lt" and (v is None or not v < val):
+                return False
+            if op == "gte" and (v is None or not v >= val):
                 return False
         return True
 
