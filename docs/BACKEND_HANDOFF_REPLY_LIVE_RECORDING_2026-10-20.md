@@ -160,7 +160,7 @@ INSERT/UPDATE/DELETE는 서버(service_role)만 합니다.
 
 ## 배포 상태
 
-- [ ] 운영 R2 lifecycle 규칙 확인 — 녹화 경로가 30일 자동 삭제 대상이 아닌지(서버 사전 작업)
+- [x] 운영 R2 lifecycle 규칙 확인 — 녹화 경로는 자동 삭제 대상 아님 (2026-10-20 대시보드 확인: `petcam-clips` 규칙은 미완료 멀티파트 7일 중단 + `terra-derived/gme/v1/debug-14d/` 14일 삭제 두 개뿐)
 - [ ] 앱 3차 변경 사항 확인
 - [ ] 운영 DB 마이그레이션 `live_recordings`
 - [ ] 서버 배포 (API + `pending` 정리 배치)

@@ -40,7 +40,7 @@
 
 ## 사전 조건 (사람)
 
-- [ ] Cloudflare 대시보드 → R2 → 버킷 `petcam-clips` → Settings → Object lifecycle rules 에서 규칙 prefix 확인. `terra-clips/recordings/` 가 삭제 대상이면 배포 전에 규칙을 `terra-clips/clips/` 로 좁힌다. (2026-10-20: 서버 R2 키에 `GetBucketLifecycleConfiguration` 권한이 없어 스크립트 확인 실패 — AccessDenied) **버킷을 petcam-lab과 같이 쓰므로 규칙 변경은 petcam 쪽과 맞춘다.**
+- [x] (2026-10-20 확인 — 녹화 경로 대상 규칙 없음. 규칙: Default Multipart Abort 7일 / `terra-derived/gme/v1/debug-14d/` 14일 삭제) Cloudflare 대시보드 → R2 → 버킷 `petcam-clips` → Settings → Object lifecycle rules 에서 규칙 prefix 확인. `terra-clips/recordings/` 가 삭제 대상이면 배포 전에 규칙을 `terra-clips/clips/` 로 좁힌다. (2026-10-20: 서버 R2 키에 `GetBucketLifecycleConfiguration` 권한이 없어 스크립트 확인 실패 — AccessDenied) **버킷을 petcam-lab과 같이 쓰므로 규칙 변경은 petcam 쪽과 맞춘다.**
 
 - [ ] **Task 0 승인 후** 회신서 변경분을 앱에 알리고 확인받는다(썸네일 정책은 계약 변경).
 
