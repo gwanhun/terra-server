@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 
 from backend.auth import get_current_user_id
 from backend.crypto import generate_token, hash_token
+from backend.db_helpers import first_row, parse_uuid, parse_uuid_or_404
 from backend.mqtt import registry
 from backend.supabase_client import get_supabase_client
 from backend.unlink_service import unlink_entity
@@ -133,14 +134,17 @@ def _verify_enclosure_owner(sb, enclosure_id: str, user_id: str) -> None:
 
     cameras 라우터와 동일 패턴 (service_role 은 RLS 바이패스 → 명시 검증 필수).
     """
+    enc_uuid = parse_uuid(enclosure_id)
+    if enc_uuid is None:  # uuid 아님 → 미존재와 같은 400 (db_helpers 참고)
+        raise HTTPException(status_code=400, detail="enclosure_id 가 본인 사육장이 아님.")
     res = (
         sb.table("enclosures")
         .select("owner_id")
-        .eq("id", enclosure_id)
-        .single()
+        .eq("id", enc_uuid)
+        .limit(1)
         .execute()
     )
-    row = res.data
+    row = first_row(res.data)
     if not row or row["owner_id"] != user_id:
         raise HTTPException(status_code=400, detail="enclosure_id 가 본인 사육장이 아님.")
 
@@ -298,6 +302,7 @@ def get_device(
     user_id: str = Depends(get_current_user_id),
 ) -> DeviceOut:
     """본인 디바이스가 아니거나 소프트 해제됐으면 404 (존재 여부 노출 안 함)."""
+    dev_uuid = parse_uuid_or_404(device_uuid, "device not found")
     sb = get_supabase_client()
     res = (
         sb.table("devices")
@@ -305,11 +310,11 @@ def get_device(
             "id, device_id, enclosure_id, name, species, firmware_ver, "
             "capabilities, sys_state, temp_offset_c, created_at, last_seen_at, is_online, owner_id, unlinked_at"
         )
-        .eq("id", device_uuid)
-        .single()
+        .eq("id", dev_uuid)
+        .limit(1)
         .execute()
     )
-    row = res.data
+    row = first_row(res.data)
     if not row or row["owner_id"] != user_id or row.get("unlinked_at"):
         raise HTTPException(status_code=404, detail="device not found")
     row.pop("owner_id", None)

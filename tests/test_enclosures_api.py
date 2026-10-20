@@ -10,10 +10,12 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import TEST_USER_ID
 
+ENC1 = "eeeeeeee-0000-4000-8000-000000000001"
+
 
 def test_create_enclosure(app_client: TestClient, fake_sb: MagicMock) -> None:
     row = {
-        "id": "enc-1",
+        "id": ENC1,
         "name": "거실",
         "species": "bearded_dragon",
         "note": None,
@@ -27,7 +29,7 @@ def test_create_enclosure(app_client: TestClient, fake_sb: MagicMock) -> None:
         json={"name": "거실", "species": "bearded_dragon"},
     )
     assert res.status_code == 201, res.text
-    assert res.json()["id"] == "enc-1"
+    assert res.json()["id"] == ENC1
 
     # owner_id 가 INSERT payload 에 박혀있는지 검증
     insert_call = fake_sb.table.return_value.insert.call_args
@@ -37,7 +39,7 @@ def test_create_enclosure(app_client: TestClient, fake_sb: MagicMock) -> None:
 def test_list_enclosures(app_client: TestClient, fake_sb: MagicMock) -> None:
     rows = [
         {
-            "id": "enc-1",
+            "id": ENC1,
             "name": "거실",
             "species": None,
             "note": None,
@@ -60,7 +62,7 @@ def test_list_enclosures_includes_camera_count(
     """목록 응답에 사육장별 카메라 대수가 집계돼야 한다."""
     enc_rows = [
         {
-            "id": "enc-1",
+            "id": ENC1,
             "name": "거실",
             "species": None,
             "note": None,
@@ -77,8 +79,8 @@ def test_list_enclosures_includes_camera_count(
         },
     ]
     cam_rows = [
-        {"enclosure_id": "enc-1"},
-        {"enclosure_id": "enc-1"},
+        {"enclosure_id": ENC1},
+        {"enclosure_id": ENC1},
         {"enclosure_id": None},  # 단독 카메라는 카운트 안 됨
     ]
 
@@ -97,8 +99,8 @@ def test_list_enclosures_includes_camera_count(
     res = app_client.get("/enclosures")
     assert res.status_code == 200, res.text
     by_id = {e["id"]: e for e in res.json()}
-    assert by_id["enc-1"]["camera_count"] == 2
-    assert by_id["enc-1"]["device_count"] == 0
+    assert by_id[ENC1]["camera_count"] == 2
+    assert by_id[ENC1]["device_count"] == 0
     assert by_id["enc-2"]["camera_count"] == 0
     assert by_id["enc-2"]["device_count"] == 1
 
@@ -108,7 +110,7 @@ def test_get_enclosure_includes_cameras(
 ) -> None:
     """단건 조회 시 소속 카메라 목록이 nested 로 포함돼야 한다."""
     enc_row = {
-        "id": "enc-1",
+        "id": ENC1,
         "owner_id": TEST_USER_ID,
         "name": "거실",
         "species": None,
@@ -139,7 +141,7 @@ def test_get_enclosure_includes_cameras(
     ]
 
     enc_mock = MagicMock()
-    enc_mock.select.return_value.eq.return_value.single.return_value.execute.return_value.data = enc_row
+    enc_mock.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [enc_row]
     cam_mock = MagicMock()
     cam_mock.select.return_value.eq.return_value.eq.return_value.order.return_value.execute.return_value.data = cam_rows
     dev_mock = MagicMock()
@@ -148,7 +150,7 @@ def test_get_enclosure_includes_cameras(
     tables = {"enclosures": enc_mock, "cameras": cam_mock, "devices": dev_mock}
     fake_sb.table.side_effect = lambda name: tables[name]
 
-    res = app_client.get("/enclosures/enc-1")
+    res = app_client.get(f"/enclosures/{ENC1}")
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["camera_count"] == 1
@@ -163,31 +165,31 @@ def test_get_enclosure_includes_cameras(
 def test_get_enclosure_not_owner_returns_404(
     app_client: TestClient, fake_sb: MagicMock
 ) -> None:
-    chain = fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value
-    chain.execute.return_value.data = {
-        "id": "enc-1",
+    chain = fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value
+    chain.execute.return_value.data = [{
+        "id": ENC1,
         "owner_id": "other-user",  # 다른 유저 소유
         "name": "x",
         "species": None,
         "note": None,
         "created_at": "2026-05-27T00:00:00Z",
         "updated_at": "2026-05-27T00:00:00Z",
-    }
+    }]
 
-    res = app_client.get("/enclosures/enc-1")
+    res = app_client.get(f"/enclosures/{ENC1}")
     assert res.status_code == 404
 
 
 def test_update_enclosure_no_fields_returns_400(
     app_client: TestClient, fake_sb: MagicMock
 ) -> None:
-    res = app_client.patch("/enclosures/enc-1", json={})
+    res = app_client.patch(f"/enclosures/{ENC1}", json={})
     assert res.status_code == 400
 
 
 def test_update_enclosure_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
     updated = {
-        "id": "enc-1",
+        "id": ENC1,
         "name": "방",
         "species": None,
         "note": None,
@@ -197,16 +199,16 @@ def test_update_enclosure_ok(app_client: TestClient, fake_sb: MagicMock) -> None
     chain = fake_sb.table.return_value.update.return_value.eq.return_value.eq.return_value
     chain.execute.return_value.data = [updated]
 
-    res = app_client.patch("/enclosures/enc-1", json={"name": "방"})
+    res = app_client.patch(f"/enclosures/{ENC1}", json={"name": "방"})
     assert res.status_code == 200
     assert res.json()["name"] == "방"
 
 
 def test_delete_enclosure_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
     chain = fake_sb.table.return_value.delete.return_value.eq.return_value.eq.return_value
-    chain.execute.return_value.data = [{"id": "enc-1"}]
+    chain.execute.return_value.data = [{"id": ENC1}]
 
-    res = app_client.delete("/enclosures/enc-1")
+    res = app_client.delete(f"/enclosures/{ENC1}")
     assert res.status_code == 204
 
 
@@ -247,7 +249,7 @@ def test_rename_duplicate_name_returns_409(
     )
     fake_sb.table.return_value = t
 
-    res = app_client.patch("/enclosures/enc-1", json={"name": "사육 환경 2"})
+    res = app_client.patch(f"/enclosures/{ENC1}", json={"name": "사육 환경 2"})
     assert res.status_code == 409, res.text
 
 
@@ -269,7 +271,7 @@ def test_other_db_error_is_not_swallowed_as_409(
 def test_create_trims_name(app_client: TestClient, fake_sb: MagicMock) -> None:
     t = MagicMock()
     t.insert.return_value.execute.return_value.data = [{
-        "id": "enc-1", "name": "사육 환경 1", "species": None, "note": None,
+        "id": ENC1, "name": "사육 환경 1", "species": None, "note": None,
         "created_at": "2026-09-16T00:00:00+00:00", "updated_at": "2026-09-16T00:00:00+00:00",
     }]
     fake_sb.table.return_value = t
@@ -281,15 +283,15 @@ def test_create_trims_name(app_client: TestClient, fake_sb: MagicMock) -> None:
 def test_patch_trims_name_and_rejects_blank(app_client: TestClient, fake_sb: MagicMock) -> None:
     t = MagicMock()
     t.update.return_value.eq.return_value.eq.return_value.execute.return_value.data = [{
-        "id": "enc-1", "name": "새 이름", "species": None, "note": None,
+        "id": ENC1, "name": "새 이름", "species": None, "note": None,
         "created_at": "2026-09-16T00:00:00+00:00", "updated_at": "2026-09-16T00:00:00+00:00",
     }]
     t.select.return_value.eq.return_value.execute.return_value.data = []
     fake_sb.table.return_value = t
 
-    res = app_client.patch("/enclosures/enc-1", json={"name": " 새 이름 "})
+    res = app_client.patch(f"/enclosures/{ENC1}", json={"name": " 새 이름 "})
     assert res.status_code == 200, res.text
     assert t.update.call_args.args[0]["name"] == "새 이름"
 
-    res = app_client.patch("/enclosures/enc-1", json={"name": "   "})
+    res = app_client.patch(f"/enclosures/{ENC1}", json={"name": "   "})
     assert res.status_code == 400

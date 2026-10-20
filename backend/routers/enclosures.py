@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.auth import get_current_user_id
+from backend.db_helpers import first_row, parse_uuid_or_404
 from backend.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
@@ -215,15 +216,16 @@ def get_enclosure(
 
     응답의 `cameras`/`devices` 로 이 사육장에 무엇이 설치됐는지 확인 가능.
     """
+    enc_uuid = parse_uuid_or_404(enclosure_id, "enclosure not found")
     sb = get_supabase_client()
     res = (
         sb.table("enclosures")
         .select("id, owner_id, name, species, note, created_at, updated_at")
-        .eq("id", enclosure_id)
-        .single()
+        .eq("id", enc_uuid)
+        .limit(1)
         .execute()
     )
-    row = res.data
+    row = first_row(res.data)
     if not row or row["owner_id"] != user_id:
         raise HTTPException(status_code=404, detail="enclosure not found")
 

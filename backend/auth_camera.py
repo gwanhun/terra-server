@@ -21,6 +21,7 @@ from typing import Any
 from fastapi import Header, HTTPException, Path, status
 
 from backend.crypto import verify_token
+from backend.db_helpers import first_row, parse_uuid
 from backend.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
@@ -57,15 +58,20 @@ def get_authed_camera(
     """
     token = _extract_bearer(authorization)
 
+    cam_uuid = parse_uuid(camera_id)
+    if cam_uuid is None:
+        # uuid 아님 → DB 로 보내면 22P02 500. 미존재와 같은 401 (db_helpers 참고)
+        raise CameraAuthError("카메라를 찾을 수 없거나 토큰 불일치.")
+
     sb = get_supabase_client()
     res = (
         sb.table("cameras")
         .select("id, owner_id, enclosure_id, camera_id, token_hash, name, model")
-        .eq("id", camera_id)
-        .single()
+        .eq("id", cam_uuid)
+        .limit(1)
         .execute()
     )
-    row = res.data
+    row = first_row(res.data)
     if not row:
         # 의도적으로 401 (404 로 존재 여부 노출 안 함)
         raise CameraAuthError("카메라를 찾을 수 없거나 토큰 불일치.")

@@ -245,13 +245,13 @@ def test_require_active_camera_unlinked_404() -> None:
 
 
 def test_get_unlinked_device_is_404(app_client: TestClient, fake_sb: MagicMock) -> None:
-    chain = fake_sb.table.return_value.select.return_value.eq.return_value.single.return_value
-    chain.execute.return_value.data = {
+    chain = fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value
+    chain.execute.return_value.data = [{
         "id": DEV, "device_id": "terra-a1", "enclosure_id": None, "name": "x",
         "species": None, "firmware_ver": None, "capabilities": None,
         "created_at": TS, "last_seen_at": None, "is_online": False,
         "owner_id": TEST_USER_ID, "unlinked_at": TS,
-    }
+    }]
     assert app_client.get(f"/devices/{DEV}").status_code == 404
 
 
