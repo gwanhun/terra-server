@@ -147,7 +147,7 @@ create index if not exists live_recordings_status_created_idx
   - `tests/conftest.py` 의 `app_client` 루프에 recordings 모듈 추가하지 말고, 이 테스트 파일 전용 fixture 에서 `FakeSB` + R2 stub(`generate_presigned_put_url`, `generate_presigned_get_url`, `delete_object`, `head_object_size` 를 dict 저장소로) 를 `backend.routers.recordings` 에 monkeypatch.
 - Acceptance: `uv run pytest tests/test_recordings_api.py -q` PASS
 
-- [ ] Step 1: 테스트 (카메라 행 `{"id": CAM, "owner_id": TEST_USER_ID, "unlinked_at": None}`)
+- [x] Step 1: 테스트 (카메라 행 `{"id": CAM, "owner_id": TEST_USER_ID, "unlinked_at": None}`)
   - `test_create_returns_201_with_put_urls` — 201, `status=="pending"`, video URL 에 `terra-clips/recordings/{TEST_USER_ID}/{CAM}/{recording_id}.mp4`, thumb URL `.jpg`, `expires_at` ≈ now+1800s
   - `test_create_without_thumbnail_thumb_url_null`
   - `test_create_other_users_camera_403`, `test_create_unknown_camera_403`
@@ -165,10 +165,10 @@ create index if not exists live_recordings_status_created_idx
   - `test_create_presign_failure_502`
   - `test_create_malformed_body_400` — `camera_id: "abc"` → 400, `detail` 문자열
   - 오류 테스트는 전부 `res.json()["detail"]` 정확값까지 비교(403 `"camera not found or not owned"` 등)
-- [ ] Step 2: 실패 확인 (ImportError — 모듈 없음)
-- [ ] Step 3: 라우터 + `create_recording(body, response, user_id=Depends(get_current_user_id)) -> RecordingUpload` 구현, `main.py` 등록
-- [ ] Step 4: PASS + 전체 `uv run pytest -q` PASS
-- [ ] Step 5: 커밋 `feat(recordings): POST /recordings 등록 + 업로드 URL`
+- [x] Step 2: 실패 확인 (ImportError — 모듈 없음)
+- [x] Step 3: 라우터 + `create_recording(body, response, user_id=Depends(get_current_user_id)) -> RecordingUpload` 구현, `main.py` 등록
+- [x] Step 4: PASS + 전체 `uv run pytest -q` PASS
+- [x] Step 5: 커밋 `feat(recordings): POST /recordings 등록 + 업로드 URL`
 
 ### Task 4: `POST /recordings/{id}/complete`
 

@@ -19,9 +19,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 
@@ -37,6 +40,7 @@ from backend.routers import (
     enclosures,
     firmware,
     lcd,
+    recordings,
     schedules,
     settings,
     webrtc,
@@ -103,6 +107,13 @@ tags_metadata = [
             "사용자는 JWT 로 presigned GET URL 받아 재생."
         ),
     },
+    {
+        "name": "recordings",
+        "description": (
+            "라이브 직접 녹화(앱이 폰에서 만든 ≤60초 mp4 + jpg). 등록 → presigned PUT 업로드 → "
+            "complete → 재생 URL·삭제. 목록은 Supabase 직결 SELECT."
+        ),
+    },
 ]
 
 @asynccontextmanager
@@ -139,6 +150,21 @@ app = FastAPI(
     openapi_url=None,
     lifespan=_lifespan,
 )
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(request: Request, exc: RequestValidationError):
+    """/recordings 의 요청 형식 오류는 400 + 문자열 detail (앱은 400 만 비재시도).
+
+    다른 경로는 기존 계약 그대로 FastAPI 기본 422.
+    """
+    if request.url.path.startswith("/recordings"):
+        errors = exc.errors()
+        first = errors[0] if errors else {}
+        loc = ".".join(str(p) for p in first.get("loc", ()))
+        msg = first.get("msg", "invalid")
+        return JSONResponse(status_code=400, content={"detail": f"invalid request: {loc}: {msg}"})
+    return await request_validation_exception_handler(request, exc)
+
 
 # OpenAPI 문서 Basic Auth 가드 — NestJS expressBasicAuth 와 동일 의도.
 # /docs UI 만 막아도 /openapi.json 으로 스키마 전체 노출되므로 셋 다 같이 보호.
@@ -210,6 +236,7 @@ app.include_router(schedules.device_schedules_router)
 app.include_router(schedules.schedules_router)
 app.include_router(settings.router)
 app.include_router(firmware.router)
+app.include_router(recordings.router)
 
 # 정적 웹 콘솔 — 루트(/) 에 마운트.
 # 라우터들 다음에 등록해야 /devices, /cameras, /web-config 등이 우선 매칭됨.
