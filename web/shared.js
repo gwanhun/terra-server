@@ -112,11 +112,48 @@ function fmtKstSec(iso) {
   return new Date(t + 9 * 3600e3).toISOString().slice(5, 19).replace('T', ' ');
 }
 
-// sys_state / clip_stats.sys → 한 줄 텍스트 (가동시간·리셋 사유·힙·RSSI·AP·net 진단)
+// ─────────────────────────────────────────────────────────────────────────
+// 상태 텍스트 색 기준 (2026-10-21 재정리)
+//   bad(빨강)  = 지금 조치: 크래시/전원 부족 재부팅이 24시간 안, 클립 유실(SD 재업로드까지 실패), 업로드 고착(≥300초),
+//                인코더 연속 실패, MQTT 플래핑, SD fault 3회+, 내부 RAM 80K 미만, RSSI -80 이하
+//   warn(주황) = 관찰: 펌웨어가 스스로 복구한 재부팅(net_wd·*_stall 등, 24시간 안), 약한 WiFi(-75~-80), 스킵·즉시 업로드 실패
+//                (SD 로 재시도됨), 인코더 누적 실패(지금은 복구), SD 백로그, WiFi 끊김 1시간 안, C6 링크 카운터
+//   (회색)     = 정상·의도된 재부팅(전원 투입·원격 재부팅·OTA·회전·재설정). 하루 넘게 잘 돌면 재부팅 사유 색은 뺀다.
+// 전엔 "whitelist 밖 reset 이면 줄 전체 빨강"이라 OTA 적용 재부팅 뒤 65시간 잘 도는 허브도 빨갛게 보였다.
+// ─────────────────────────────────────────────────────────────────────────
+const RESET_EXPECTED = /^(POWERON|USB|DEEPSLEEP|SW|SW:(mqtt_reboot|ota_apply|ota_prepare|rotate|ble_reprov|http_restart))(\(.*\))?$/;
+const RESET_CRASH = /^(PANIC|WDT|INT_WDT|TASK_WDT|BROWNOUT)/;
+const RESET_KO = {
+  POWERON: '전원 투입', USB: 'USB 리플래시 직후', DEEPSLEEP: '딥슬립 복귀', SW: '펌웨어 재부팅(사유 기록 없음)',
+  'SW:mqtt_reboot': '앱/서버 원격 재부팅', 'SW:ota_apply': 'OTA 적용(슬롯 전환)', 'SW:ota_prepare': 'OTA 다운로드 전 재부팅',
+  'SW:rotate': '회전 설정 적용', 'SW:ble_reprov': 'BLE 재설정', 'SW:http_restart': 'HTTP 재시작 요청',
+  'SW:net_wd': '네트워크 워치독 — WiFi/MQTT 오래 끊겨 자가 재부팅', 'SW:boot_net_wd': '부팅 중 네트워크 워치독',
+  'SW:mqtt_stuck': 'MQTT 먹통 자가 재부팅', 'SW:mqtt_flap': 'MQTT 플래핑 20분 지속 자가 재부팅',
+  'SW:rtc_loop_stall': 'WebRTC 루프 스톨 자가 재부팅', 'SW:rtc_send_stall': 'WebRTC 전송 스톨', 'SW:rtc_lock_stall': 'WebRTC 락 스톨',
+  'SW:cam_stall': '카메라 무프레임 자가 재부팅', 'SW:enc_stall': 'H.264 인코더 연속 실패 자가 재부팅', 'SW:upload_stuck': '업로드 고착 자가 재부팅',
+  PANIC: '크래시(패닉)', INT_WDT: '인터럽트 워치독 크래시', TASK_WDT: '태스크 워치독 크래시', WDT: '워치독 크래시',
+  BROWNOUT: '전원 부족 — 펌프 기동 시 전압 강하 등, 어댑터·케이블 점검',
+};
+// 재부팅 사유 등급. uptime 이 24시간 넘으면 ''(오래된 일).
+function resetLevel(reset, uptimeS) {
+  if (!reset || RESET_EXPECTED.test(reset)) return '';
+  if (typeof uptimeS === 'number' && uptimeS >= 24 * 3600) return '';
+  return RESET_CRASH.test(reset) ? 'bad' : 'warn';
+}
+function resetTitle(reset) {
+  const key = String(reset || '').replace(/\(.*\)$/, '');
+  const ko = RESET_KO[key] || (key.startsWith('SW:boot:') ? '부팅 단계 워치독 (' + key.slice(8) + ')' : '알 수 없는 사유');
+  return `마지막 재부팅 사유: ${reset} — ${ko}. 24시간 넘게 잘 돌면 색 없음`;
+}
+const rssiLevel = r => (typeof r !== 'number' ? '' : r <= -80 ? 'bad' : r <= -75 ? 'warn' : '');
+
+// sys_state / clip_stats.sys → 한 줄 텍스트 (가동시간·리셋 사유·힙·RSSI·AP·net 진단). 토큰별로만 색을 입힌다.
 function sysStateText(sy) {
   const up = sy.uptime_s >= 0 ? (sy.uptime_s < 3600 ? Math.round(sy.uptime_s/60)+'m' : (sy.uptime_s/3600).toFixed(1)+'h') : '?';
-  const resetBad = sy.reset && !/^(POWERON|SW:(rotate|ble_reprov|http_restart|mqtt_reboot))$/.test(sy.reset);
-  const rssiTxt = typeof sy.rssi === 'number' ? ` · <span class="${sy.rssi <= -75 ? 'bad' : ''}" title="WiFi RSSI(dBm), -75 이하 = 약함">rssi ${sy.rssi}</span>` : '';
+  const rl = resetLevel(sy.reset, sy.uptime_s);
+  const resetTxt = `<span class="${rl}" title="${esc(resetTitle(sy.reset))}">reset ${esc(sy.reset || '?')}</span>`;
+  const rssiTxt = typeof sy.rssi === 'number' ? ` · <span class="${rssiLevel(sy.rssi)}" title="WiFi RSSI(dBm). -75 이하 약함(주황), -80 이하 매우 약함(빨강)">rssi ${sy.rssi}</span>` : '';
+  const intTxt = typeof sy.int_free === 'number' ? ` · <span class="${sy.int_free < 80*1024 ? 'bad' : ''}" title="내부 RAM 여유/최대 블록(KB). 80K 미만이면 OTA·WebRTC 실패 위험">int ${Math.round(sy.int_free/1024)}K/${Math.round((sy.int_largest||0)/1024)}K</span>` : '';
   // 접속 AP(0.3.6~): BSSID 뒤 3옥텟 + 채널. 같은 SSID 의 확장기/공유기 중 어디에 붙었는지.
   const apTxt = sy.bssid ? ` · <span title="접속 중인 AP BSSID ${esc(sy.bssid)} · 채널 ${sy.ch ?? '?'}. 같은 집 다른 기기와 다르면 확장기에 붙은 것">ap ${esc(sy.bssid.slice(-8))}${sy.ch ? ' ch' + sy.ch : ''}</span>` : '';
   // net 진단(0.3.6~): WiFi 링크 끊김(연결 상태에서 떨어진 것만) · MQTT 플래핑 · C6 코프로세서 링크.
@@ -125,38 +162,78 @@ function sysStateText(sy) {
   if (nd) {
     const discAge = nd.disc_age_s ?? -1;
     const ageTxt = discAge < 0 ? '' : (discAge < 3600 ? Math.round(discAge/60) + 'm' : Math.round(discAge/3600) + 'h');
-    const discBad = (nd.disc || 0) > 0 && discAge >= 0 && discAge < 3600;
+    const discRecent = (nd.disc || 0) > 0 && discAge >= 0 && discAge < 3600;
     const discDetail = (nd.disc || 0) > 0 ? ` r${nd.reason} ${ageTxt}${nd.disc_bssid ? ' @' + esc(nd.disc_bssid.slice(-8)) : ''}` : '';
-    netTxt += ` · <span class="${discBad ? 'bad' : ''}" title="WiFi 링크 끊김 횟수(부팅 후, 연결 상태에서 떨어진 것만) · 마지막 reason(200=beacon timeout, 201=AP 없음, 8=AP 가 끊음, 15=4-way timeout, 2/4=auth/assoc expire) · 경과 · 당시 AP. 1시간 내면 빨강. 끊길 때 AP 가 바뀌면 확장기 쪽">disc ${nd.disc || 0}${discDetail}</span>`;
+    netTxt += ` · <span class="${discRecent ? 'warn' : ''}" title="WiFi 링크 끊김 횟수(부팅 후) · 마지막 reason(200=beacon timeout, 201=AP 없음, 8=AP 가 끊음, 15=4-way timeout, 2/4=auth/assoc expire) · 경과 · 당시 AP. 1시간 안이면 주황(관찰). 끊길 때 AP 가 바뀌면 확장기 쪽">disc ${nd.disc || 0}${discDetail}</span>`;
     if (nd.flap) netTxt += ` · <span class="bad" title="MQTT 플래핑: 연결은 되는데 keepalive 응답이 없어 짧게 반복 끊김(10분 6회 이상). 10분 지속 시 다른 AP 로 이동, 20분이면 재부팅(reset=SW:mqtt_flap)">flap!</span>`;
     const cpSum = (nd.cp_fail || 0) + (nd.cp_down || 0) + (nd.cp_init || 0);
-    netTxt += ` · <span class="${cpSum > 0 ? 'bad' : ''}" title="C6 코프로세서 링크: 전송 실패 / 전송 다운 / C6 재부팅 횟수(부팅 후). 0 이 아니면 WiFi 가 아니라 보드(SDIO/C6) 쪽">c6 ${nd.cp_fail || 0}/${nd.cp_down || 0}/${nd.cp_init || 0}</span>`;
+    if (cpSum > 0) netTxt += ` · <span class="warn" title="C6 코프로세서 링크: 전송 실패 / 전송 다운 / C6 재부팅 횟수(부팅 후). 0 이 아니면 WiFi 가 아니라 보드(SDIO/C6) 쪽. 계속 오르면 보드 점검">c6 ${nd.cp_fail || 0}/${nd.cp_down || 0}/${nd.cp_init || 0}</span>`;
   }
-  return `<span class="${resetBad ? 'bad' : 'muted'}" title="마지막 재부팅 사유 · 가동시간 · 남은 힙">up ${up} · reset ${esc(sy.reset || '?')}${sy.heap ? ' · heap ' + Math.round(sy.heap/1024) + 'K' : ''}${typeof sy.int_free === 'number' ? ` · <span class="${sy.int_free < 80*1024 ? 'bad' : ''}" title="내부 RAM 여유/최대 블록(KB), 80K 미만 빨강">int ${Math.round(sy.int_free/1024)}K/${Math.round((sy.int_largest||0)/1024)}K</span>` : ''}${rssiTxt}${apTxt}${netTxt}</span>`;
+  return `<span class="muted" title="가동시간 · 마지막 재부팅 사유 · 남은 힙">up ${up} · ${resetTxt}${sy.heap ? ' · heap ' + Math.round(sy.heap/1024) + 'K' : ''}${intTxt}${rssiTxt}${apTxt}${netTxt}</span>`;
 }
 
-// 카메라 행의 클립 파이프라인 요약 (clip_stats + image_state). 이상 신호가 있으면 빨강.
+// 카메라 행의 클립 파이프라인 요약 (clip_stats + image_state). 카운터는 부팅 후 누적이라 "지금 위험"과 "예전에 한 번"을 구분한다.
+//   bad : 클립 유실(sd_fail) · 업로드 고착(up_busy_s ≥300) · 인코더 연속 실패 · SD fault 3회+ · MQTT 플래핑 · SD 백로그 10+ · 스킵이 녹화의 20% 이상(3건+)
+//   warn: 스킵·즉시 업로드 실패(SD 로 재시도되므로) · 인코더 누적 실패(연속 0 = 복구됨) · SD fault 1~2 · SD 백로그 1~9 · 1시간 안 마지막 실패
 function clipCellHtml(r) {
   const c = r.clip_stats;
   if (!c) return '<small class="muted">—</small>';
-  const bad = (c.skip > 0 || c.skip_lock > 0 || c.up_fail > 0 || c.sd_fail > 0 || (c.up_busy_s ?? -1) >= 300
-    || (c.enc_err || 0) > 0 || (c.sd_fault || 0) >= 3 || !!(c.sys && c.sys.net && c.sys.net.flap));
+  const skips = (c.skip || 0) + (c.skip_lock || 0), upFail = c.up_fail || 0, lost = c.sd_fail || 0, backlog = c.sd_backlog || 0;
+  const stuck = (c.up_busy_s ?? -1) >= 300;
+  const encErr = c.enc_err || 0, encStreak = c.enc_streak || 0, sdFault = c.sd_fault || 0;
+  const flap = !!(c.sys && c.sys.net && c.sys.net.flap);
+  const skipBad = skips >= 3 && skips >= (c.rec || 0) * 0.2;
+  const level = (lost > 0 || stuck || encStreak > 0 || sdFault >= 3 || flap || backlog >= 10 || skipBad) ? 'bad'
+    : (skips > 0 || upFail > 0 || encErr > 0 || sdFault > 0 || backlog > 0) ? 'warn' : '';
   const age = c.last_rec_s >= 0 ? (c.last_rec_s < 3600 ? Math.round(c.last_rec_s/60)+'m' : Math.round(c.last_rec_s/3600)+'h') : '없음';
-  const stuck = (c.up_busy_s ?? -1) >= 300 ? ` <span class="bad">up ${Math.round(c.up_busy_s/60)}m!</span>` : '';
+  const tok = (cls, title, txt) => `<span class="${cls}" title="${esc(title)}">${txt}</span>`;
+  const parts = [
+    tok('', '녹화 완료 건수(부팅 후)', `rec ${c.rec}`),
+    tok(skipBad ? 'bad' : skips ? 'warn' : '', '스킵 = 녹화 못 한 모션(슬롯 없음 + H.264 락 실패). 녹화의 20% 이상이면 빨강', `skip ${skips}`),
+    tok(lost ? 'bad' : upFail ? 'warn' : '', `즉시 업로드 실패 ${upFail}(SD 로 재시도됨) / SD 재업로드 실패 ${lost}(클립 유실 → 빨강)`, `fail ${upFail + lost}`),
+    tok(backlog >= 10 ? 'bad' : backlog ? 'warn' : '', 'SD 에 쌓인 업로드 대기 건수. 계속 늘면 R2 접속 불가', `sd ${backlog}`),
+    tok('', '마지막 녹화 후 경과(모션이 없으면 길어지는 게 정상)', age),
+  ];
+  if (stuck) parts.push(tok('bad', '한 클립 업로드가 5분 넘게 진행 중 — 고착', `up ${Math.round(c.up_busy_s/60)}m!`));
+  // 인코더(0.2.1~): 누적 실패 / 현재 연속. 연속이 임계(50)에 닿으면 펌웨어가 enc_stall 로 재부팅.
+  if (encErr > 0 || encStreak > 0) parts.push(tok(encStreak > 0 ? 'bad' : 'warn', 'H.264 인코더 실패 누적/현재 연속. 연속 0 이면 복구된 것(주황), 연속 중이면 빨강(50이면 enc_stall 재부팅)', `enc ${encErr}/${encStreak}`));
   // SD 쓰기 fault 래치 누적(0.3.6~). 부팅마다 반복해서 오르면 카드 불량 → 교체.
-  const sdf = typeof c.sd_fault === 'number' && c.sd_fault > 0 ? ` · <span class="${c.sd_fault >= 3 ? 'bad' : ''}" title="SD 쓰기 fault 래치 횟수(부팅 후). 3회 이상 = 카드 교체 검토">sdfault ${c.sd_fault}${c.sd_fault >= 3 ? ' 교체?' : ''}</span>` : '';
+  if (sdFault > 0) parts.push(tok(sdFault >= 3 ? 'bad' : 'warn', 'SD 쓰기 fault 래치 횟수(부팅 후). 3회 이상 = 카드 교체 검토', `sdfault ${sdFault}${sdFault >= 3 ? ' 교체?' : ''}`));
   const sy = c.sys;
   const syTxt = sy ? `<br>${sysStateText(sy)}` : '';
-  // 인코더(0.2.1~): 누적 실패 / 현재 연속. 연속이 임계(50)에 닿으면 펌웨어가 enc_stall 로 재부팅. 0 이 아니면 빨강.
-  const encTxt = typeof c.enc_err === 'number' && (c.enc_err > 0 || (c.enc_streak || 0) > 0)
-    ? ` · <span class="bad" title="H.264 인코더 단계 실패 누적/현재 연속. 연속 50이면 enc_stall 자가 재부팅. 구 빌드(0.2.0 이하)는 1회 실패로 영구 사망·녹화 0">enc ${c.enc_err}/${c.enc_streak || 0}</span>` : '';
   const le = c.last_err;
   // esp_err_t 이름(0.3.6: 전송 중 끊김도 HTTP_CONNECT 로 통일 → "net"). 모르는 값은 숫자 그대로.
   const errName = e => ({ '-1': 'FAIL', '28675': 'net', '269': 'NOT_FINISHED(SD읽기)', '263': 'TIMEOUT', '257': 'NO_MEM' })[String(e)] || e;
-  const leTxt = le ? `<br><span class="bad" title="마지막 업로드 실패: stage 1=upload-url 2=R2 PUT 3=meta 4=SD읽기 · esp_err(net=연결불가/전송중 끊김, 클립 시도횟수 미산입) · HTTP 상태(0=전송 실패) · 경과초">last_err stage${le.stage} err=${errName(le.err)} http${le.http} ${Math.round((le.age_s||0)/60)}m ago</span>` : '';
+  const leRecent = le && (le.age_s || 0) < 3600;
+  const leTxt = le ? `<br>${tok(leRecent ? 'warn' : '', '마지막 업로드 실패: stage 1=upload-url 2=R2 PUT 3=meta 4=SD읽기 · esp_err(net=연결불가/전송중 끊김) · HTTP 상태(0=전송 실패) · 경과. 1시간 안이면 주황, 지났으면 회색(이미 재시도됨)', `last_err stage${le.stage} err=${errName(le.err)} http${le.http} ${Math.round((le.age_s||0)/60)}m ago`)}` : '';
   const im = r.image_state;
-  const imTxt = im ? `<br><span class="${im.ae_frozen ? 'bad' : 'muted'}" title="${esc(JSON.stringify(im))}">exp ${im.exp} · luma ${im.luma} · ${im.night ? 'NIGHT' : 'DAY'}${im.ae_frozen ? ' · AE동결' : ''}</span>` : '';
-  return `<small class="${bad ? 'bad' : 'muted'}" title="${esc(JSON.stringify(c))}">rec ${c.rec} · skip ${(c.skip||0)+(c.skip_lock||0)} · fail ${(c.up_fail||0)+(c.sd_fail||0)} · sd ${c.sd_backlog||0} · ${age}${stuck}${encTxt}${sdf}${syTxt}${leTxt}${imTxt}</small>`;
+  const imTxt = im ? `<br>${tok(im.ae_frozen ? 'warn' : '', JSON.stringify(im) + (im.ae_frozen ? ' · AE 진동 감지로 노출 고정됨(영상은 나옴)' : ''), `exp ${im.exp} · luma ${im.luma} · ${im.night ? 'NIGHT' : 'DAY'}${im.ae_frozen ? ' · AE동결' : ''}`)}` : '';
+  const dot = level ? `<span class="${level}" title="${level === 'bad' ? '지금 조치 필요' : '관찰'}">● </span>` : '';
+  return `<small class="muted" title="${esc(JSON.stringify(c))}">${dot}${parts.join(' · ')}${syTxt}${leTxt}${imTxt}</small>`;
+}
+
+// 모바일 카드형 표 — thead 의 th 텍스트를 각 td 의 data-label 로 복사해 ≤600px 에서 "라벨 값" 줄로 세운다(shared.css .table-wrap).
+// 표는 .table-wrap 으로 감싸 데스크톱에선 가로 스크롤(패널 밖으로 안 삐져나오게). 행이 Realtime 으로 다시 그려져도
+// 따라가게 tbody 변경을 MutationObserver 로 본다(childList 만 보므로 data-label setAttribute 가 재귀를 일으키지 않는다).
+function enableTableLabels(root = document) {
+  const stamp = (table) => {
+    const ths = [...table.querySelectorAll('thead th')].map(th => th.textContent.trim());
+    table.querySelectorAll('tbody tr').forEach(tr => {
+      let col = 0;
+      [...tr.children].forEach(td => {
+        if (!td.hasAttribute('data-label')) td.setAttribute('data-label', td.colSpan > 1 ? '' : (ths[col] || ''));
+        col += td.colSpan || 1;
+      });
+    });
+  };
+  root.querySelectorAll('table').forEach(table => {
+    if (!table.parentElement.classList.contains('table-wrap')) {
+      const w = document.createElement('div'); w.className = 'table-wrap';
+      table.parentNode.insertBefore(w, table); w.appendChild(table);
+    }
+    stamp(table);
+    new MutationObserver(() => stamp(table)).observe(table, { childList: true, subtree: true });
+  });
 }
 
 // camera_logs 행 → 텍스트. 0.3.6~: "N (ms) …" 는 펌웨어 판단 기록(부팅 표식·재부팅 사유·AP 이동·

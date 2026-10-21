@@ -28,7 +28,7 @@
 </style>
 </head>
 <body>
-<div class="wrap">
+<div class="wrap wide">
 
 <nav id="topnav" class="topnav"></nav>
 
@@ -122,9 +122,12 @@
     </div>
     <div id="dev-token" class="hidden"></div>
     <table id="dev-table">
-      <thead><tr><th>device_id</th><th>이름</th><th>사육장</th><th>online</th><th>온도</th><th>습도</th><th>LED</th><th>sys</th><th>last_seen</th><th></th></tr></thead>
+      <thead><tr><th>device_id</th><th>이름</th><th title="telemetry 가 보고한 펌웨어 버전(2026-10-07+ 펌웨어). 마우스 올리면 capabilities">fw</th><th>사육장</th><th>online</th><th>온도</th><th>습도</th><th>LED</th><th title="가동시간 · 마지막 재부팅 사유 · 힙 · RSSI. 빨강=지금 조치, 주황=관찰 (표 아래 기준)">sys</th><th>last_seen</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
+    <small class="legend muted">색 기준 — <span class="bad">빨강</span> 지금 조치: 크래시·전원 부족 재부팅(24시간 안), 내부 RAM 80K 미만, RSSI −80 이하, 클립 유실·업로드 고착·인코더 연속 실패·MQTT 플래핑
+      · <span class="warn">주황</span> 관찰: 펌웨어 자가 복구 재부팅(net_wd·stall 계열, 24시간 안), RSSI −75~−80, 스킵·즉시 업로드 실패(SD 재시도됨), WiFi 끊김 1시간 안
+      · 회색 정상(전원 투입·원격 재부팅·OTA·회전 등 의도된 재부팅). 하루 넘게 잘 돌면 재부팅 사유 색은 뺀다. 각 항목에 마우스를 올리면 설명.</small>
   </div>
 
   <!-- 명령 이력 -->
@@ -277,6 +280,9 @@
       <thead><tr><th>camera_id</th><th>이름</th><th>model</th><th title="heartbeat 가 보고한 펌웨어 버전(esp_app_desc.version). 마우스 올리면 capabilities">fw</th><th>사육장</th><th>online</th><th title="rotate_180 설정(진실). capabilities.rotate_180 보고 전엔 비활성">회전 180°</th><th title="클립 파이프라인: 녹화/스킵/업로드실패/SD백로그 · 마지막 녹화 경과">클립</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
+    <small class="legend muted">색 기준 — <span class="bad">빨강</span> 지금 조치: 크래시·전원 부족 재부팅(24시간 안), 내부 RAM 80K 미만, RSSI −80 이하, 클립 유실·업로드 고착·인코더 연속 실패·MQTT 플래핑
+      · <span class="warn">주황</span> 관찰: 펌웨어 자가 복구 재부팅(net_wd·stall 계열, 24시간 안), RSSI −75~−80, 스킵·즉시 업로드 실패(SD 재시도됨), WiFi 끊김 1시간 안
+      · 회색 정상(전원 투입·원격 재부팅·OTA·회전 등 의도된 재부팅). 하루 넘게 잘 돌면 재부팅 사유 색은 뺀다. 각 항목에 마우스를 올리면 설명.</small>
   </div>
 
   <!-- 응답 로그 -->
@@ -737,8 +743,9 @@ async function loadDevices() {
     DEV_LABEL[r.id] = r.device_id;   // 텔레메트리/알림 라벨 캐시 갱신
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td><code>${esc(r.device_id)}</code></td>
-      <td>${esc(r.name)}</td>
+      <td class="nw"><code>${esc(r.device_id)}</code></td>
+      <td class="nw">${esc(r.name)}</td>
+      <td data-dev-fw="${r.id}">${fwCellHtml(r)}</td>
       <td><select onchange="assignEnclosure('devices','${r.id}',this.value)" style="max-width:130px">${enclosureOptions(r.enclosure_id)}</select></td>
       <td>${r.is_online ? '<span class="good">●</span>' : '<span class="muted">○</span>'}</td>
       <td data-dev-temp="${r.id}">${formatDeviceTemp(r.id)}</td>
@@ -746,15 +753,15 @@ async function loadDevices() {
       <td data-dev-led="${r.id}">${formatDeviceLed(r.id)}</td>
       <td data-dev-sys="${r.id}">${sysCellHtml(r.sys_state)}</td>
       <td><small>${esc(r.last_seen_at?.slice(0,16) || '-')}</small></td>
-      <td style="white-space:nowrap">
-        ${quickCmdButtons(r.id, r.is_online)}
-        &nbsp;${mistButtons(r.id, r.is_online)}
-        &nbsp;${ledSlider(r)}
-        &nbsp;<button onclick="openTrend('${r.id}')" title="온도 추이 — 30분 집계(telemetry_30m), 최근 30일까지" style="font-size:11px;padding:2px 8px;margin-left:8px">📈추이</button>
-        <button onclick="rebootDevice('${r.id}','${esc(r.device_id)}')" title="MQTT reboot 명령 1회 큐잉 — 2026-09-28+ 펌웨어만 반응, 구 펌웨어는 unknown_action" style="font-size:11px;padding:2px 8px;margin-left:4px">재부팅</button>
-        <button onclick="otaEntity('devices','${r.id}','${esc(r.device_id)}','device_nano')" title="OTA (Stage J, nano 만) — prepare → ready 면 다시 눌러 apply. commands 큐잉" style="font-size:11px;padding:2px 8px;margin-left:4px">OTA</button>
-        <button onclick="unlinkDevice('devices','${r.id}')" title="소프트 해제 — 기록 보존, 앱의 '삭제'와 동일" style="font-size:11px;padding:2px 8px;margin-left:4px">해제</button>
-        <button class="danger" onclick="deleteDevice('${r.id}')" title="hard delete — 기록까지 삭제(운영용)" style="font-size:11px;padding:2px 8px;margin-left:4px">삭제</button>
+      <td class="actions-cell">
+        <div class="act-group">${quickCmdButtons(r.id, r.is_online)} ${mistButtons(r.id, r.is_online)} ${ledSlider(r)}</div>
+        <div class="act-group">
+          <button class="sm" onclick="openTrend('${r.id}')" title="온도 추이 — 30분 집계(telemetry_30m), 최근 30일까지">📈추이</button>
+          <button class="sm" onclick="rebootDevice('${r.id}','${esc(r.device_id)}')" title="MQTT reboot 명령 1회 큐잉 — 2026-09-28+ 펌웨어만 반응, 구 펌웨어는 unknown_action">재부팅</button>
+          <button class="sm" onclick="otaEntity('devices','${r.id}','${esc(r.device_id)}','device_nano')" title="OTA (Stage J, nano 만) — prepare → ready 면 다시 눌러 apply. commands 큐잉">OTA</button>
+          <button class="sm" onclick="unlinkDevice('devices','${r.id}')" title="소프트 해제 — 기록 보존, 앱의 '삭제'와 동일">해제</button>
+          <button class="sm danger" onclick="deleteDevice('${r.id}')" title="hard delete — 기록까지 삭제(운영용)">삭제</button>
+        </div>
       </td>`;
     tbody.appendChild(tr);
   });
@@ -1236,6 +1243,8 @@ function subscribeRealtime() {
           const n = payload.new;
           const cell = document.querySelector(`[data-dev-sys="${n.id}"]`);
           if (cell) cell.innerHTML = sysCellHtml(n.sys_state);
+          const fwCell = document.querySelector(`[data-dev-fw="${n.id}"]`);
+          if (fwCell) fwCell.innerHTML = fwCellHtml(n);   // OTA 뒤 firmware_ver 바뀜
           // is_online 은 offline_monitor 가 180초 무응답 시 false 로 바꾼다 → 온습도 셀을 오프라인 표시로.
           const d = DEVICES.find(x => x.id === n.id);
           if (d) { d.is_online = n.is_online; d.last_seen_at = n.last_seen_at; d.temp_offset_c = n.temp_offset_c; }
@@ -1443,7 +1452,7 @@ async function loadCameras() {
     CAM_LAST[r.id] = r;
     const tr = document.createElement('tr');
     tr.dataset.id = r.id;
-    tr.innerHTML = `<td><code>${esc(r.camera_id)}</code></td><td>${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td class="cam-fw">${fwCellHtml(r)}</td><td><select onchange="assignEnclosure('cameras','${r.id}',this.value)" style="max-width:130px">${enclosureOptions(r.enclosure_id)}</select></td><td class="cam-online">${onlineCellHtml(r)}</td><td class="cam-rotate">${rotateCellHtml(r)}</td><td class="cam-clips">${clipCellHtml(r)}</td><td style="white-space:nowrap"><button onclick="openLive('${r.id}', '${esc(r.camera_id)}')">라이브</button> <button onclick="rebootCamera('${r.id}','${esc(r.camera_id)}')" title="MQTT reboot 명령 1회 발행 — 신 펌웨어(≥0.2.0)만 반응, 구 펌웨어는 rejected 로그만">재부팅</button> <button onclick="otaEntity('cameras','${r.id}','${esc(r.camera_id)}','${otaTargetOf(true, r)}')" title="OTA (Stage J) — prepare(다운로드) → ready 면 다시 눌러 apply(전환). capabilities.ota 보고 펌웨어만. 허브(esp32-p4-hub)는 hub_p4 릴리스">OTA</button> <button onclick="toggleCameraLogs('${r.id}','${esc(r.camera_id)}')" title="펌웨어 에러 로그(camera_logs) — 행 아래 펼침, 다시 누르면 닫힘">로그</button> <button onclick="unlinkDevice('cameras','${r.id}')" title="소프트 해제 — 클립·R2 보존">해제</button> <button class="danger" onclick="deleteCamera('${r.id}')" title="hard delete — 클립 메타까지 삭제(운영용)">삭제</button></td>`;
+    tr.innerHTML = `<td class="nw"><code>${esc(r.camera_id)}</code></td><td class="nw">${esc(r.name)}</td><td>${esc(r.model || '-')}</td><td class="cam-fw">${fwCellHtml(r)}</td><td><select onchange="assignEnclosure('cameras','${r.id}',this.value)" style="max-width:130px">${enclosureOptions(r.enclosure_id)}</select></td><td class="cam-online">${onlineCellHtml(r)}</td><td class="cam-rotate">${rotateCellHtml(r)}</td><td class="cam-clips">${clipCellHtml(r)}</td><td class="actions-cell"><div class="act-group"><button class="sm primary" onclick="openLive('${r.id}', '${esc(r.camera_id)}')">▶ 라이브</button> <button class="sm" onclick="rebootCamera('${r.id}','${esc(r.camera_id)}')" title="MQTT reboot 명령 1회 발행 — 신 펌웨어(≥0.2.0)만 반응, 구 펌웨어는 rejected 로그만">재부팅</button> <button class="sm" onclick="otaEntity('cameras','${r.id}','${esc(r.camera_id)}','${otaTargetOf(true, r)}')" title="OTA (Stage J) — prepare(다운로드) → ready 면 다시 눌러 apply(전환). capabilities.ota 보고 펌웨어만. 허브(esp32-p4-hub)는 hub_p4 릴리스">OTA</button> <button class="sm" onclick="toggleCameraLogs('${r.id}','${esc(r.camera_id)}')" title="펌웨어 에러 로그(camera_logs) — 행 아래 펼침, 다시 누르면 닫힘">로그</button> <button class="sm" onclick="unlinkDevice('cameras','${r.id}')" title="소프트 해제 — 클립·R2 보존">해제</button> <button class="sm danger" onclick="deleteCamera('${r.id}')" title="hard delete — 클립 메타까지 삭제(운영용)">삭제</button></div></td>`;
     tbody.appendChild(tr);
   });
 }
@@ -1901,6 +1910,7 @@ function trendFullLabel(ms) {
 // ─────────────────────────────────────────────────────────────────────────
 (async function boot() {
   loadConfig();
+  enableTableLabels();   // 표를 .table-wrap 으로 감싸고(가로 스크롤) 모바일 카드용 data-label 을 붙인다
   renderTopNav('index', CONFIG.apiBase);
   renderDocsLinks(CONFIG.apiBase);  // apiBase 기본값으로 일단 표시
   if (!CONFIG.apiBase) return;  // 첫 사용 — 설정 패널 노출

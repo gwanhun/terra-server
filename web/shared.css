@@ -43,7 +43,7 @@ pre { background: #0a0a0a; padding: 10px; border-radius: 6px; overflow: auto; fo
 code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .95em; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid var(--line); }
-th { color: var(--muted); font-weight: normal; font-size: 11px; text-transform: uppercase; }
+th { color: var(--muted); font-weight: normal; font-size: 11px; text-transform: uppercase;  white-space: nowrap; }
 .token-once { background: #3a3000; color: #fc9; padding: 8px; border-radius: 4px; font-family: monospace; font-size: 11px; word-break: break-all; margin: 4px 0; border: 1px solid #885500; }
 .hidden { display: none !important; }
 .toast { position: fixed; top: 16px; right: 16px; background: var(--accent-2); color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 13px; box-shadow: 0 4px 12px rgba(0,0,0,.4); z-index: 9999; max-width: min(420px, 90vw); }
@@ -95,6 +95,15 @@ details.cfg[open] summary { margin-bottom: 8px; }
 .live-status.warn { color: #fc9; }
 .live-status.bad { color: #f99; }
 
+/* 표 — 패널 밖으로 삐져나오지 않게 가로 스크롤 (enableTableLabels 가 감싼다) */
+.table-wrap { overflow-x: auto; max-width: 100%; -webkit-overflow-scrolling: touch; }
+td.nw, th.nw { white-space: nowrap; }
+/* 제어·관리 버튼 묶음 — 한 셀 안에서 줄바꿈되는 두 그룹 */
+.actions-cell { min-width: 280px; }
+.act-group { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.act-group + .act-group { margin-top: 4px; }
+.legend { display: block; margin-top: 6px; line-height: 1.6; }
+
 /* 모바일 (≤600px) — 좁은 화면 보정 */
 @media (max-width: 600px) {
   body { padding: 8px; }
@@ -107,18 +116,25 @@ details.cfg[open] summary { margin-bottom: 8px; }
   .row { gap: 4px; }
   .row label { flex: 0 0 100%; font-size: 11px; margin-bottom: 2px; }
   input, select { font-size: 13px; padding: 8px 10px; }   /* 모바일 터치 친화 + 16px 미만이면 iOS 자동 줌 회피 위해 13px */
-  input[type=text], input[type=email], input[type=password] { flex: 1 1 100%; min-width: 0; }
+  input[type=text], input[type=email], input[type=password] { flex: 1 1 100% !important; min-width: 0; }   /* 인라인 flex:2 등도 한 줄 차지 */
   button { padding: 8px 12px; font-size: 13px; }   /* 터치 영역 확대 */
   button.sm { padding: 5px 9px; font-size: 11px; }
   .topnav .docs-links { display: none; }
   .topnav .env { display: none; }
+  .topnav { gap: 2px; padding: 6px; }
+  .topnav .brand { display: none; }
+  .topnav a.nav { font-size: 12px; padding: 6px 8px; flex: 1; text-align: center; }
 
-  /* 테이블 가로 스크롤 — 컬럼 많아도 화면 안 깨짐 */
-  table { display: block; overflow-x: auto; white-space: nowrap; }
-  thead { display: table; width: 100%; }
-  tbody { display: table; width: 100%; }
-  th, td { padding: 8px 6px; }
-
-  /* 빠른 명령 아이콘 — 두 줄로 wrap */
-  td[style*="nowrap"] { white-space: normal !important; }
+  /* 표 → 카드: 행 하나가 카드, 셀은 "라벨 값" 한 줄 (data-label 은 enableTableLabels 가 채움) */
+  .table-wrap table, .table-wrap tbody, .table-wrap tr, .table-wrap td { display: block; width: 100%; }
+  .table-wrap thead { display: none; }
+  .table-wrap tr { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; margin-bottom: 8px; background: var(--panel-2); }
+  .table-wrap td { display: flex; align-items: center; gap: 8px; padding: 3px 0; border-bottom: none; white-space: normal !important; min-height: 0; }
+  .table-wrap td::before { content: attr(data-label); flex: 0 0 74px; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .3px; }
+  .table-wrap td[data-label=""]::before, .table-wrap td:not([data-label])::before { display: none; }
+  .table-wrap td[data-label=""] { flex-wrap: wrap; padding-top: 6px; }
+  .table-wrap td > small, .table-wrap td > span, .table-wrap td > code { min-width: 0; }
+  .table-wrap select { max-width: 100% !important; }
+  .actions-cell { min-width: 0; }
+  .act-group { width: 100%; }
 }
