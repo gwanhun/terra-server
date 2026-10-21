@@ -7,7 +7,7 @@
 | `index.html` | 메인 콘솔 — 로그인한 계정의 사육장·기기·카메라·예약·설정·텔레메트리·알림. 상단 네비와 로그인 패널의 버튼으로 아래 두 페이지로 이동 |
 | `beta.html` | 🎫 베타 테스터 — 테스트 계정별 기기·카메라 조회·제어(테스트/일괄)·재부팅·OTA·해제·삭제. 2026-10-21 index 의 패널에서 분리 |
 | `live.html` | 🎥 라이브 대시보드 — 베타 카메라 라이브를 타일 그리드로 동시 시청(계정별 JWT 로 WebRTC 각각). beta 의 [▶ 라이브]는 `live.html?cam=<uuid>` 로 그 카메라만 바로 연결 |
-| `shared.js` | esc/toast/OTA 모달/베타 계정 인증(`regSession`, 토큰 1h 캐시, signOut scope local)/상단 네비 |
+| `shared.js` | esc/toast/OTA 모달/베타 계정 인증(`regSession`, 토큰 1h 캐시, signOut scope local)/상단 네비/테스터 이름(`BETA_NAMES_DEFAULT`, textarea 의 "이메일 이름" 으로 덮어씀) |
 | `shared.css` | 공용 스타일(다크 테마, 네비, 칩, 카드, 모달, 모바일) |
 
 세 페이지는 localStorage 를 공유한다: `terra-config`(apiBase), `terra-beta-emails`(베타 계정 목록), `terra-live-viewer-id`(라이브 "한 기기" 판정용 viewer_id).
@@ -92,7 +92,7 @@ sudo systemctl restart terra-api
 
 - 🔑 **회원가입 / 로그인 / 로그아웃** (Supabase Auth, email/password)
 - 🏠 **사육장** (`/enclosures`): 생성·목록·삭제
-- 📟 **디바이스** (`/devices`): 페어링·목록·삭제 (MQTT 토큰 1회 노출). `fw` 열(telemetry 보고 펌웨어 버전), `sys` 색 기준은 표 아래 범례 — 빨강=지금 조치(크래시·전원 부족 재부팅 24h 안, RAM 80K 미만, RSSI −80 이하), 주황=관찰(자가 복구 재부팅, 약한 WiFi), 하루 넘게 돌면 재부팅 사유 색 없음
+- 📟 **디바이스** (`/devices`): 페어링·목록·삭제 (MQTT 토큰 1회 노출). `fw` 열(telemetry 보고 펌웨어 버전), `sys` 색 기준은 표 아래 범례 — 빨강=지금 조치(크래시·전원 부족 재부팅 24h 안, 내부 RAM 최대 블록 16K/여유 32K 미만 — P4 평시 60~128K/31~42K, RSSI −80 이하), 주황=관찰(자가 복구 재부팅, 약한 WiFi), 하루 넘게 돌면 재부팅 사유 색 없음
 - 📷 **카메라** (`/cameras`): 페어링·목록·삭제 (Camera 토큰 1회 노출). 클립 셀 색: 빨강=유실(sd_fail)·업로드 고착·인코더 연속 실패·플래핑·스킵 20%+, 주황=스킵·즉시 실패(SD 재시도됨)·백로그
 - 📱 **모바일**: ≤600px 에서 표가 카드(라벨 값)로 바뀜 — `enableTableLabels()`(shared.js) 가 th → td `data-label` 을 붙이고 shared.css 가 세운다
 - 🎫 **베타 테스터** (`beta.html`): 계정별 등록 현황 조회·테스트·일괄 제어·재부팅·OTA·해제·삭제 (신규 등록은 앱에서 — 2026-10-08 콘솔 발급 버튼 제거)

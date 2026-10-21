@@ -115,11 +115,14 @@ function fmtKstSec(iso) {
 // ─────────────────────────────────────────────────────────────────────────
 // 상태 텍스트 색 기준 (2026-10-21 재정리)
 //   bad(빨강)  = 지금 조치: 크래시/전원 부족 재부팅이 24시간 안, 클립 유실(SD 재업로드까지 실패), 업로드 고착(≥300초),
-//                인코더 연속 실패, MQTT 플래핑, SD fault 3회+, 내부 RAM 80K 미만, RSSI -80 이하
+//                인코더 연속 실패, MQTT 플래핑, SD fault 3회+, 내부 RAM 여유 32K 미만 또는 최대 블록 16K 미만, RSSI -80 이하
 //   warn(주황) = 관찰: 펌웨어가 스스로 복구한 재부팅(net_wd·*_stall 등, 24시간 안), 약한 WiFi(-75~-80), 스킵·즉시 업로드 실패
 //                (SD 로 재시도됨), 인코더 누적 실패(지금은 복구), SD 백로그, WiFi 끊김 1시간 안, C6 링크 카운터
 //   (회색)     = 정상·의도된 재부팅(전원 투입·원격 재부팅·OTA·회전·재설정). 하루 넘게 잘 돌면 재부팅 사유 색은 뺀다.
 // 전엔 "whitelist 밖 reset 이면 줄 전체 빨강"이라 OTA 적용 재부팅 뒤 65시간 잘 도는 허브도 빨갛게 보였다.
+// 내부 RAM(2026-10-21 2차 보정): 옛 기준 80K 미만은 P4 운영 평시(여유 60~128K, 최대 블록 31~42K — specs/stage-j-ota.md B1)가
+//   거의 다 걸려 노이즈였다. 16KB 미만 할당은 내부 RAM 에서만 나오므로(SPIRAM_MALLOC_ALWAYSINTERNAL=16384) 진짜 위험선은
+//   최대 블록 16K 미만(할당 실패 시작) / 여유 32K 미만. 주황은 최대 블록 24K·여유 48K 미만. OTA 게이트는 최대 블록 8K.
 // ─────────────────────────────────────────────────────────────────────────
 const RESET_EXPECTED = /^(POWERON|USB|DEEPSLEEP|SW|SW:(mqtt_reboot|ota_apply|ota_prepare|rotate|ble_reprov|http_restart))(\(.*\))?$/;
 const RESET_CRASH = /^(PANIC|WDT|INT_WDT|TASK_WDT|BROWNOUT)/;
@@ -153,7 +156,8 @@ function sysStateText(sy) {
   const rl = resetLevel(sy.reset, sy.uptime_s);
   const resetTxt = `<span class="${rl}" title="${esc(resetTitle(sy.reset))}">reset ${esc(sy.reset || '?')}</span>`;
   const rssiTxt = typeof sy.rssi === 'number' ? ` · <span class="${rssiLevel(sy.rssi)}" title="WiFi RSSI(dBm). -75 이하 약함(주황), -80 이하 매우 약함(빨강)">rssi ${sy.rssi}</span>` : '';
-  const intTxt = typeof sy.int_free === 'number' ? ` · <span class="${sy.int_free < 80*1024 ? 'bad' : ''}" title="내부 RAM 여유/최대 블록(KB). 80K 미만이면 OTA·WebRTC 실패 위험">int ${Math.round(sy.int_free/1024)}K/${Math.round((sy.int_largest||0)/1024)}K</span>` : '';
+  const intLv = typeof sy.int_free !== 'number' ? '' : (sy.int_free < 32*1024 || (sy.int_largest || 1e9) < 16*1024) ? 'bad' : (sy.int_free < 48*1024 || (sy.int_largest || 1e9) < 24*1024) ? 'warn' : '';
+  const intTxt = typeof sy.int_free === 'number' ? ` · <span class="${intLv}" title="내부 RAM 여유/최대 블록(KB). P4 평시 60~128K/31~42K. 16KB 미만 할당은 내부 RAM 에서만 나와서 최대 블록 16K 미만(또는 여유 32K 미만)이면 할당 실패 시작 → 빨강. 24K/48K 미만 주황">int ${Math.round(sy.int_free/1024)}K/${Math.round((sy.int_largest||0)/1024)}K</span>` : '';
   // 접속 AP(0.3.6~): BSSID 뒤 3옥텟 + 채널. 같은 SSID 의 확장기/공유기 중 어디에 붙었는지.
   const apTxt = sy.bssid ? ` · <span title="접속 중인 AP BSSID ${esc(sy.bssid)} · 채널 ${sy.ch ?? '?'}. 같은 집 다른 기기와 다르면 확장기에 붙은 것">ap ${esc(sy.bssid.slice(-8))}${sy.ch ? ' ch' + sy.ch : ''}</span>` : '';
   // net 진단(0.3.6~): WiFi 링크 끊김(연결 상태에서 떨어진 것만) · MQTT 플래핑 · C6 코프로세서 링크.
@@ -173,8 +177,10 @@ function sysStateText(sy) {
 }
 
 // 카메라 행의 클립 파이프라인 요약 (clip_stats + image_state). 카운터는 부팅 후 누적이라 "지금 위험"과 "예전에 한 번"을 구분한다.
-//   bad : 클립 유실(sd_fail) · 업로드 고착(up_busy_s ≥300) · 인코더 연속 실패 · SD fault 3회+ · MQTT 플래핑 · SD 백로그 10+ · 스킵이 녹화의 20% 이상(3건+)
-//   warn: 스킵·즉시 업로드 실패(SD 로 재시도되므로) · 인코더 누적 실패(연속 0 = 복구됨) · SD fault 1~2 · SD 백로그 1~9 · 1시간 안 마지막 실패
+//   bad : 클립 유실(sd_fail, 마지막 실패가 24시간 안) · 업로드 고착(up_busy_s ≥300) · 인코더 연속 실패 · SD fault 3회+ · MQTT 플래핑 · SD 백로그 10+ · 스킵이 녹화의 20% 이상(3건+)
+//   warn: 스킵·즉시 업로드 실패(SD 로 재시도되므로) · 유실이 있었지만 24시간 넘게 전 · 인코더 누적 실패(연속 0 = 복구됨) · SD fault 2 · SD 백로그 3~9 · 1시간 안 마지막 실패
+//   회색: SD 백로그 1~2(부팅 직후 업로드 대기는 정상) · SD fault 1 · 24시간 넘은 실패
+// 카운터는 부팅 후 누적이라 시점을 모른다 — last_err.age_s 로 "최근인지"를 가늠한다(없으면 최근으로 본다).
 function clipCellHtml(r) {
   const c = r.clip_stats;
   if (!c) return '<small class="muted">—</small>';
@@ -183,25 +189,30 @@ function clipCellHtml(r) {
   const encErr = c.enc_err || 0, encStreak = c.enc_streak || 0, sdFault = c.sd_fault || 0;
   const flap = !!(c.sys && c.sys.net && c.sys.net.flap);
   const skipBad = skips >= 3 && skips >= (c.rec || 0) * 0.2;
-  const level = (lost > 0 || stuck || encStreak > 0 || sdFault >= 3 || flap || backlog >= 10 || skipBad) ? 'bad'
-    : (skips > 0 || upFail > 0 || encErr > 0 || sdFault > 0 || backlog > 0) ? 'warn' : '';
+  const le = c.last_err;
+  const errAge = le && typeof le.age_s === 'number' ? le.age_s : -1;    // 마지막 업로드 실패 경과초(-1 = 기록 없음)
+  const failRecent = errAge < 0 || errAge < 24 * 3600;                    // 24시간 넘은 실패는 지금 문제 아님
+  const lostLv = lost > 0 ? (failRecent ? 'bad' : 'warn') : upFail > 0 ? (failRecent ? 'warn' : '') : '';
+  const backlogLv = backlog >= 10 ? 'bad' : backlog >= 3 ? 'warn' : '';
+  const sdFaultLv = sdFault >= 3 ? 'bad' : sdFault >= 2 ? 'warn' : '';
+  const level = (lostLv === 'bad' || stuck || encStreak > 0 || sdFaultLv === 'bad' || flap || backlogLv === 'bad' || skipBad) ? 'bad'
+    : (skips > 0 || lostLv === 'warn' || encErr > 0 || sdFaultLv === 'warn' || backlogLv === 'warn') ? 'warn' : '';
   const age = c.last_rec_s >= 0 ? (c.last_rec_s < 3600 ? Math.round(c.last_rec_s/60)+'m' : Math.round(c.last_rec_s/3600)+'h') : '없음';
   const tok = (cls, title, txt) => `<span class="${cls}" title="${esc(title)}">${txt}</span>`;
   const parts = [
     tok('', '녹화 완료 건수(부팅 후)', `rec ${c.rec}`),
     tok(skipBad ? 'bad' : skips ? 'warn' : '', '스킵 = 녹화 못 한 모션(슬롯 없음 + H.264 락 실패). 녹화의 20% 이상이면 빨강', `skip ${skips}`),
-    tok(lost ? 'bad' : upFail ? 'warn' : '', `즉시 업로드 실패 ${upFail}(SD 로 재시도됨) / SD 재업로드 실패 ${lost}(클립 유실 → 빨강)`, `fail ${upFail + lost}`),
-    tok(backlog >= 10 ? 'bad' : backlog ? 'warn' : '', 'SD 에 쌓인 업로드 대기 건수. 계속 늘면 R2 접속 불가', `sd ${backlog}`),
+    tok(lostLv, `즉시 업로드 실패 ${upFail}(SD 로 재시도됨) / SD 재업로드 실패 ${lost}(클립 유실). 마지막 실패가 24시간 안이면 색, 지났으면 회색` + (errAge >= 0 ? ` · 마지막 실패 ${Math.round(errAge/3600)}시간 전` : ''), `fail ${upFail + lost}`),
+    tok(backlogLv, 'SD 에 쌓인 업로드 대기 건수. 1~2 는 정상(부팅 직후·연속 모션), 3+ 주황, 10+ 빨강(R2 접속 불가 의심)', `sd ${backlog}`),
     tok('', '마지막 녹화 후 경과(모션이 없으면 길어지는 게 정상)', age),
   ];
   if (stuck) parts.push(tok('bad', '한 클립 업로드가 5분 넘게 진행 중 — 고착', `up ${Math.round(c.up_busy_s/60)}m!`));
   // 인코더(0.2.1~): 누적 실패 / 현재 연속. 연속이 임계(50)에 닿으면 펌웨어가 enc_stall 로 재부팅.
   if (encErr > 0 || encStreak > 0) parts.push(tok(encStreak > 0 ? 'bad' : 'warn', 'H.264 인코더 실패 누적/현재 연속. 연속 0 이면 복구된 것(주황), 연속 중이면 빨강(50이면 enc_stall 재부팅)', `enc ${encErr}/${encStreak}`));
   // SD 쓰기 fault 래치 누적(0.3.6~). 부팅마다 반복해서 오르면 카드 불량 → 교체.
-  if (sdFault > 0) parts.push(tok(sdFault >= 3 ? 'bad' : 'warn', 'SD 쓰기 fault 래치 횟수(부팅 후). 3회 이상 = 카드 교체 검토', `sdfault ${sdFault}${sdFault >= 3 ? ' 교체?' : ''}`));
+  if (sdFault > 0) parts.push(tok(sdFaultLv, 'SD 쓰기 fault 래치 횟수(부팅 후). 1 회색, 2 주황, 3회 이상 빨강 = 카드 교체 검토', `sdfault ${sdFault}${sdFault >= 3 ? ' 교체?' : ''}`));
   const sy = c.sys;
   const syTxt = sy ? `<br>${sysStateText(sy)}` : '';
-  const le = c.last_err;
   // esp_err_t 이름(0.3.6: 전송 중 끊김도 HTTP_CONNECT 로 통일 → "net"). 모르는 값은 숫자 그대로.
   const errName = e => ({ '-1': 'FAIL', '28675': 'net', '269': 'NOT_FINISHED(SD읽기)', '263': 'TIMEOUT', '257': 'NO_MEM' })[String(e)] || e;
   const leRecent = le && (le.age_s || 0) < 3600;
@@ -256,6 +267,35 @@ const BETA_EMAILS_DEFAULT = [
   '01043576098@test.com', '01021120001@test.com', '01093115816@test.com', '01023636275@test.com',
   '01048533907@test.com', '01037689511@test.com',
 ];
+// 테스터 이름(2026-10-21 owner 전달). 계정 textarea 에 "이메일 이름" 으로 적으면 localStorage 'terra-beta-names' 가 우선.
+const BETA_NAMES_DEFAULT = {
+  '01046590180@test.com': '김태훈', '01053911601@test.com': '손휘윤', '01026448891@test.com': '우지인', '01024896379@test.com': '김창열',
+  '01043576098@test.com': '김대중', '01021120001@test.com': '원인식', '01093115816@test.com': '임영아', '01023636275@test.com': '조세영',
+  '01048533907@test.com': '전영준', '01037689511@test.com': '김희원',
+};
+function loadBetaNames() {
+  try {
+    const v = JSON.parse(localStorage.getItem('terra-beta-names') || 'null');
+    if (v && typeof v === 'object') return { ...BETA_NAMES_DEFAULT, ...v };
+  } catch (e) { /* 기본값 */ }
+  return { ...BETA_NAMES_DEFAULT };
+}
+function testerName(email) { return loadBetaNames()[email] || ''; }
+// 전화번호 계정(01046590180@test.com) → "4659-0180"
+function phoneOf(email) {
+  const m = /^(\d{3})(\d{4})(\d{4})@/.exec(email);
+  return m ? `${m[2]}-${m[3]}` : '';
+}
+// "김태훈 · 4659-0180" (이름 없으면 번호만, 번호 형식 아니면 이메일 앞부분)
+function testerLabel(email) {
+  const n = testerName(email), p = phoneOf(email);
+  return [n, p].filter(Boolean).join(' · ') || email.split('@')[0];
+}
+// textarea 기본 내용 — "이메일 이름" 한 줄씩
+function betaEmailsText() {
+  const names = loadBetaNames();
+  return loadBetaEmails().map(e => names[e] ? `${e} ${names[e]}` : e).join('\n');
+}
 function loadBetaEmails() {
   try {
     const v = JSON.parse(localStorage.getItem('terra-beta-emails') || 'null');
@@ -266,10 +306,19 @@ function loadBetaEmails() {
 function saveBetaEmails(list) {
   localStorage.setItem('terra-beta-emails', JSON.stringify(list));
 }
-// textarea(#reg-emails) → 이메일 배열 (빈 줄·공백 제거)
+// textarea(#reg-emails) → 이메일 배열. 한 줄 "이메일 [이름]" — 이름이 있으면 'terra-beta-names' 에 저장.
 function parseEmailsInput() {
   const ta = document.getElementById('reg-emails');
-  return ta ? ta.value.split('\n').map(e => e.trim()).filter(Boolean) : loadBetaEmails();
+  if (!ta) return loadBetaEmails();
+  const names = loadBetaNames(); let changed = false;
+  const emails = ta.value.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+    const [email, ...rest] = l.split(/\s+/);
+    const name = rest.join(' ').trim();
+    if (name && names[email] !== name) { names[email] = name; changed = true; }
+    return email;
+  });
+  if (changed) localStorage.setItem('terra-beta-names', JSON.stringify(names));
+  return emails;
 }
 
 // 메인 세션(sb)은 안 건드리도록 persistSession:false 별도 클라이언트 사용.

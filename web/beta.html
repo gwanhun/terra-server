@@ -28,6 +28,7 @@
 .acct { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
 .acct-head { display: flex; align-items: center; gap: 10px; padding: 9px 14px; background: var(--panel-2); flex-wrap: wrap; }
 .acct-email { font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--text); }
+.acct-email .tester { font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 14px; font-weight: 600; color: var(--accent); }
 .acct-email .nick { font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); font-size: 11px; margin-left: 6px; }
 .acct-sum { font-size: 11px; color: var(--muted); }
 .acct-head .spacer { flex: 1; }
@@ -99,7 +100,7 @@
       </div>
       <div class="row" style="align-items:flex-start">
         <label>계정 (한 줄에 하나)</label>
-        <textarea id="reg-emails" rows="6" placeholder="계정 이메일 한 줄에 하나"></textarea>
+        <textarea id="reg-emails" rows="6" placeholder="계정 이메일 한 줄에 하나 — 뒤에 띄고 이름을 적으면 카드에 표시 (예: 01046590180@test.com 김태훈)"></textarea>
       </div>
       <div class="row">
         <span style="flex:0 0 100px"></span>
@@ -185,7 +186,7 @@ function start() {
   document.getElementById('config-panel').classList.add('hidden');
   document.getElementById('main').classList.remove('hidden');
   const ta = document.getElementById('reg-emails');
-  ta.value = loadBetaEmails().join('\n');
+  ta.value = betaEmailsText();
   // 로컬 콘솔에서 띄웠어도 제어·해제는 프로덕션으로 가게 기본값을 채워 둔다 (비우면 CONFIG.apiBase).
   if (CONFIG.apiBase.includes('localhost')) document.getElementById('reg-apibase').value = 'https://api.terra-server.uk';
   renderRegAccounts();
@@ -200,8 +201,8 @@ function applyEmails() {
   renderRegAccounts();
 }
 function resetEmails() {
-  document.getElementById('reg-emails').value = BETA_EMAILS_DEFAULT.join('\n');
-  localStorage.removeItem('terra-beta-emails');
+  localStorage.removeItem('terra-beta-emails'); localStorage.removeItem('terra-beta-names');
+  document.getElementById('reg-emails').value = betaEmailsText();
   renderRegAccounts();
 }
 
@@ -239,7 +240,7 @@ function renderRegAccounts() {
     card.className = 'acct'; card.dataset.email = email;
     card.innerHTML = `
       <div class="acct-head">
-        <span class="acct-email">${esc(email)}<span class="nick">${esc(nickOf(email))}</span></span>
+        <span class="acct-email"><b class="tester">${esc(testerName(email) || phoneOf(email) || email)}</b><span class="nick">${esc(testerName(email) ? (phoneOf(email) || email) : email)}</span></span>
         <span class="acct-sum muted">대기…</span>
         <span class="spacer"></span>
         <button class="sm ghost" onclick="checkAccount('${esc(email)}')" title="이 계정만 다시 조회">새로고침</button>
@@ -250,12 +251,6 @@ function renderRegAccounts() {
   document.getElementById('reg-count').textContent = emails.length + '개 계정';
   updateStats();
   checkAllAccounts();   // 바로 기기·카메라 목록이 뜨도록. 계정 순서대로 순차 조회(rate limit)
-}
-
-// 전화번호 계정(0104659…@test.com) → "4659-0180" 처럼 눈에 들어오는 별칭
-function nickOf(email) {
-  const m = /^(\d{3})(\d{4})(\d{4})@/.exec(email);
-  return m ? `${m[2]}-${m[3]}` : '';
 }
 
 function cardOf(email) { return document.querySelector(`.acct[data-email="${CSS.escape(email)}"]`); }
@@ -371,7 +366,7 @@ async function otaRegistered(email, kind, obj, ident) {
   try {
     const token = await regAccessToken(email);
     const isCam = kind === 'camera';
-    otaEntity(isCam ? 'cameras' : 'devices', obj.id, `${ident} · ${email}`, otaTargetOf(isCam, obj),
+    otaEntity(isCam ? 'cameras' : 'devices', obj.id, `${ident} · ${testerLabel(email)}`, otaTargetOf(isCam, obj),
               { token, base: regApiBase() });
   } catch (e) {
     toast('❌ ' + (e.message || e), 'bad');

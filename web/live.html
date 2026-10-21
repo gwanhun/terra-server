@@ -91,7 +91,7 @@
           <label>비밀번호</label><input id="reg-pass" type="text" value="123456" style="flex:0 0 120px">
           <label style="flex:0 0 auto">API</label><input id="reg-apibase" type="text" placeholder="(비우면 설정의 API Base)" style="flex:1;min-width:200px">
         </div>
-        <div class="row" style="align-items:flex-start"><label>계정</label><textarea id="reg-emails" rows="5" style="flex:1;font-family:ui-monospace,Menlo,monospace;font-size:12px"></textarea></div>
+        <div class="row" style="align-items:flex-start"><label>계정</label><textarea id="reg-emails" rows="5" style="flex:1;font-family:ui-monospace,Menlo,monospace;font-size:12px" placeholder="이메일 [이름] 한 줄에 하나"></textarea></div>
         <div class="row"><span style="flex:0 0 100px"></span><button class="primary sm" onclick="applyEmails()">목록 적용 · 조회</button>
           <small class="muted">목록은 베타 테스터 페이지와 공유(localStorage)</small></div>
       </details>
@@ -142,7 +142,7 @@ async function saveConfig() {
 function start() {
   document.getElementById('config-panel').classList.add('hidden');
   document.getElementById('main').classList.remove('hidden');
-  document.getElementById('reg-emails').value = loadBetaEmails().join('\n');
+  document.getElementById('reg-emails').value = betaEmailsText();
   // 라이브는 실제 브로커(프로덕션)에 붙은 카메라만 응답하므로 로컬에서 띄웠어도 프로덕션으로.
   if (CONFIG.apiBase.includes('localhost')) document.getElementById('reg-apibase').value = 'https://api.terra-server.uk';
   const cols = localStorage.getItem('terra-live-cols') || '3';
@@ -284,7 +284,8 @@ function refreshTileHead(id) {
   el.querySelector('.ident').textContent = c.camera_id;
   el.querySelector('.ident').title = (c.model || '') + (c.firmware_ver ? ' · fw ' + c.firmware_ver : '');
   el.querySelector('.name').textContent = c.name ? '· ' + c.name : '';
-  el.querySelector('.acct').textContent = t.email + (c.firmware_ver ? ' · ' + c.firmware_ver : '');
+  el.querySelector('.acct').textContent = testerLabel(t.email) + (c.firmware_ver ? ' · ' + c.firmware_ver : '');
+  el.querySelector('.acct').title = t.email;
 }
 
 // 타일 상태 표시. state: idle | connecting | live | busy(앱 시청 중) | cooldown | err
