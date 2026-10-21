@@ -16,7 +16,7 @@ Supabase mock 만으로 단위 테스트 가능.
 
 `esp32/{device_id}/...` 의 device_id 는 TEXT — 세 종류 entity:
 - 디바이스 (센서/제어): `terra-XXXXXXXX` → `devices` 테이블
-- 카메라 워커: `p4cam-XXXXXXXX` / `picam-XXXXXXXX` → `cameras` 테이블
+- 카메라 워커: `p4cam-XXXXXXXX` / `picam-XXXXXXXX` / `k230cam-XXXXXXXX` → `cameras` 테이블
 - **Terra Hub** (카메라+센서 통합 보드, 2026-10-06): `p4hub-XXXXXXXX` → `cameras` 행 **과** `devices` 행
   둘 다(같은 텍스트 id, 같은 MQTT 계정). telemetry 는 payload 모양으로 가른다 — `dht22_a` 가 있으면
   devices 경로(3초 센서), 없으면 cameras 경로(15초 heartbeat). ack 는 commands 에 msg_id 가 있으면
@@ -216,7 +216,7 @@ def device_meta(device_uuid: str) -> dict[str, Any] | None:
 # 접두사 → 조회 테이블. 서버가 페어링에서 발급하는 형식(routers/devices.py, routers/cameras.py)과
 # 짝이다. 순수 기기/카메라는 한 테이블만 조회해 왕복을 줄이고, 허브(p4hub-)와 모르는 접두사는 둘 다 본다.
 _DEVICE_ONLY_PREFIXES = ("terra-",)
-_CAMERA_ONLY_PREFIXES = ("p4cam-", "picam-")
+_CAMERA_ONLY_PREFIXES = ("p4cam-", "picam-", "k230cam-")   # k230cam-: 01Studio K230 포팅(2026-10-21)
 
 
 def _resolve_both(device_id_text: str) -> tuple[str | None, str | None]:

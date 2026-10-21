@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/cameras", tags=["cameras"])
 
-_ALLOWED_MODELS = {"esp32-p4", "esp32-p4-hub", "rpi-zero-2-w", "rpi-4", "ip-camera"}
+_ALLOWED_MODELS = {"esp32-p4", "esp32-p4-hub", "k230", "rpi-zero-2-w", "rpi-4", "ip-camera"}
 # esp32-p4-hub: 카메라+센서/액추에이터 통합 보드(Terra Hub). cameras 행 + devices 행을 함께 만든다.
 HUB_MODEL = "esp32-p4-hub"
 _ALLOWED_RESOLUTIONS = {"VGA", "HD", "FHD"}
@@ -76,7 +76,7 @@ class CameraPairRequest(BaseModel):
     model: str = Field(
         default="esp32-p4",
         max_length=32,
-        description="esp32-p4 | esp32-p4-hub (카메라+센서 통합) | rpi-zero-2-w | rpi-4 | ip-camera",
+        description="esp32-p4 | esp32-p4-hub (카메라+센서 통합) | k230 (01Studio CanMV K230, 2026-10-21) | rpi-zero-2-w | rpi-4 | ip-camera",
     )
     capabilities: dict[str, Any] | None = Field(
         None,
@@ -113,7 +113,7 @@ class CameraPairResponse(BaseModel):
     )
     id: str = Field(..., description="cameras.id (UUID)")
     camera_id: str = Field(
-        ..., description="MQTT client_id 겸 username. 모델별 접두사 (p4cam-/picam-)"
+        ..., description="MQTT client_id 겸 username. 모델별 접두사 (p4cam-/p4hub-/k230cam-/picam-)"
     )
     camera_token: str = Field(
         ...,
@@ -418,7 +418,7 @@ def pair_camera(
     else:
         # camera_id 접두사 — 모델별 구분 (운영 디버깅 편의). 브리지 _resolve_both 가 이 접두사로
         # 조회 테이블을 고르므로(p4hub = 둘 다) 바꾸면 handlers.py 도 같이 바꿔야 한다.
-        prefix = {"esp32-p4": "p4cam", HUB_MODEL: "p4hub"}.get(body.model, "picam")
+        prefix = {"esp32-p4": "p4cam", HUB_MODEL: "p4hub", "k230": "k230cam"}.get(body.model, "picam")
         payload: dict[str, Any] = {
             "owner_id": user_id,
             "enclosure_id": body.enclosure_id,
