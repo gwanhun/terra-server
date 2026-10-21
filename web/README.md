@@ -1,6 +1,16 @@
 # terra-server / web — 로컬 테스트 콘솔
 
-단일 HTML 파일. Supabase Auth + 백엔드 API 호출 검증용.
+정적 HTML 3 페이지 + 공용 JS/CSS. Supabase Auth + 백엔드 API 호출 검증용.
+
+| 파일 | 역할 |
+|------|------|
+| `index.html` | 메인 콘솔 — 로그인한 계정의 사육장·기기·카메라·예약·설정·텔레메트리·알림. 상단 네비와 로그인 패널의 버튼으로 아래 두 페이지로 이동 |
+| `beta.html` | 🎫 베타 테스터 — 테스트 계정별 기기·카메라 조회·제어(테스트/일괄)·재부팅·OTA·해제·삭제. 2026-10-21 index 의 패널에서 분리 |
+| `live.html` | 🎥 라이브 대시보드 — 베타 카메라 라이브를 타일 그리드로 동시 시청(계정별 JWT 로 WebRTC 각각). beta 의 [▶ 라이브]는 `live.html?cam=<uuid>` 로 그 카메라만 바로 연결 |
+| `shared.js` | esc/toast/OTA 모달/베타 계정 인증(`regSession`, 토큰 1h 캐시, signOut scope local)/상단 네비 |
+| `shared.css` | 공용 스타일(다크 테마, 네비, 칩, 카드, 모달, 모바일) |
+
+세 페이지는 localStorage 를 공유한다: `terra-config`(apiBase), `terra-beta-emails`(베타 계정 목록), `terra-live-viewer-id`(라이브 "한 기기" 판정용 viewer_id).
 
 > sample_project 의 ESP32 펌웨어 웹페이지 패턴 차용 (Vanilla JS, 인라인 CSS, dark theme).
 > 빌드 도구 없음, npm 의존성 없음. 그냥 정적 파일.
@@ -84,7 +94,9 @@ sudo systemctl restart terra-api
 - 🏠 **사육장** (`/enclosures`): 생성·목록·삭제
 - 📟 **디바이스** (`/devices`): 페어링·목록·삭제 (MQTT 토큰 1회 노출)
 - 📷 **카메라** (`/cameras`): 페어링·목록·삭제 (Camera 토큰 1회 노출)
-- 🎫 **베타 기기·카메라 등록**: 계정별 등록 현황 조회·테스트·해제·삭제 (신규 등록은 앱에서 — 2026-10-08 콘솔 발급 버튼 제거)
+- 🎫 **베타 테스터** (`beta.html`): 계정별 등록 현황 조회·테스트·일괄 제어·재부팅·OTA·해제·삭제 (신규 등록은 앱에서 — 2026-10-08 콘솔 발급 버튼 제거)
+- 🎥 **라이브 대시보드** (`live.html`): 베타 카메라 동시 시청. 서버 규칙(15분·5분 쉼·한 기기, `docs/APP_LIVE_VIEW_LIMIT_2026-09-30.md`)을 타일에 표시 —
+  409 live_in_use 는 "○○에서 시청 중" + [가져오기], 429 는 카운트다운. 끊긴 뒤 자동 재연결 안 함(재연결 루프 사고 방지). [전체 연결]은 2초 간격 순차
 - 📈 **온도 추이** (`telemetry_30m`): 디바이스 행 `[📈추이]` — 24시간/7일/30일,
   평균선 + 그 30분의 최저~최고 밴드 + 목표 온도 범위 띠. 오프라인 구간은 선이 끊긴다.
 - 📜 최근 API 응답 로그
@@ -94,4 +106,4 @@ sudo systemctl restart terra-api
 - 카메라 클립 재생 (Stage F2 R2 검증 후 추가)
 - 습도 추이 차트 (온도 추이와 같은 경로 — `h_a_*` 로 바꾸면 되지만 필요해질 때)
 - 명령 발행 (Stage C 백엔드 완성 후)
-- snapshot/WebRTC 라이브 (Stage G)
+- 라이브 음성 (Stage G3 이후 — 카메라는 영상만)

@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Terra · 베타 테스터</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+/* beta.html 전용 — 계정 카드 · 기기 줄 · 일괄 제어 바. 공용은 shared.css */
+.page-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.page-head h2 { margin: 0; font-size: 17px; }
+.page-head .actions { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+.page-head .actions a { display: inline-flex; align-items: center; gap: 4px; }
+.notice { font-size: 12px; color: #c8cdd8; background: var(--panel-2); border-left: 3px solid var(--warn); padding: 6px 10px; border-radius: 6px; margin-top: 10px; }
+
+/* 일괄 제어 바 — 선택이 있을 때 강조. 스크롤해도 따라오게 sticky */
+.bulk { position: sticky; top: 8px; z-index: 50; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 10px 14px; }
+.bulk.has-sel { border-color: #3a6a9a; box-shadow: 0 4px 16px rgba(0,0,0,.35); }
+.bulk .title { font-size: 12px; font-weight: 600; color: #c8cdd8; margin-right: 4px; }
+.bulk .count { font-size: 12px; color: var(--muted); min-width: 56px; }
+.bulk .has-sel .count { color: var(--accent); }
+.bulk .sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
+.bulk .repeat { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); }
+.bulk .repeat input[type=number] { width: 52px; font-size: 11px; padding: 3px 6px; }
+#reg-bulk-status { font-size: 11px; }
+
+/* 계정 카드 */
+.acct { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 10px; overflow: hidden; }
+.acct-head { display: flex; align-items: center; gap: 10px; padding: 9px 14px; background: var(--panel-2); flex-wrap: wrap; }
+.acct-email { font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--text); }
+.acct-email .nick { font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); font-size: 11px; margin-left: 6px; }
+.acct-sum { font-size: 11px; color: var(--muted); }
+.acct-head .spacer { flex: 1; }
+.acct-body { padding: 4px 10px 6px; }
+.acct-body .empty { padding: 8px 4px; }
+.acct.err .acct-head { background: #2a1c1f; }
+
+/* 기기·카메라 한 줄 */
+.dev { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.dev-wrap:last-child .dev { border-bottom: none; }
+.dev input[type=checkbox] { margin: 0; accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+.dev .kind { font-size: 15px; width: 20px; text-align: center; }
+.dev .ident { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--text); }
+.dev .ident .name { font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); font-size: 12px; margin-left: 6px; }
+.dev .spacer { flex: 1; }
+.dev .actions { display: flex; gap: 4px; flex-wrap: wrap; }
+.dev.offline .ident { color: var(--muted); }
+.dev-test-panel { margin: 2px 0 8px 32px; padding: 8px 10px; border-left: 2px solid #3a6a9a; background: rgba(90,170,255,.04); border-radius: 0 6px 6px 0; font-size: 11px; }
+.dev-test-panel button { font-size: 11px; margin: 0 3px 3px 0; padding: 3px 8px; }
+#reg-emails { width: 100%; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+
+@media (max-width: 600px) {
+  .dev .actions { width: 100%; padding-left: 28px; }
+  .bulk { position: static; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav id="topnav" class="topnav"></nav>
+
+<!-- ===== 설정 (API Base 없을 때만) ===== -->
+<div class="panel hidden" id="config-panel">
+  <h2>⚙️ 설정</h2>
+  <small class="muted">API Base 만 입력하면 <code>/web-config</code> 에서 Supabase 정보를 받아온다. 메인 콘솔과 같은 localStorage 를 쓴다.</small>
+  <div class="row" style="margin-top:8px"><label>API Base</label><input id="cfg-api-base" type="text" placeholder="https://api.terra-server.uk"></div>
+  <div class="row"><button class="primary" onclick="saveConfig()">저장 & 시작</button><small class="muted" id="cfg-status"></small></div>
+</div>
+
+<div id="main" class="hidden">
+
+  <!-- 헤더 카드 -->
+  <div class="panel">
+    <div class="page-head">
+      <div>
+        <h2>🎫 베타 테스터</h2>
+        <small class="muted">계정별 등록 기기·카메라를 로그인/로그아웃 없이 조회·제어·해제한다. 메인 콘솔의 로그인 세션은 건드리지 않음.</small>
+      </div>
+      <div class="actions">
+        <button class="ghost" onclick="checkAllAccounts()" title="모든 계정의 등록 기기·카메라 다시 조회 (로그인 rate limit 약 30회/5분 — 토큰은 1시간 캐시)">🔄 전체 새로고침</button>
+        <a class="nav" href="live.html"><button class="primary">🎥 라이브 대시보드</button></a>
+      </div>
+    </div>
+    <div class="stats" id="stats" style="margin-top:12px">
+      <div class="stat"><b id="st-acct">–</b><span>계정</span></div>
+      <div class="stat"><b id="st-dev">–</b><span>기기 <span id="st-dev-on" class="good"></span></span></div>
+      <div class="stat"><b id="st-cam">–</b><span>카메라 <span id="st-cam-on" class="good"></span></span></div>
+      <div class="stat"><b id="st-prog" class="muted" style="font-size:14px">대기</b><span>조회 상태</span></div>
+    </div>
+    <div class="notice">⚠️ 해제·삭제·명령은 <b>프로덕션 API</b>(api.terra-server.uk)로 호출해야 mosquitto 계정 정리와 실제 전달이 된다.
+      신규 등록(pair)은 앱에서 한다.</div>
+    <details class="cfg" id="cfg-details">
+      <summary>⚙️ 계정 목록 · 비밀번호 · API 대상</summary>
+      <div class="row">
+        <label title="테스트 계정 공통 비밀번호">비밀번호</label>
+        <input id="reg-pass" type="text" value="123456" style="flex:0 0 120px">
+        <label title="pair 를 보낼 API. 실제 브로커 등록은 프로덕션이라야 됨" style="flex:0 0 auto">API</label>
+        <input id="reg-apibase" type="text" placeholder="(비우면 설정의 API Base)" style="flex:1;min-width:200px">
+      </div>
+      <div class="row" style="align-items:flex-start">
+        <label>계정 (한 줄에 하나)</label>
+        <textarea id="reg-emails" rows="6" placeholder="계정 이메일 한 줄에 하나"></textarea>
+      </div>
+      <div class="row">
+        <span style="flex:0 0 100px"></span>
+        <button class="primary" onclick="applyEmails()">목록 적용 · 조회</button>
+        <button class="ghost" onclick="resetEmails()" title="운영 베타 10계정 기본 목록으로">기본값</button>
+        <small class="muted" id="reg-count"></small>
+      </div>
+    </details>
+  </div>
+
+  <!-- 선택 일괄 제어 -->
+  <div class="panel bulk" id="bulk-bar">
+    <span class="title">🎛 선택 기기 일괄 제어</span>
+    <span class="count" id="reg-bulk-count">선택 0대</span>
+    <span class="sep"></span>
+    <button class="sm" onclick="bulkControl('relay_toggle')">💧펌프</button>
+    <button class="sm" onclick="bulkControl('fan_toggle')">🌀팬</button>
+    <button class="sm" onclick="bulkControl('fan2_toggle')">❄️냉각팬</button>
+    <button class="sm" onclick="bulkControl('led_toggle')">💡LED</button>
+    <button class="sm" onclick="bulkControl(null,1000)">💦1초</button>
+    <button class="sm" onclick="bulkControl(null,2000)">💦2초</button>
+    <button class="sm" onclick="bulkControl(null,3000)">💦3초</button>
+    <span class="sep"></span>
+    <label class="repeat" title="켜고 버튼 누르면 그 명령을 간격마다 반복">
+      <input type="checkbox" id="reg-repeat-on"> 반복
+      <input id="reg-repeat-sec" type="number" value="30" min="5" title="반복 간격(초)">초
+    </label>
+    <button class="sm ghost" onclick="stopRepeat()">정지</button>
+    <button class="sm ghost" onclick="clearRegSelection()">선택해제</button>
+    <span id="reg-bulk-status"></span>
+  </div>
+
+  <!-- 계정 카드 -->
+  <div id="accounts"></div>
+
+  <details style="margin-top:12px">
+    <summary class="muted">📜 최근 API 로그</summary>
+    <pre id="log" style="max-height:260px"></pre>
+  </details>
+</div>
+</div>
+
+<!-- OTA 모달 (Stage J) — shared.js otaEntity() 가 쓴다 -->
+<div id="ota-modal" class="modal-backdrop hidden" onclick="if(event.target===this)closeOta()">
+  <div class="modal" style="max-width:640px">
+    <div class="modal-header">
+      <h2>⬆️ OTA — <span id="ota-label"></span></h2>
+      <button class="danger" onclick="closeOta()">닫기</button>
+    </div>
+    <div id="ota-body" class="muted">불러오는 중…</div>
+    <small class="muted">1단계 <b>prepare</b>: 비활성 슬롯에 다운로드·sha256 검증만(재부팅 1회, 부팅 파티션 불변 — 실패해도 구버전 그대로).
+      2단계 <b>apply</b>: 슬롯 전환+재부팅(약 30초). 새 펌웨어가 5분 안에 MQTT 로 못 붙으면 부트로더가 이전 버전으로 자동 복귀.</small>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="shared.js"></script>
+<script>
+// ─────────────────────────────────────────────────────────────────────────
+// 베타 테스터 페이지 (2026-10-21 index.html 의 "🎫 베타 기기·카메라 등록" 패널을 분리)
+// 공용(esc/toast/OTA 모달/계정 인증 regSession)은 shared.js. 여기엔 화면 그리기 + 제어 로직.
+// ─────────────────────────────────────────────────────────────────────────
+let CONFIG = { supabaseUrl: '', supabasePublishable: '', apiBase: '' };
+
+async function saveConfig() {
+  const apiBase = document.getElementById('cfg-api-base').value.trim().replace(/\/$/, '');
+  if (!apiBase) return toast('API Base 입력', 'bad');
+  const status = document.getElementById('cfg-status');
+  status.innerText = '🔄 /web-config 조회 중...';
+  try {
+    const remote = await fetchRemoteConfig(apiBase);
+    CONFIG = { ...remote, apiBase };
+    localStorage.setItem('terra-config', JSON.stringify({ apiBase }));
+    renderTopNav('beta', apiBase); renderDocsLinks(apiBase);
+    start();
+  } catch (e) {
+    status.innerText = '❌ ' + e.message;
+    toast(e.message, 'bad');
+  }
+}
+
+function start() {
+  document.getElementById('config-panel').classList.add('hidden');
+  document.getElementById('main').classList.remove('hidden');
+  const ta = document.getElementById('reg-emails');
+  ta.value = loadBetaEmails().join('\n');
+  // 로컬 콘솔에서 띄웠어도 제어·해제는 프로덕션으로 가게 기본값을 채워 둔다 (비우면 CONFIG.apiBase).
+  if (CONFIG.apiBase.includes('localhost')) document.getElementById('reg-apibase').value = 'https://api.terra-server.uk';
+  renderRegAccounts();
+}
+
+// ── 계정 목록 ─────────────────────────────────────────────────────────────
+function applyEmails() {
+  const emails = parseEmailsInput();
+  if (!emails.length) return toast('계정이 비어 있음', 'bad');
+  saveBetaEmails(emails);
+  document.getElementById('cfg-details').removeAttribute('open');
+  renderRegAccounts();
+}
+function resetEmails() {
+  document.getElementById('reg-emails').value = BETA_EMAILS_DEFAULT.join('\n');
+  localStorage.removeItem('terra-beta-emails');
+  renderRegAccounts();
+}
+
+// 계정별 조회 결과 캐시 — 통계 집계·라이브 페이지와 같은 모양 {devs, cams, error}
+const ACCT = {};
+function updateStats() {
+  const emails = Object.keys(ACCT);
+  let dev = 0, devOn = 0, cam = 0, camOn = 0, done = 0, err = 0;
+  emails.forEach(e => {
+    const a = ACCT[e];
+    if (a.error) err++;
+    if (a.done) done++;
+    (a.devs || []).forEach(d => { dev++; if (d.is_online) devOn++; });
+    (a.cams || []).forEach(c => { cam++; if (c.is_online) camOn++; });
+  });
+  document.getElementById('st-acct').textContent = emails.length;
+  document.getElementById('st-dev').textContent = dev;
+  document.getElementById('st-dev-on').textContent = dev ? `· 🟢 ${devOn}` : '';
+  document.getElementById('st-cam').textContent = cam;
+  document.getElementById('st-cam-on').textContent = cam ? `· 🟢 ${camOn}` : '';
+  const prog = document.getElementById('st-prog');
+  if (done < emails.length) { prog.className = 'warn'; prog.textContent = `${done}/${emails.length} 조회 중`; }
+  else if (err) { prog.className = 'bad'; prog.textContent = `${err}개 계정 실패`; }
+  else { prog.className = 'good'; prog.textContent = '완료'; }
+}
+
+function renderRegAccounts() {
+  const emails = parseEmailsInput();
+  const host = document.getElementById('accounts');
+  host.innerHTML = '';
+  Object.keys(ACCT).forEach(k => delete ACCT[k]);
+  emails.forEach(email => {
+    ACCT[email] = { devs: [], cams: [], done: false, error: null };
+    const card = document.createElement('div');
+    card.className = 'acct'; card.dataset.email = email;
+    card.innerHTML = `
+      <div class="acct-head">
+        <span class="acct-email">${esc(email)}<span class="nick">${esc(nickOf(email))}</span></span>
+        <span class="acct-sum muted">대기…</span>
+        <span class="spacer"></span>
+        <button class="sm ghost" onclick="checkAccount('${esc(email)}')" title="이 계정만 다시 조회">새로고침</button>
+      </div>
+      <div class="acct-body"><div class="empty muted">조회 대기 중…</div></div>`;
+    host.appendChild(card);
+  });
+  document.getElementById('reg-count').textContent = emails.length + '개 계정';
+  updateStats();
+  checkAllAccounts();   // 바로 기기·카메라 목록이 뜨도록. 계정 순서대로 순차 조회(rate limit)
+}
+
+// 전화번호 계정(0104659…@test.com) → "4659-0180" 처럼 눈에 들어오는 별칭
+function nickOf(email) {
+  const m = /^(\d{3})(\d{4})(\d{4})@/.exec(email);
+  return m ? `${m[2]}-${m[3]}` : '';
+}
+
+function cardOf(email) { return document.querySelector(`.acct[data-email="${CSS.escape(email)}"]`); }
+
+// 계정별 등록된 기기·카메라 조회 (그 계정 JWT). 결과는 카드 본문에 줄로 그린다.
+async function checkAccount(email) {
+  const card = cardOf(email); if (!card) return;
+  const sum = card.querySelector('.acct-sum'), body = card.querySelector('.acct-body');
+  const btn = card.querySelector('.acct-head button');
+  btn.disabled = true; card.classList.remove('err');
+  sum.className = 'acct-sum muted'; sum.textContent = '조회 중…';
+  try {
+    const token = await regAccessToken(email);
+    const base = regApiBase();
+    const hdr = { 'Authorization': 'Bearer ' + token };
+    const [dr, cr] = await Promise.all([
+      fetch(base + '/devices', { cache: 'no-store', headers: hdr }).then(r => r.ok ? r.json() : null).catch(() => null),
+      fetch(base + '/cameras', { cache: 'no-store', headers: hdr }).then(r => r.ok ? r.json() : null).catch(() => null),
+    ]);
+    const devs = Array.isArray(dr) ? dr : [];
+    const cams = Array.isArray(cr) ? cr : [];
+    ACCT[email] = { devs, cams, done: true, error: null };
+    body.innerHTML = '';
+    if (!devs.length && !cams.length) {
+      body.innerHTML = '<div class="empty muted">등록된 기기·카메라 없음</div>';
+      sum.textContent = '등록 없음';
+    } else {
+      devs.forEach(d => body.appendChild(devRow(email, 'device', d)));
+      cams.forEach(c => body.appendChild(devRow(email, 'camera', c)));
+      const on = [...devs, ...cams].filter(x => x.is_online).length;
+      sum.innerHTML = `📟 ${devs.length} · 📷 ${cams.length} · <span class="${on ? 'good' : 'muted'}">🟢 ${on}</span>`;
+    }
+  } catch (e) {
+    ACCT[email] = { devs: [], cams: [], done: true, error: e.message || String(e) };
+    card.classList.add('err');
+    sum.className = 'acct-sum bad'; sum.textContent = '❌ ' + (e.message || e);
+    body.innerHTML = `<div class="empty bad">${esc(e.message || e)}</div>`;
+  } finally {
+    btn.disabled = false;
+    updateStats();
+  }
+}
+
+// 기기·카메라 한 줄 + (아래) 테스트 패널 자리. 버튼은 원래 패널과 같은 동작.
+function devRow(email, kind, obj) {
+  const isCam = kind === 'camera';
+  const ident = isCam ? obj.camera_id : obj.device_id;
+  const wrap = document.createElement('div'); wrap.className = 'dev-wrap';
+  const line = document.createElement('div'); line.className = 'dev' + (obj.is_online ? '' : ' offline');
+
+  if (!isCam) {
+    const cb = document.createElement('input'); cb.type = 'checkbox';
+    cb.checked = !!regSelected[obj.id]; cb.title = '일괄 제어 선택';
+    cb.onchange = () => toggleRegSelect(obj.id, email, ident, cb.checked);
+    line.appendChild(cb);
+  } else {
+    const ph = document.createElement('span'); ph.style.width = '15px'; line.appendChild(ph);
+  }
+  const dot = document.createElement('span'); dot.className = 'dot ' + (obj.is_online ? 'on' : 'off');
+  dot.title = obj.is_online ? '온라인' : '오프라인';
+  line.appendChild(dot);
+  const kindEl = document.createElement('span'); kindEl.className = 'kind'; kindEl.textContent = isCam ? '📷' : '📟';
+  kindEl.title = isCam ? (obj.model === 'esp32-p4-hub' ? 'Terra Hub (카메라+센서 통합)' : '카메라') : '기기';
+  line.appendChild(kindEl);
+  const idEl = document.createElement('span'); idEl.className = 'ident';
+  idEl.innerHTML = `<code>${esc(ident)}</code>${obj.name ? `<span class="name">${esc(obj.name)}</span>` : ''}`;
+  line.appendChild(idEl);
+  if (obj.firmware_ver) {
+    const otaOk = !!(obj.capabilities && obj.capabilities.ota);
+    const fw = document.createElement('span'); fw.className = 'chip' + (otaOk ? ' good' : '');
+    fw.innerHTML = `<code>${esc(obj.firmware_ver)}</code>${otaOk ? ' OTA' : ''}`;
+    fw.title = 'heartbeat 가 보고한 펌웨어 버전' + (otaOk ? ' · OTA 지원' : ' · OTA 미지원(구 펌웨어)');
+    line.appendChild(fw);
+  }
+  const sp = document.createElement('span'); sp.className = 'spacer'; line.appendChild(sp);
+
+  const act = document.createElement('div'); act.className = 'actions';
+  const mkBtn = (txt, title, fn, cls) => {
+    const b = document.createElement('button'); b.className = 'sm ' + (cls || 'ghost'); b.textContent = txt; b.title = title || ''; b.onclick = fn; return b;
+  };
+  const test = mkBtn(isCam ? '상태' : '테스트', isCam ? '상태·클립 파이프라인·에러 로그 펼치기' : '제어 버튼(펌프·팬·LED·분무·보정) 펼치기',
+    () => isCam ? toggleCameraTest(obj, wrap, test, email) : toggleDeviceTest(email, obj, wrap, test));
+  act.appendChild(test);
+  if (isCam) {
+    act.appendChild(mkBtn('▶ 라이브', '라이브 대시보드에서 이 카메라 보기', () => { location.href = 'live.html?cam=' + encodeURIComponent(obj.id); }));
+    act.appendChild(mkBtn('재부팅', 'MQTT reboot 명령 1회 발행 — 신 펌웨어(≥0.2.0)만 반응, 구 펌웨어는 rejected 로그만',
+      () => rebootRegisteredCamera(email, obj.id, ident)));
+  }
+  const otaOk = !!(obj.capabilities && obj.capabilities.ota);
+  const otaB = mkBtn('OTA', (otaOk ? 'OTA (Stage J) — 그 계정 JWT 로 prepare → apply' : '구 펌웨어(capabilities.ota 미보고) — 서버 게이트가 막음. 케이블 리플래시 필요')
+    + (obj.firmware_ver ? '\n현재: ' + obj.firmware_ver : ''), () => otaRegistered(email, kind, obj, ident));
+  if (!otaOk) otaB.style.opacity = '.5';
+  act.appendChild(otaB);
+  act.appendChild(mkBtn('해제', '소프트 해제 — 목록에서만 사라지고 클립·분석 데이터는 보존. 클립이 쌓인 기기는 이걸 쓸 것',
+    () => unlinkRegistered(email, kind, obj.id, ident, () => checkAccount(email))));
+  act.appendChild(mkBtn('삭제', 'hard delete — 클립이 있으면 참조 제약으로 실패할 수 있음(그땐 해제 사용)',
+    () => deleteRegistered(email, kind, obj.id, ident, () => checkAccount(email)), 'danger'));
+  line.appendChild(act);
+  wrap.appendChild(line);
+  return wrap;
+}
+
+async function checkAllAccounts() {
+  const emails = Object.keys(ACCT);
+  for (const email of emails) await checkAccount(email);
+  toast('계정 ' + emails.length + '개 조회 완료', 'good');
+}
+
+// ── 개별 동작 (그 계정 JWT — regSession 캐시로 로그인 횟수 절약) ─────────────
+// 베타 계정 기기·카메라 OTA — 메인 패널 OTA 모달과 같은데 소유자가 그 테스트 계정이라 그 계정 JWT 로 호출.
+// JWT 는 서명 검증이라 signOut 뒤에도 만료(1시간) 전까지 유효 — 모달의 5초 폴링에 그대로 쓴다.
+async function otaRegistered(email, kind, obj, ident) {
+  try {
+    const token = await regAccessToken(email);
+    const isCam = kind === 'camera';
+    otaEntity(isCam ? 'cameras' : 'devices', obj.id, `${ident} · ${email}`, otaTargetOf(isCam, obj),
+              { token, base: regApiBase() });
+  } catch (e) {
+    toast('❌ ' + (e.message || e), 'bad');
+  }
+}
+
+// 카메라 재부팅 — POST /cameras/{id}/reboot. 소유자가 그 테스트 계정이라 메인 세션 JWT 로는 403.
+async function rebootRegisteredCamera(email, id, ident) {
+  if (!confirm(`${ident} 재부팅?\n약 30초간 꺼졌다 켜짐 (라이브/녹화 중단). 구 펌웨어(0.1.0)는 무반응.`)) return;
+  try {
+    const r = await regFetch(email, '/cameras/' + id + '/reboot', { method: 'POST' });
+    if (!r.ok) { toast('reboot 실패 ' + r.status + ': ' + (typeof r.body === 'string' ? r.body : (r.body.detail || JSON.stringify(r.body))).slice(0, 80), 'bad'); return; }
+    toast(r.body.published ? `${ident} reboot 발행 · msg_id ${r.body.msg_id}` : 'reboot 발행 실패(브로커) — 잠시 후 재시도',
+          r.body.published ? 'good' : 'bad');
+  } catch (e) {
+    toast('❌ ' + (e.message || e), 'bad');
+  }
+}
+
+// 등록된 기기·카메라 하드 삭제. 중복 등록 정리용.
+async function deleteRegistered(email, kind, id, ident, done) {
+  if (!confirm((kind === 'camera' ? '카메라' : '기기') + ' ' + ident + ' 삭제? (되돌릴 수 없음, mosquitto 계정도 제거)')) return;
+  try {
+    const r = await regFetch(email, (kind === 'camera' ? '/cameras/' : '/devices/') + id, { method: 'DELETE' });
+    if (r.status !== 204 && r.status !== 200) {
+      toast('삭제 실패 ' + r.status + ': ' + String(typeof r.body === 'string' ? r.body : JSON.stringify(r.body)).slice(0, 80), 'bad'); return;
+    }
+    toast(ident + ' 삭제됨', 'good');
+    if (done) done();
+  } catch (e) {
+    toast('삭제 오류: ' + (e.message || e), 'bad');
+  }
+}
+
+// 소프트 해제 — POST /devices|cameras/{id}/unlink. 목록에서만 사라지고 클립·라벨링 등
+// 하위 데이터는 보존된다. motion_clips 를 참조하는 분석 테이블이 많아 하드 삭제가
+// 참조 제약으로 막히는 경우가 있어, 클립이 쌓인 기기는 이쪽을 쓴다.
+async function unlinkRegistered(email, kind, id, ident, done) {
+  if (!confirm((kind === 'camera' ? '카메라' : '기기') + ' ' + ident + ' 등록 해제? (기록·클립은 보존, 목록에서만 사라짐)')) return;
+  try {
+    const r = await regFetch(email, (kind === 'camera' ? '/cameras/' : '/devices/') + id + '/unlink',
+      { method: 'POST', body: JSON.stringify({ request_id: crypto.randomUUID() }) });
+    if (!r.ok) { toast('해제 실패 ' + r.status + ': ' + String(typeof r.body === 'string' ? r.body : JSON.stringify(r.body)).slice(0, 80), 'bad'); return; }
+    toast(ident + ' 해제됨', 'good');
+    if (done) done();
+  } catch (e) {
+    toast('해제 오류: ' + (e.message || e), 'bad');
+  }
+}
+
+// 기기 전체 기능 테스트 — [테스트] 누르면 아래 줄에 제어 버튼(펌프·팬·LED·분무 등)이 펼쳐지고
+// 그 계정 JWT 로 실제 명령을 보낸다. 프로덕션에서만 실제 전달(브리지). 다시 누르면 닫힘.
+async function toggleDeviceTest(email, dev, hostDiv, btn) {
+  const deviceUuid = dev.id;
+  const open = hostDiv.querySelector('.dev-test-panel');
+  if (open) { open.remove(); btn.textContent = '테스트'; return; }
+  btn.disabled = true;
+  try {
+    const { token, uid } = await regSession(email);
+    const panel = document.createElement('div');
+    panel.className = 'dev-test-panel';
+    const status = document.createElement('span'); status.style.cssText = 'font-size:11px;margin-left:6px';
+    const mk = (txt, conf, fn) => {
+      const b = document.createElement('button'); b.textContent = txt;
+      b.onclick = () => { if (conf && !confirm(txt + ' 실행?')) return; fn(); };
+      return b;
+    };
+    [['💧펌프','relay_toggle',false],['🌀팬','fan_toggle',false],['❄️냉각팬','fan2_toggle',false],
+     ['💡LED','led_toggle',false],['🔥히터','heater_toggle',true],['⚠래치해제','heater_clear',true]]
+      .forEach(([t,a,c]) => panel.appendChild(mk(t, c, () => sendTestCmd(token, uid, deviceUuid, a, null, status))));
+    [5000,10000].forEach(ms => panel.appendChild(mk('💦'+(ms/1000)+'초', false, () => sendTestMist(token, deviceUuid, ms, status))));
+    // 온도 보정 — set_temp_offset 명령. 기기가 NVS 에 저장하고 LCD·telemetry 양쪽에 적용.
+    const offIn = document.createElement('input');
+    offIn.type = 'number'; offIn.step = '0.1'; offIn.placeholder = '-1.5';
+    offIn.style.cssText = 'width:62px;font-size:11px;margin-left:8px;padding:3px 6px';
+    offIn.title = '온도 보정(℃) — 측정값에 더할 값. 2℃ 높게 나오면 -2 입력';
+    panel.appendChild(document.createTextNode(' 🌡보정'));
+    panel.appendChild(offIn);
+    panel.appendChild(document.createTextNode('℃ '));
+    panel.appendChild(mk('적용', false, () => {
+      const v = parseFloat(offIn.value);
+      if (isNaN(v)) { status.className = 'bad'; status.textContent = ' 보정값(숫자) 입력'; return; }
+      sendTestCmd(token, uid, deviceUuid, 'set_temp_offset', { offset_c: v }, status);
+    }));
+    // 현재 보정값 표시·미리채움. 펌웨어 보고값(devices.temp_offset_c, 2026-10-01+)이 진실.
+    // 구 펌웨어는 NULL → commands 의 마지막 set_temp_offset 을 보여주되 '명령' 으로 구분
+    // (보드 교체·flash 뒤엔 NVS 가 빌드 기본 -1.5 로 돌아가 이력과 어긋날 수 있음).
+    const cur = document.createElement('small'); cur.className = 'muted'; cur.style.marginLeft = '4px';
+    const fmt = v => (v > 0 ? '+' : '') + Number(v).toFixed(1) + '℃';
+    if (dev.temp_offset_c != null) {
+      offIn.value = dev.temp_offset_c;
+      cur.textContent = '(기기 보고: ' + fmt(dev.temp_offset_c) + ')';
+      cur.title = '기기가 telemetry 로 보고한 현재 NVS 보정값';
+    } else {
+      cur.textContent = '(현재값 미보고 — 구 펌웨어)';
+      cur.title = '2026-10-01+ 펌웨어만 현재 보정값을 보고. 마지막 명령값을 조회 중…';
+      fetch(CONFIG.supabaseUrl + '/rest/v1/commands?select=payload,status,issued_at&device_id=eq.' + deviceUuid
+            + '&action=eq.set_temp_offset&order=issued_at.desc&limit=1',
+            { cache: 'no-store', headers: { apikey: CONFIG.supabasePublishable, Authorization: 'Bearer ' + token } })
+        .then(r => r.ok ? r.json() : [])
+        .then(rows => {
+          const c = rows && rows[0];
+          const v = c && c.payload && Number(c.payload.offset_c);
+          if (c && !isNaN(v)) {
+            if (!offIn.value) offIn.value = v;
+            cur.textContent = '(마지막 명령 ' + fmt(v) + ' · ' + (c.issued_at || '').slice(0, 10) + ' ' + c.status + ' · 현재값 미보고)';
+            cur.title = '구 펌웨어라 현재값을 모름. 보드 교체·flash 후엔 빌드 기본(-1.5℃)으로 돌아갔을 수 있음';
+          } else {
+            cur.textContent = '(보정 명령 이력 없음 · 현재값 미보고 → 빌드 기본 -1.5℃ 추정)';
+          }
+        })
+        .catch(() => { cur.textContent = '(마지막 명령 조회 실패)'; });
+    }
+    panel.appendChild(cur);
+    panel.appendChild(status);
+    if (dev.sys_state) {
+      const sys = document.createElement('div'); sys.style.marginTop = '4px'; sys.innerHTML = sysStateText(dev.sys_state);
+      panel.appendChild(sys);
+    }
+    hostDiv.appendChild(panel);
+    btn.textContent = '닫기';
+  } catch (e) {
+    toast('테스트 열기 실패: ' + (e.message || e), 'bad');
+  } finally { btn.disabled = false; }
+}
+
+// 카메라 상태 — 상태·클립 파이프라인 통계를 펼쳐 보여줌(녹화/업로드 확인). 다시 누르면 닫힘.
+// 열 때마다 GET /cameras/{id} 를 다시 읽고, 클립 줄은 메인 카메라 패널과 같은 clipCellHtml 로 그린다.
+async function toggleCameraTest(cam, hostDiv, btn, email) {
+  const open = hostDiv.querySelector('.dev-test-panel');
+  if (open) { open.remove(); btn.textContent = '상태'; return; }
+  btn.disabled = true;
+  let fresh = null;
+  try {
+    const r = await regFetch(email, '/cameras/' + cam.id);
+    if (r.ok) fresh = r.body;
+  } catch (e) { /* 재조회 실패 → 스냅샷으로 표시 */ }
+  btn.disabled = false;
+  const c = fresh || cam;
+  const val = v => (v === undefined || v === null ? '-' : v);
+  const rows = [
+    'online: ' + (c.is_online ? '🟢 온라인' : '⚪ 오프라인') + (c.firmware_ver ? '  ·  fw ' + c.firmware_ver : ''),
+    'model: ' + val(c.model) + '  ·  ' + val(c.resolution) + ' @ ' + val(c.fps) + 'fps',
+    'stream: ' + (c.stream_mode || 'idle') + '  ·  rotate180: ' + val(c.rotate_180)
+      + (c.live_viewer ? '  ·  라이브 시청: ' + c.live_viewer : ''),
+  ];
+  const panel = document.createElement('div');
+  panel.className = 'dev-test-panel';
+  panel.innerHTML = rows.map(esc).join('<br>') + '<br>클립: ' + clipCellHtml(c)
+    + '<br><span class="muted">' + (fresh ? '방금 재조회' : '⚠ 재조회 실패 — 목록 조회 시점 값')
+    + (c.clip_stats_at ? ' · 카메라 보고 ' + esc(c.clip_stats_at.slice(11, 19)) + 'Z' : '')
+    + (c.clip_stats ? '' : ' · clip_stats 미보고(구 펌웨어이거나 아직 녹화 전)') + '</span>';
+  // 에러 로그(펌웨어 ESP_LOGE, 하트비트 errs → camera_logs). 재부팅 전 줄은 [이전 부팅] 표시.
+  const logBtn = document.createElement('button'); logBtn.type = 'button'; logBtn.textContent = '에러 로그';
+  logBtn.style.marginTop = '6px';
+  const logBox = document.createElement('pre');
+  logBox.style.cssText = 'margin:4px 0 0;max-height:260px;overflow:auto;font-size:10.5px;white-space:pre-wrap;display:none';
+  logBtn.onclick = async () => {
+    logBox.style.display = 'block'; logBox.textContent = '불러오는 중…';
+    try {
+      const r = await regFetch(email, '/cameras/' + cam.id + '/logs?limit=100');
+      if (!r.ok) throw new Error(r.status + ' ' + String(typeof r.body === 'string' ? r.body : JSON.stringify(r.body)).slice(0, 80));
+      logBox.textContent = formatCameraLogs(r.body);
+    } catch (e) { logBox.textContent = '조회 실패: ' + (e.message || e); }
+  };
+  panel.appendChild(logBtn); panel.appendChild(logBox);
+  hostDiv.appendChild(panel); btn.textContent = '닫기';
+}
+
+// 명령 ack 폴링 (PostgREST 로 commands.status 조회, 최대 8초).
+async function pollAck(token, cmdId, statusEl) {
+  for (let i = 0; i < 8; i++) {
+    await new Promise(r => setTimeout(r, 1000));
+    const res = await fetch(CONFIG.supabaseUrl + '/rest/v1/commands?select=status,result&id=eq.' + cmdId,
+      { cache: 'no-store', headers: { apikey: CONFIG.supabasePublishable, Authorization: 'Bearer ' + token } });
+    const rows = await res.json().catch(() => []);
+    const st = rows[0] && rows[0].status;
+    if (['acked','no_ack','rejected'].includes(st)) {
+      if (st === 'acked') { statusEl.className='good'; statusEl.textContent=' ✅ '+(rows[0].result||'ok'); }
+      else if (st === 'no_ack') { statusEl.className='bad'; statusEl.textContent=' ⏳ 무응답(오프라인?)'; }
+      else { statusEl.className='bad'; statusEl.textContent=' ✖ '+st+' '+(rows[0].result||''); }
+      return;
+    }
+  }
+  statusEl.className='muted'; statusEl.textContent=' … 응답 지연';
+}
+
+// 토글류 명령 — commands 테이블에 INSERT (그 계정 JWT, RLS: issued_by=본인).
+async function sendTestCmd(token, uid, deviceUuid, action, payload, statusEl) {
+  statusEl.className='muted'; statusEl.textContent=' '+action+' 전송…';
+  try {
+    const body = { device_id: deviceUuid, issued_by: uid, action };
+    if (payload) body.payload = payload;
+    const res = await fetch(CONFIG.supabaseUrl + '/rest/v1/commands', {
+      method:'POST',
+      headers:{ apikey:CONFIG.supabasePublishable, Authorization:'Bearer '+token, 'Content-Type':'application/json', Prefer:'return=representation' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) { statusEl.className='bad'; statusEl.textContent=' 실패 '+res.status+': '+(await res.text()).slice(0,80); return; }
+    const rows = await res.json();
+    await pollAck(token, rows[0].id, statusEl);
+  } catch (e) { statusEl.className='bad'; statusEl.textContent=' ❌ '+(e.message||e); }
+}
+
+// 분무 — REST POST /devices/{id}/mist (서버 duration 검증).
+async function sendTestMist(token, deviceUuid, ms, statusEl) {
+  statusEl.className='muted'; statusEl.textContent=' 분무 '+(ms/1000)+'초 전송…';
+  try {
+    const res = await fetch(regApiBase() + '/devices/' + deviceUuid + '/mist', {
+      method:'POST',
+      headers:{ Authorization:'Bearer '+token, 'Content-Type':'application/json' },
+      body: JSON.stringify({ duration_ms: ms }),
+    });
+    if (res.status !== 201) { statusEl.className='bad'; statusEl.textContent=' 실패 '+res.status+': '+(await res.text()).slice(0,80); return; }
+    const r = await res.json();
+    await pollAck(token, r.id, statusEl);
+  } catch (e) { statusEl.className='bad'; statusEl.textContent=' ❌ '+(e.message||e); }
+}
+
+// ── 반복 동작 ───────────────────────────────────────────────────────────────
+let regRepeat = null, regRepeatActive = false;
+function stopRepeat() {
+  regRepeatActive = false;
+  if (regRepeat) { clearTimeout(regRepeat); regRepeat = null; }
+  const st = document.getElementById('reg-bulk-status');
+  if (st) { st.className = 'muted'; st.textContent = (st.textContent || '') + ' · 반복 정지'; }
+}
+function startRepeat(action, ms) {
+  stopRepeat(); regRepeatActive = true;
+  const sec = Math.max(5, parseInt(document.getElementById('reg-repeat-sec').value) || 30);
+  const label = ms ? ('분무' + (ms / 1000) + '초') : action;
+  const tick = async () => {
+    if (!regRepeatActive) return;
+    await runBulkOnce(action, ms, ' · 반복[' + label + '/' + sec + 's]');
+    if (regRepeatActive) regRepeat = setTimeout(tick, sec * 1000);
+  };
+  tick();
+}
+// [반복] 체크 시 그 명령을 간격마다 반복, 아니면 1회.
+async function bulkControl(action, ms) {
+  const rep = document.getElementById('reg-repeat-on');
+  if (rep && rep.checked) startRepeat(action, ms);
+  else await runBulkOnce(action, ms);
+}
+
+// ── 선택 기기 일괄 제어 ──────────────────────────────────────────────────────
+// 기기 체크박스로 선택 → 상단 바 버튼 하나로 전체에 동시 명령. 계정이 섞여도
+// 계정별 토큰(캐시)으로 처리하고, 각 명령 ack 를 모아 요약 표시.
+const regSelected = {};  // deviceUuid -> {email, deviceId}
+function toggleRegSelect(uuid, email, deviceId, checked) {
+  if (checked) regSelected[uuid] = { email, deviceId }; else delete regSelected[uuid];
+  updateBulkCount();
+}
+function updateBulkCount() {
+  const n = Object.keys(regSelected).length;
+  const el = document.getElementById('reg-bulk-count');
+  if (el) { el.textContent = '선택 ' + n + '대'; el.className = 'count' + (n ? ' good' : ''); }
+  document.getElementById('bulk-bar').classList.toggle('has-sel', n > 0);
+}
+function clearRegSelection() {
+  Object.keys(regSelected).forEach(k => delete regSelected[k]);
+  document.querySelectorAll('#accounts input[type=checkbox]').forEach(cb => cb.checked = false);
+  updateBulkCount();
+  const st = document.getElementById('reg-bulk-status'); if (st) st.textContent = '';
+}
+async function runBulkOnce(action, ms, suffix) {
+  const sel = Object.entries(regSelected);
+  if (!sel.length) { toast('선택된 기기 없음 — 기기 줄 왼쪽 체크박스로 선택', 'bad'); return; }
+  const base = regApiBase();
+  const st = document.getElementById('reg-bulk-status');
+  st.className = 'muted'; st.textContent = ' 전송 중… (' + sel.length + '대)';
+  const byEmail = {};
+  sel.forEach(([uuid, v]) => { (byEmail[v.email] = byEmail[v.email] || []).push(uuid); });
+  const cmds = []; let sendFail = 0;
+  for (const [email, uuids] of Object.entries(byEmail)) {
+    let token, uid;
+    try { ({ token, uid } = await regSession(email)); }
+    catch (e) { sendFail += uuids.length; continue; }
+    for (const uuid of uuids) {
+      try {
+        let cmdId;
+        if (ms) {
+          const res = await fetch(base + '/devices/' + uuid + '/mist', { method:'POST',
+            headers:{ Authorization:'Bearer '+token, 'Content-Type':'application/json' }, body: JSON.stringify({ duration_ms: ms }) });
+          if (res.status !== 201) { sendFail++; continue; }
+          cmdId = (await res.json()).id;
+        } else {
+          const res = await fetch(CONFIG.supabaseUrl + '/rest/v1/commands', { method:'POST',
+            headers:{ apikey:CONFIG.supabasePublishable, Authorization:'Bearer '+token, 'Content-Type':'application/json', Prefer:'return=representation' },
+            body: JSON.stringify({ device_id: uuid, issued_by: uid, action }) });
+          if (!res.ok) { sendFail++; continue; }
+          cmdId = (await res.json())[0].id;
+        }
+        cmds.push({ token, cmdId });
+      } catch (e) { sendFail++; }
+    }
+  }
+  st.textContent = ' 응답 대기… (' + cmds.length + '대 전송)';
+  let acked = 0, noack = 0;
+  await Promise.all(cmds.map(async c => {
+    for (let i = 0; i < 8; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      const res = await fetch(CONFIG.supabaseUrl + '/rest/v1/commands?select=status&id=eq.' + c.cmdId,
+        { cache:'no-store', headers:{ apikey:CONFIG.supabasePublishable, Authorization:'Bearer '+c.token } });
+      const rows = await res.json().catch(() => []);
+      const s2 = rows[0] && rows[0].status;
+      if (s2 === 'acked') { acked++; return; }
+      if (['no_ack','rejected'].includes(s2)) { noack++; return; }
+    }
+    noack++;
+  }));
+  st.className = (acked === cmds.length && !sendFail) ? 'good' : 'bad';
+  st.textContent = ' 완료: 전송 ' + cmds.length + ' / ✅ ' + acked + ' / ⏳ ' + noack + (sendFail ? ' / 전송실패 ' + sendFail : '') + (suffix || '');
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 부팅 — localStorage 의 apiBase 로 /web-config fetch. 없으면 설정 패널.
+// ─────────────────────────────────────────────────────────────────────────
+(async function boot() {
+  CONFIG.apiBase = loadSavedApiBase();
+  renderTopNav('beta', CONFIG.apiBase);
+  renderDocsLinks(CONFIG.apiBase);
+  document.getElementById('cfg-api-base').value = CONFIG.apiBase;
+  try {
+    const remote = await fetchRemoteConfig(CONFIG.apiBase);
+    CONFIG = { ...CONFIG, ...remote };
+    start();
+  } catch (e) {
+    document.getElementById('config-panel').classList.remove('hidden');
+    document.getElementById('cfg-status').innerText = '❌ ' + e.message + ' — API Base 확인';
+  }
+})();
+</script>
+</body>
+</html>

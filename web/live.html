@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Terra · 라이브 대시보드</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+/* live.html 전용 — 카메라 타일 그리드. 공용은 shared.css */
+.page-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.page-head h2 { margin: 0; font-size: 17px; }
+.page-head .actions { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: var(--muted); }
+.controls label { display: inline-flex; align-items: center; gap: 4px; }
+.controls .sep { width: 1px; height: 18px; background: var(--line); }
+.rule { font-size: 11px; color: var(--muted); margin-top: 8px; line-height: 1.5; }
+
+/* 타일 그리드 — 열 수는 --cols (2/3/4). 좁은 화면은 자동 1~2열 */
+.grid { display: grid; grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr)); gap: 10px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; transition: border-color .2s; }
+.tile.live { border-color: #2d5a3c; }
+.tile.err { border-color: #5a2d2d; }
+.tile.busy { border-color: #5a4a2d; }
+.tile.focus { grid-column: 1 / -1; }
+.tile.focus .vid { max-height: 78vh; }
+.tile.offline { opacity: .6; }
+.tile-head { display: flex; align-items: center; gap: 6px; padding: 6px 10px; background: var(--panel-2); font-size: 12px; min-height: 32px; }
+.tile-head .ident { font-family: ui-monospace, Menlo, monospace; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile-head .name { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile-head .spacer { flex: 1; }
+.tile-head .timer { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--good); white-space: nowrap; }
+.tile-head .timer.warn { color: var(--warn); }
+.vid { position: relative; background: #000; aspect-ratio: 4 / 3; }
+.vid video { width: 100%; height: 100%; display: block; object-fit: contain; background: #000; }
+.vid .overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: #c8cdd8; font-size: 12px; text-align: center; padding: 12px; background: rgba(0,0,0,.55); }
+.vid .overlay .big { font-size: 26px; }
+.vid .overlay.hidden { display: none; }
+.vid .spin { width: 26px; height: 26px; border: 3px solid #333; border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.tile-foot { display: flex; align-items: center; gap: 6px; padding: 6px 10px; flex-wrap: wrap; }
+.tile-foot .acct { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile-foot .spacer { flex: 1; }
+.tile-foot .st { font-size: 11px; color: var(--muted); width: 100%; min-height: 1.2em; font-family: ui-monospace, Menlo, monospace; word-break: break-all; }
+.tile-foot .st.bad { color: var(--bad); }
+.tile-foot .st.warn { color: var(--warn); }
+.tile-foot .st.good { color: var(--good); }
+.empty-grid { grid-column: 1 / -1; padding: 40px 16px; text-align: center; color: var(--muted); }
+@media (max-width: 900px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap wide">
+<nav id="topnav" class="topnav"></nav>
+
+<!-- ===== 설정 (API Base 없을 때만) ===== -->
+<div class="panel hidden" id="config-panel">
+  <h2>⚙️ 설정</h2>
+  <small class="muted">API Base 만 입력하면 <code>/web-config</code> 에서 Supabase 정보를 받아온다. 메인 콘솔과 같은 localStorage 를 쓴다.</small>
+  <div class="row" style="margin-top:8px"><label>API Base</label><input id="cfg-api-base" type="text" placeholder="https://api.terra-server.uk"></div>
+  <div class="row"><button class="primary" onclick="saveConfig()">저장 & 시작</button><small class="muted" id="cfg-status"></small></div>
+</div>
+
+<div id="main" class="hidden">
+  <div class="panel">
+    <div class="page-head">
+      <div>
+        <h2>🎥 베타 라이브 대시보드</h2>
+        <small class="muted">베타 테스터 계정의 카메라 라이브를 한 화면에. 각 타일은 그 계정 JWT 로 WebRTC 를 따로 연다.</small>
+      </div>
+      <div class="actions">
+        <button class="ghost" onclick="loadCameras()" title="계정별 카메라 목록 다시 조회 (연결은 유지)">🔄 카메라 새로고침</button>
+        <button class="primary" id="btn-all" onclick="connectAll()" title="온라인 카메라 전부 순서대로 연결 (2초 간격)">▶ 전체 연결</button>
+        <button class="danger" onclick="disconnectAll()">■ 전체 끊기</button>
+      </div>
+    </div>
+    <div class="stats" style="margin-top:12px">
+      <div class="stat"><b id="st-cam">–</b><span>카메라</span></div>
+      <div class="stat"><b id="st-on" class="good">–</b><span>온라인</span></div>
+      <div class="stat"><b id="st-live" style="color:var(--accent)">–</b><span>시청 중</span></div>
+      <div class="stat"><b id="st-prog" class="muted" style="font-size:14px">대기</b><span>조회 상태</span></div>
+    </div>
+    <div class="controls">
+      <label>열 <select id="cols" onchange="setCols(this.value)"><option value="2">2</option><option value="3" selected>3</option><option value="4">4</option></select></label>
+      <label><input type="checkbox" id="hide-off" onchange="renderGrid()"> 오프라인 숨기기</label>
+      <span class="muted" title="영상 클릭 = 크게 보기, 더블클릭 = 전체화면">영상 클릭 = 크게 · 더블클릭 = 전체화면</span>
+      <span class="sep"></span>
+      <details class="cfg" style="margin:0;padding:2px 10px;flex:1;min-width:240px">
+        <summary>⚙️ 계정 목록 · 비밀번호 · API 대상</summary>
+        <div class="row">
+          <label>비밀번호</label><input id="reg-pass" type="text" value="123456" style="flex:0 0 120px">
+          <label style="flex:0 0 auto">API</label><input id="reg-apibase" type="text" placeholder="(비우면 설정의 API Base)" style="flex:1;min-width:200px">
+        </div>
+        <div class="row" style="align-items:flex-start"><label>계정</label><textarea id="reg-emails" rows="5" style="flex:1;font-family:ui-monospace,Menlo,monospace;font-size:12px"></textarea></div>
+        <div class="row"><span style="flex:0 0 100px"></span><button class="primary sm" onclick="applyEmails()">목록 적용 · 조회</button>
+          <small class="muted">목록은 베타 테스터 페이지와 공유(localStorage)</small></div>
+      </details>
+    </div>
+    <div class="rule">서버 규칙(2026-09-30): 카메라마다 <b>한 번에 15분</b>, 끝나면 <b>5분 쉼</b>, <b>한 기기만</b>. 앱이 보고 있으면 "시청 중" 으로 뜨고 [가져오기]로 끊고 볼 수 있다(테스터 앱이 끊김).
+      끊긴 뒤 자동 재연결은 하지 않는다(재연결 루프가 카메라를 재부팅시킨 사고 방지). 여러 대 동시 시청은 TURN 대역폭을 많이 쓰니 필요한 만큼만.</div>
+  </div>
+
+  <div class="grid" id="grid" style="--cols:3"><div class="empty-grid">카메라 목록 조회 중…</div></div>
+
+  <details style="margin-top:12px">
+    <summary class="muted">📜 최근 API 로그</summary>
+    <pre id="log" style="max-height:260px"></pre>
+  </details>
+</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="shared.js"></script>
+<script>
+// ─────────────────────────────────────────────────────────────────────────
+// 베타 라이브 대시보드 (2026-10-21)
+// 흐름(타일마다): 계정 JWT(regSession) → GET /cameras/webrtc/config(1회 캐시) → RTCPeerConnection(recvonly)
+//   → createOffer → ICE gathering 완료(≤5초, non-trickle) → POST /cameras/{id}/webrtc/offer
+//   → answer setRemoteDescription → 펌웨어→웹 candidate long-poll → ontrack 으로 <video>
+// index.html 의 openLive 와 같은 시그널링인데 PeerConnection 상태를 전역이 아니라 타일 객체에 둔다.
+// 409 live_in_use / 429 live_cooldown·rate_limited 는 docs/APP_LIVE_VIEW_LIMIT_2026-09-30.md 의 앱 계약 그대로.
+// ─────────────────────────────────────────────────────────────────────────
+let CONFIG = { supabaseUrl: '', supabasePublishable: '', apiBase: '' };
+
+async function saveConfig() {
+  const apiBase = document.getElementById('cfg-api-base').value.trim().replace(/\/$/, '');
+  if (!apiBase) return toast('API Base 입력', 'bad');
+  const status = document.getElementById('cfg-status');
+  status.innerText = '🔄 /web-config 조회 중...';
+  try {
+    const remote = await fetchRemoteConfig(apiBase);
+    CONFIG = { ...remote, apiBase };
+    localStorage.setItem('terra-config', JSON.stringify({ apiBase }));
+    renderTopNav('live', apiBase); renderDocsLinks(apiBase);
+    start();
+  } catch (e) {
+    status.innerText = '❌ ' + e.message;
+    toast(e.message, 'bad');
+  }
+}
+
+function start() {
+  document.getElementById('config-panel').classList.add('hidden');
+  document.getElementById('main').classList.remove('hidden');
+  document.getElementById('reg-emails').value = loadBetaEmails().join('\n');
+  // 라이브는 실제 브로커(프로덕션)에 붙은 카메라만 응답하므로 로컬에서 띄웠어도 프로덕션으로.
+  if (CONFIG.apiBase.includes('localhost')) document.getElementById('reg-apibase').value = 'https://api.terra-server.uk';
+  const cols = localStorage.getItem('terra-live-cols') || '3';
+  document.getElementById('cols').value = cols; setCols(cols);
+  loadCameras();
+}
+function applyEmails() {
+  const emails = parseEmailsInput();
+  if (!emails.length) return toast('계정이 비어 있음', 'bad');
+  saveBetaEmails(emails);
+  loadCameras();
+}
+function setCols(n) {
+  document.getElementById('grid').style.setProperty('--cols', n);
+  localStorage.setItem('terra-live-cols', n);
+}
+
+// 이 브라우저의 시청자 ID — 서버의 "한 기기" 판정에 쓴다(앱 계약 viewer_id). 처음 한 번 만들어 보관.
+const VIEWER_ID = (() => {
+  let v = localStorage.getItem('terra-live-viewer-id');
+  if (!v) { v = crypto.randomUUID(); localStorage.setItem('terra-live-viewer-id', v); }
+  return v;
+})();
+const VIEWER_LABEL = '웹 대시보드';
+
+// ── 카메라 목록 ─────────────────────────────────────────────────────────────
+// TILES: camera uuid → { cam, email, el, pc, sessionId, poller, liveUntil, timer, state }
+const TILES = {};
+let ORDER = [];   // 표시 순서 (온라인 먼저, 계정 순)
+let ICE_CFG = null;   // /cameras/webrtc/config 응답(iceServers) — 계정 무관 공통이라 1회만
+
+async function loadCameras() {
+  const emails = parseEmailsInput();
+  const prog = document.getElementById('st-prog');
+  prog.className = 'warn'; prog.textContent = `0/${emails.length} 조회 중`;
+  const found = {};
+  let done = 0, fail = 0;
+  for (const email of emails) {
+    try {
+      const r = await regFetch(email, '/cameras');
+      if (r.ok && Array.isArray(r.body)) r.body.forEach(c => { found[c.id] = { cam: c, email }; });
+      else fail++;
+    } catch (e) { fail++; }
+    done++; prog.textContent = `${done}/${emails.length} 조회 중`;
+  }
+  // 사라진 카메라(해제·삭제)는 연결 끊고 타일 제거, 남은 건 cam 정보만 갱신(연결 유지)
+  Object.keys(TILES).forEach(id => { if (!found[id]) { disconnect(id); delete TILES[id]; } });
+  Object.entries(found).forEach(([id, { cam, email }]) => {
+    if (TILES[id]) { TILES[id].cam = cam; TILES[id].email = email; }
+    else TILES[id] = { cam, email, el: null, pc: null, sessionId: null, poller: null, liveUntil: null, timer: null, state: 'idle' };
+  });
+  ORDER = Object.keys(TILES).sort((a, b) => {
+    const A = TILES[a], B = TILES[b];
+    if (!!A.cam.is_online !== !!B.cam.is_online) return A.cam.is_online ? -1 : 1;
+    return emails.indexOf(A.email) - emails.indexOf(B.email) || String(A.cam.camera_id).localeCompare(String(B.cam.camera_id));
+  });
+  prog.className = fail ? 'bad' : 'good'; prog.textContent = fail ? `${fail}개 계정 실패` : '완료';
+  renderGrid();
+  // beta.html 의 [▶ 라이브] 로 들어왔으면 그 카메라만 바로 연결
+  const want = new URLSearchParams(location.search).get('cam');
+  if (want && TILES[want] && TILES[want].state === 'idle') {
+    history.replaceState(null, '', location.pathname);
+    TILES[want].el && TILES[want].el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    connect(want);
+  }
+}
+
+function updateStats() {
+  const all = Object.values(TILES);
+  document.getElementById('st-cam').textContent = all.length;
+  document.getElementById('st-on').textContent = all.filter(t => t.cam.is_online).length;
+  document.getElementById('st-live').textContent = all.filter(t => t.state === 'live').length;
+}
+
+function renderGrid() {
+  const grid = document.getElementById('grid');
+  const hideOff = document.getElementById('hide-off').checked;
+  grid.innerHTML = '';
+  let shown = 0;
+  ORDER.forEach(id => {
+    const t = TILES[id];
+    if (hideOff && !t.cam.is_online && t.state === 'idle') return;
+    if (!t.el) t.el = buildTile(id);
+    refreshTileHead(id);
+    grid.appendChild(t.el);
+    shown++;
+  });
+  if (!shown) grid.innerHTML = `<div class="empty-grid">${ORDER.length ? '표시할 카메라 없음 (오프라인 숨김 해제)' : '등록된 카메라가 없음 — ⚙️ 계정 목록 확인'}</div>`;
+  updateStats();
+}
+
+function buildTile(id) {
+  const t = TILES[id];
+  const el = document.createElement('div');
+  el.className = 'tile'; el.dataset.id = id;
+  el.innerHTML = `
+    <div class="tile-head">
+      <span class="dot"></span>
+      <span class="ident"></span><span class="name"></span>
+      <span class="spacer"></span>
+      <span class="timer"></span>
+      <button class="sm ghost" data-act="focus" title="크게 보기 토글">⛶</button>
+    </div>
+    <div class="vid">
+      <video autoplay playsinline muted></video>
+      <div class="overlay"><span class="big">📷</span><span class="msg">대기</span></div>
+    </div>
+    <div class="tile-foot">
+      <span class="acct"></span>
+      <span class="spacer"></span>
+      <button class="sm primary" data-act="connect">▶ 연결</button>
+      <button class="sm" data-act="takeover" style="display:none" title="앱 세션을 끊고 가져오기 (테스터 앱이 끊김)">가져오기</button>
+      <button class="sm danger" data-act="disconnect" style="display:none">■ 끊기</button>
+      <span class="st"></span>
+    </div>`;
+  el.querySelector('[data-act=connect]').onclick = () => connect(id);
+  el.querySelector('[data-act=takeover]').onclick = () => connect(id, true);
+  el.querySelector('[data-act=disconnect]').onclick = () => disconnect(id, true);
+  el.querySelector('[data-act=focus]').onclick = () => toggleFocus(id);
+  const v = el.querySelector('video');
+  v.onclick = () => toggleFocus(id);
+  v.ondblclick = () => { if (v.requestFullscreen) v.requestFullscreen(); };
+  v.onloadedmetadata = () => { if (v.videoWidth && v.videoHeight) el.querySelector('.vid').style.aspectRatio = `${v.videoWidth} / ${v.videoHeight}`; };
+  return el;
+}
+
+function toggleFocus(id) {
+  const t = TILES[id]; if (!t || !t.el) return;
+  const on = !t.el.classList.contains('focus');
+  document.querySelectorAll('.tile.focus').forEach(e => e.classList.remove('focus'));
+  if (on) { t.el.classList.add('focus'); t.el.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+}
+
+function refreshTileHead(id) {
+  const t = TILES[id], c = t.cam, el = t.el;
+  el.classList.toggle('offline', !c.is_online && t.state === 'idle');
+  el.querySelector('.dot').className = 'dot ' + (c.is_online ? 'on' : 'off');
+  el.querySelector('.dot').title = c.is_online ? '온라인' : '오프라인 (heartbeat 없음)';
+  el.querySelector('.ident').textContent = c.camera_id;
+  el.querySelector('.ident').title = (c.model || '') + (c.firmware_ver ? ' · fw ' + c.firmware_ver : '');
+  el.querySelector('.name').textContent = c.name ? '· ' + c.name : '';
+  el.querySelector('.acct').textContent = t.email + (c.firmware_ver ? ' · ' + c.firmware_ver : '');
+}
+
+// 타일 상태 표시. state: idle | connecting | live | busy(앱 시청 중) | cooldown | err
+function setState(id, state, msg, cls) {
+  const t = TILES[id]; if (!t || !t.el) return;
+  t.state = state;
+  const el = t.el;
+  el.classList.remove('live', 'err', 'busy');
+  if (state === 'live') el.classList.add('live');
+  else if (state === 'err' || state === 'cooldown') el.classList.add('err');
+  else if (state === 'busy') el.classList.add('busy');
+  const ov = el.querySelector('.overlay');
+  ov.classList.toggle('hidden', state === 'live');
+  ov.querySelector('.big').textContent = state === 'connecting' ? '' : state === 'busy' ? '📱' : state === 'cooldown' ? '⏳' : state === 'err' ? '⚠️' : '📷';
+  ov.querySelector('.big').innerHTML = state === 'connecting' ? '<span class="spin"></span>' : ov.querySelector('.big').textContent;
+  ov.querySelector('.msg').textContent = msg || '';
+  const st = el.querySelector('.st'); st.textContent = msg || ''; st.className = 'st' + (cls ? ' ' + cls : '');
+  el.querySelector('[data-act=connect]').style.display = (state === 'idle' || state === 'err') ? '' : 'none';
+  el.querySelector('[data-act=takeover]').style.display = state === 'busy' ? '' : 'none';
+  el.querySelector('[data-act=disconnect]').style.display = (state === 'connecting' || state === 'live') ? '' : 'none';
+  if (state !== 'live') { clearInterval(t.timer); t.timer = null; el.querySelector('.timer').textContent = ''; }
+  el.classList.toggle('offline', !t.cam.is_online && state === 'idle');
+  updateStats();
+}
+
+// non-trickle: gathering 이 끝나면(또는 타임아웃) localDescription.sdp 에 후보가 모두 포함됨
+function waitIceGatheringComplete(pc, timeoutMs) {
+  if (pc.iceGatheringState === 'complete') return Promise.resolve();
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; pc.removeEventListener('icegatheringstatechange', check); resolve(); };
+    const check = () => { if (pc.iceGatheringState === 'complete') finish(); };
+    pc.addEventListener('icegatheringstatechange', check);
+    setTimeout(finish, timeoutMs);
+  });
+}
+
+async function connect(id, takeover) {
+  const t = TILES[id]; if (!t) return;
+  if (t.pc) disconnect(id);   // 재연결: 기존 PC 정리(세션 close 통지 포함)
+  const email = t.email, uuid = id;
+  const my = {}; t.attempt = my;   // 이 시도 도중 끊기/재시도 되면 중단 판정용
+  const alive = () => t.attempt === my;
+  setState(id, 'connecting', takeover ? '앱 세션 가져오는 중…' : 'STUN/TURN 설정…', 'warn');
+  try {
+    if (!ICE_CFG) {
+      const r = await regFetch(email, '/cameras/webrtc/config');
+      if (!r.ok) throw new Error('config 실패 ' + r.status);
+      ICE_CFG = r.body;
+    }
+    if (!alive()) return;
+    const pc = new RTCPeerConnection({ iceServers: ICE_CFG.iceServers || [] });
+    t.pc = pc;
+    pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.ontrack = (ev) => {
+      const v = t.el.querySelector('video');
+      if (v.srcObject !== ev.streams[0]) { v.srcObject = ev.streams[0]; setState(id, 'live', '영상 수신 중', 'good'); }
+    };
+    pc.onconnectionstatechange = () => {
+      if (t.pc !== pc) return;
+      const s = pc.connectionState;
+      if (s === 'connected') { if (t.state !== 'live') setState(id, 'connecting', '연결됨 — 영상 대기', 'warn'); }
+      else if (s === 'failed') { teardown(id); setState(id, 'err', 'PeerConnection 실패 — STUN/TURN 또는 카메라 ICE', 'bad'); }
+      else if (s === 'disconnected') { setState(id, 'err', '끊김 (서버 15분 종료·가져가기·카메라 재부팅?) — 자동 재연결 안 함', 'bad'); teardown(id); }
+    };
+    const offer = await pc.createOffer({ offerToReceiveVideo: true });
+    await pc.setLocalDescription(offer);
+    setState(id, 'connecting', 'ICE 후보 수집…', 'warn');
+    // 5초: TURN relay 후보 할당이 2초보다 오래 걸려, 짧으면 relay 후보가 누락된다(index.html 과 동일).
+    await waitIceGatheringComplete(pc, 5000);
+    if (!alive()) return;
+    setState(id, 'connecting', '카메라에 offer 전송 (최대 15초)…', 'warn');
+    const r = await regFetch(email, `/cameras/${uuid}/webrtc/offer`, {
+      method: 'POST',
+      body: JSON.stringify({ sdp: pc.localDescription.sdp, type: 'offer', viewer_id: VIEWER_ID, viewer_label: VIEWER_LABEL, takeover: !!takeover }),
+    });
+    if (!alive()) return;
+    if (!r.ok) {
+      teardown(id);
+      const d = (r.body && typeof r.body === 'object' && r.body.detail) || {};
+      if (r.status === 409 && d.code === 'live_in_use') {
+        setState(id, 'busy', `${d.viewer || '다른 기기'}에서 시청 중${d.since ? ' (' + fmtKst(d.since) + '~)' : ''}`, 'warn');
+      } else if (r.status === 429 && d.code === 'live_cooldown') {
+        startCooldown(id, d.retry_after || 300, '15분 시청 뒤 쉬는 중');
+      } else if (r.status === 429) {
+        startCooldown(id, d.retry_after || 60, '시간당 연결 시도 상한');
+      } else if (r.status === 502 || r.status === 504) {
+        setState(id, 'err', `카메라 응답 없음 (${r.status}) — 오프라인이거나 webrtc_offer 미처리`, 'bad');
+      } else {
+        setState(id, 'err', `offer 실패 ${r.status}: ${typeof r.body === 'string' ? r.body.slice(0, 80) : (d.message || d.code || JSON.stringify(r.body).slice(0, 80))}`, 'bad');
+      }
+      return;
+    }
+    t.sessionId = r.body.session_id;
+    t.liveUntil = r.body.live_until ? new Date(r.body.live_until) : null;
+    await pc.setRemoteDescription({ type: 'answer', sdp: r.body.sdp });
+    setState(id, 'connecting', 'answer 적용 — ICE 연결 시도 중', 'warn');
+    startTimer(id);
+    pollCandidates(id, pc, t.sessionId);
+  } catch (e) {
+    if (!alive()) return;
+    teardown(id);
+    setState(id, 'err', '오류: ' + (e.message || e), 'bad');
+  }
+}
+
+// 펌웨어 → 웹 ICE candidate long-poll (esp_webrtc 가 trickle 로 보내는 후보)
+async function pollCandidates(id, pc, sessionId) {
+  const t = TILES[id];
+  const poller = { active: true }; t.poller = poller;
+  let since = 0;
+  while (poller.active && t.pc === pc) {
+    if (pc.connectionState === 'closed' || pc.connectionState === 'failed') break;
+    let res;
+    try { res = await regFetch(t.email, `/cameras/${id}/webrtc/candidates?session_id=${encodeURIComponent(sessionId)}&since_index=${since}&timeout_sec=20`); }
+    catch (e) { res = null; }
+    if (!poller.active || t.pc !== pc) break;
+    if (!res || !res.ok) { await new Promise(r => setTimeout(r, 1000)); continue; }
+    for (const cand of (res.body.candidates || [])) {
+      try { await pc.addIceCandidate(cand); } catch (e) { console.warn('addIceCandidate 실패', e, cand); }
+    }
+    since = res.body.next_index;
+  }
+}
+
+// 남은 시청 시간(live_until) 카운트다운 — 서버가 15분에 세션을 닫는다. 1분 미만이면 주황.
+function startTimer(id) {
+  const t = TILES[id]; clearInterval(t.timer);
+  const el = t.el.querySelector('.timer');
+  const tick = () => {
+    if (!t.liveUntil) { el.textContent = ''; return; }
+    const s = Math.max(0, Math.round((t.liveUntil - Date.now()) / 1000));
+    el.textContent = `⏱ ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    el.className = 'timer' + (s < 60 ? ' warn' : '');
+    if (s === 0) { clearInterval(t.timer); t.timer = null; }
+  };
+  tick(); t.timer = setInterval(tick, 1000);
+}
+
+// 429 뒤 카운트다운 — 자동 재시도 금지(앱 계약). 0 이 되면 [연결] 버튼만 다시 살린다.
+function startCooldown(id, sec, why) {
+  const t = TILES[id];
+  let left = sec;
+  const show = () => setState(id, left > 0 ? 'cooldown' : 'idle', left > 0 ? `${why} — ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} 뒤 가능` : '다시 연결 가능', left > 0 ? 'warn' : '');
+  show();
+  clearInterval(t.cool);
+  t.cool = setInterval(() => { left--; if (left <= 0) clearInterval(t.cool); show(); }, 1000);
+}
+
+// PC·폴러·타이머만 정리(상태 표시는 호출측이). 세션 close 통지는 disconnect 가.
+function teardown(id) {
+  const t = TILES[id]; if (!t) return;
+  if (t.poller) { t.poller.active = false; t.poller = null; }
+  if (t.pc) { try { t.pc.close(); } catch (e) { /* 이미 닫힘 */ } t.pc = null; }
+  clearInterval(t.timer); t.timer = null;
+  const v = t.el && t.el.querySelector('video'); if (v) v.srcObject = null;
+  t.liveUntil = null;
+}
+
+async function disconnect(id, byUser) {
+  const t = TILES[id]; if (!t) return;
+  t.attempt = null;
+  const sid = t.sessionId; t.sessionId = null;
+  teardown(id);
+  if (byUser || t.state !== 'idle') setState(id, 'idle', byUser ? '끊음' : '', '');
+  if (sid) {
+    // best-effort 카메라에 종료 통지 (실패해도 무시) — 서버가 webrtc_close 를 카메라에 발행
+    try { await regFetch(t.email, `/cameras/${id}/webrtc/close`, { method: 'POST', body: JSON.stringify({ session_id: sid }) }); } catch (e) { /* 무시 */ }
+  }
+}
+
+// 온라인 카메라 전부 — 2초 간격으로 순차 시작(offer 폭주·TURN 할당 몰림 방지). 이미 연결된 건 건너뜀.
+async function connectAll() {
+  const btn = document.getElementById('btn-all');
+  const targets = ORDER.filter(id => TILES[id].cam.is_online && ['idle', 'err'].includes(TILES[id].state));
+  if (!targets.length) return toast('연결할 온라인 카메라가 없음', 'bad');
+  btn.disabled = true;
+  try {
+    for (let i = 0; i < targets.length; i++) {
+      btn.textContent = `▶ 연결 중 ${i + 1}/${targets.length}`;
+      connect(targets[i]);   // await 하지 않음 — 각 타일이 알아서 진행, 간격만 둔다
+      if (i < targets.length - 1) await new Promise(r => setTimeout(r, 2000));
+    }
+  } finally { btn.disabled = false; btn.textContent = '▶ 전체 연결'; }
+}
+function disconnectAll() {
+  ORDER.forEach(id => { if (TILES[id].pc || TILES[id].sessionId) disconnect(id, true); });
+}
+
+// 페이지를 떠날 때 열린 세션 닫기 통지 (keepalive 로 fetch 가 살아남게)
+window.addEventListener('pagehide', () => {
+  Object.entries(TILES).forEach(([id, t]) => {
+    if (!t.sessionId) return;
+    const c = REG_TOKENS[t.email]; if (!c) return;
+    try {
+      fetch(regApiBase() + `/cameras/${id}/webrtc/close`, { method: 'POST', keepalive: true,
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + c.token }, body: JSON.stringify({ session_id: t.sessionId }) });
+    } catch (e) { /* 무시 */ }
+    try { t.pc && t.pc.close(); } catch (e) { /* 무시 */ }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// 부팅
+// ─────────────────────────────────────────────────────────────────────────
+(async function boot() {
+  CONFIG.apiBase = loadSavedApiBase();
+  renderTopNav('live', CONFIG.apiBase);
+  renderDocsLinks(CONFIG.apiBase);
+  document.getElementById('cfg-api-base').value = CONFIG.apiBase;
+  try {
+    const remote = await fetchRemoteConfig(CONFIG.apiBase);
+    CONFIG = { ...CONFIG, ...remote };
+    start();
+  } catch (e) {
+    document.getElementById('config-panel').classList.remove('hidden');
+    document.getElementById('cfg-status').innerText = '❌ ' + e.message + ' — API Base 확인';
+  }
+})();
+</script>
+</body>
+</html>
