@@ -94,9 +94,17 @@ RETRYABLE_ERRORS: frozenset[str] = frozenset({"busy", "dns", "tcp", "tls", "http
 # 성공). 조건: 같은 (카메라, 릴리스) 로 24h 안 AUTO_RETRY_MAX 회까지, 직전 실패 뒤 INTERVAL 경과,
 # 카메라 온라인·게이트 통과·라이브 없음·업로드 중 아님·최근 녹화 없음(재부팅 비용 최소화).
 AUTO_RETRY_ERROR_PREFIXES: tuple[str, ...] = (
-    "connect", "read", "read_short", "len_mismatch",
+    "connect", "read", "read_short", "len_mismatch", "rejected_not_ready",
     "accepted > ", "downloading > ", "applying > ",
 )
+# [2026-10-21] apply 재전송. ready 뒤 서버가 ota_apply 를 보냈는데 기기 MQTT 가 그 순간 끊겨(clean
+# session) 명령이 유실되면 기기는 다운로드한 슬롯을 든 채 그대로 돌고 서버는 applying 시한으로
+# timeout 났다(320062fb 15:59, 441a8f8c 17:35). 기기 하트비트의 uptime 이 apply 시각 이후로도
+# 계속 늘고 있으면(= 재부팅 안 함) 명령 유실이므로 같은 job_id 로 다시 보낸다. 펌웨어는
+# NVS 의 ready 작업 id 와 비교해 맞으면 전환, 아니면 rejected_not_ready(→ 자동 재시도가 새 prepare).
+APPLY_RESEND_AFTER_SEC = 60
+APPLY_RESEND_MAX = 4
+APPLY_RESEND_WINDOW_SEC = 1800     # timeout 으로 닫힌 applying 작업도 이 안이면 되살려 재전송
 AUTO_RETRY_MAX = int(os.getenv("OTA_AUTO_RETRY_MAX", "6"))
 AUTO_RETRY_INTERVAL_SEC = int(os.getenv("OTA_AUTO_RETRY_INTERVAL_SEC", "900"))
 AUTO_RETRY_WINDOW_SEC = 24 * 3600
@@ -387,7 +395,7 @@ def apply_heartbeat_fw(sb: Any, target_uuid: str, fw: str) -> dict[str, Any] | N
     version = release.get("version") if release else None
     if version and fw == version:
         logger.info("ota verified: job %s fw=%s", job["id"], fw)
-        return _update(sb, job["id"], {"status": "verified", "pct": 100})
+        return _update(sb, job["id"], {"status": "verified", "pct": 100, "error": None})
     if job.get("prev_version") and fw == job["prev_version"]:
         logger.warning("ota rolled back: job %s fw=%s (expected %s)", job["id"], fw, version)
         return _update(sb, job["id"], {"status": "rolled_back", "error": "bootloader_rollback"})
@@ -537,8 +545,98 @@ def auto_retry_once(sb: Any, publish: Any, *, now: datetime | None = None) -> in
     return retried
 
 
+def _alive_without_reboot_since(cam: dict[str, Any], since_iso: str, now: datetime) -> bool:
+    """하트비트가 최근이고 uptime 이 since 이후 경과 시간보다 크면 = 그 뒤 재부팅 없이 살아 있음."""
+    last_seen = cam.get("last_seen_at")
+    uptime = _sys_of(KIND_CAMERA, cam).get("uptime_s")
+    if not last_seen or not isinstance(uptime, (int, float)):
+        return False
+    try:
+        if (now - _parse_iso(last_seen)).total_seconds() > GATE_ONLINE_WITHIN_SEC:
+            return False
+        return uptime > (now - _parse_iso(since_iso)).total_seconds() + 10
+    except ValueError:
+        return False
+
+
+def _resent_count(job: dict[str, Any]) -> int:
+    err = str(job.get("error") or "")
+    if err.startswith("apply_resent "):
+        try:
+            return int(err.split()[1])
+        except (IndexError, ValueError):
+            return 0
+    return 0
+
+
+def resend_apply_once(sb: Any, publish: Any, *, now: datetime | None = None) -> int:
+    """유실된 ota_apply 재전송. 대상: applying 인데 apply 뒤 APPLY_RESEND_AFTER_SEC 지나도록 기기가
+    재부팅하지 않은 작업, 그리고 그 상태로 timeout 된 지 APPLY_RESEND_WINDOW_SEC 안인 작업. 발행 수 반환."""
+    if publish is None:
+        return 0
+    now = now or _now()
+    since = (now - timedelta(seconds=APPLY_RESEND_WINDOW_SEC)).isoformat()
+    res = (
+        sb.table("ota_jobs").select("*").eq("kind", KIND_CAMERA)
+        .in_("status", ["applying", "timeout"]).gte("created_at", since)
+        .order("created_at", desc=True).execute()
+    )
+    sent = 0
+    seen: set[str] = set()
+    for job in res.data or []:
+        tu = job["target_uuid"]
+        if tu in seen:
+            continue
+        seen.add(tu)
+        applied_at = job.get("applied_at")
+        if not applied_at:
+            continue
+        if job["status"] == "timeout" and not str(job.get("error") or "").startswith("applying > "):
+            continue
+        if _resent_count(job) >= APPLY_RESEND_MAX:
+            continue
+        try:
+            age = (now - _parse_iso(applied_at)).total_seconds()
+        except ValueError:
+            continue
+        if age < APPLY_RESEND_AFTER_SEC:
+            continue
+        latest = (
+            sb.table("ota_jobs").select("id").eq("target_uuid", tu)
+            .order("created_at", desc=True).limit(1).execute()
+        )
+        if not latest.data or latest.data[0]["id"] != job["id"]:
+            continue
+        cres = sb.table("cameras").select("*").eq("id", tu).limit(1).execute()
+        cam = (cres.data or [None])[0]
+        if not cam or cam.get("unlinked_at"):
+            continue
+        if job.get("prev_version") and cam.get("firmware_ver") != job["prev_version"]:
+            continue                                  # 이미 바뀌었으면 heartbeat 판정에 맡긴다
+        if not _alive_without_reboot_since(cam, applied_at, now):
+            continue
+        from backend.mqtt.camera_commands import ota_apply_command  # 지연 import(순환 방지)
+        cmd = ota_apply_command(job_id=job["id"])
+        ok = False
+        try:
+            ok = bool(publish(cam.get("camera_id", ""), cmd))
+        except Exception:  # noqa: BLE001
+            logger.exception("ota apply 재전송 예외 camera=%s", cam.get("camera_id"))
+        if not ok:
+            continue
+        n = _resent_count(job) + 1
+        _update(sb, job["id"], {"status": "applying", "apply_msg_id": cmd["msg_id"],
+                                "applied_at": _now_iso(), "finished_at": None,
+                                "error": f"apply_resent {n}"})
+        logger.warning("ota apply 재전송 %d/%d camera=%s job=%s (uptime %s, 이전 상태 %s)",
+                       n, APPLY_RESEND_MAX, cam.get("camera_id"), job["id"],
+                       _sys_of(KIND_CAMERA, cam).get("uptime_s"), job["status"])
+        sent += 1
+    return sent
+
+
 class OtaMonitor:
-    """브리지 프로세스 스레드. 60초마다 scan_once + 카메라 자동 재시도(OfflineMonitor 와 같은 모양)."""
+    """브리지 프로세스 스레드. 60초마다 scan_once + 카메라 자동 재시도 + apply 재전송."""
 
     def __init__(self, interval_sec: float = 60.0) -> None:
         self._interval = interval_sec
@@ -569,7 +667,12 @@ class OtaMonitor:
             try:
                 from backend.mqtt import handlers as _h  # 브리지가 등록한 publish_command
                 from backend.supabase_client import get_supabase_client
-                n = auto_retry_once(get_supabase_client(), _h.get_command_publisher())
+                sb_ = get_supabase_client()
+                pub = _h.get_command_publisher()
+                m = resend_apply_once(sb_, pub)
+                if m:
+                    logger.info("ota apply 재전송 %d건", m)
+                n = auto_retry_once(sb_, pub)
                 if n:
                     logger.info("ota auto-retry 발행 %d건", n)
             except Exception:  # noqa: BLE001
@@ -600,6 +703,7 @@ __all__ = [
     "get_release",
     "mark_applying",
     "auto_retry_once",
+    "resend_apply_once",
     "mark_failed",
     "scan_once",
     "set_prepare_msg",

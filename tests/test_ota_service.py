@@ -326,6 +326,66 @@ def test_auto_retry_publish_failure_marks_job() -> None:
     assert new["status"] == "failed" and new["error"] == "publish_failed"
 
 
+# ---------- apply 재전송 ----------
+
+def _applying_job(**over) -> dict:
+    job = _failed_job(id="job-a", status="applying", error=None, pct=100,
+                      apply_msg_id="msg-a", applied_at=_iso(120), created_at=_iso(600),
+                      updated_at=_iso(120), finished_at=None)
+    job.update(over)
+    return job
+
+
+def _cam_uptime(uptime: int, **over) -> dict:
+    return _quiet_camera(clip_stats={"up_busy_s": -1, "last_rec_s": 3600,
+                                     "sys": {"uptime_s": uptime, "rssi": -55, "int_largest": 60_000,
+                                             "reset": "SW"}}, **over)
+
+
+def test_resend_apply_when_device_never_rebooted() -> None:
+    sb = FakeSB(firmware_releases=[_release()], ota_jobs=[_applying_job()], cameras=[_cam_uptime(5000)])
+    sent: list[dict] = []
+    assert svc.resend_apply_once(sb, lambda cid, cmd: sent.append(cmd) or True) == 1
+    assert sent[0]["action"] == "ota_apply" and sent[0]["job_id"] == "job-a"
+    j = sb.one("ota_jobs", id="job-a")
+    assert j["status"] == "applying" and j["apply_msg_id"] == sent[0]["msg_id"]
+    assert j["error"] == "apply_resent 1"
+
+
+def test_resend_apply_skips_when_device_rebooted_after_apply() -> None:
+    sb = FakeSB(firmware_releases=[_release()], ota_jobs=[_applying_job()], cameras=[_cam_uptime(30)])
+    assert svc.resend_apply_once(sb, lambda cid, cmd: True) == 0
+
+
+def test_resend_apply_skips_too_soon() -> None:
+    sb = FakeSB(firmware_releases=[_release()], ota_jobs=[_applying_job(applied_at=_iso(20))],
+                cameras=[_cam_uptime(5000)])
+    assert svc.resend_apply_once(sb, lambda cid, cmd: True) == 0
+
+
+def test_resend_apply_revives_timed_out_applying_job() -> None:
+    sb = FakeSB(firmware_releases=[_release()],
+                ota_jobs=[_applying_job(status="timeout", error="applying > 600s",
+                                        applied_at=_iso(700), finished_at=_iso(100))],
+                cameras=[_cam_uptime(5000)])
+    assert svc.resend_apply_once(sb, lambda cid, cmd: True) == 1
+    j = sb.one("ota_jobs", id="job-a")
+    assert j["status"] == "applying" and j["finished_at"] is None and j["error"] == "apply_resent 1"
+
+
+def test_resend_apply_respects_max() -> None:
+    sb = FakeSB(firmware_releases=[_release()],
+                ota_jobs=[_applying_job(error=f"apply_resent {svc.APPLY_RESEND_MAX}")],
+                cameras=[_cam_uptime(5000)])
+    assert svc.resend_apply_once(sb, lambda cid, cmd: True) == 0
+
+
+def test_verified_clears_resend_marker() -> None:
+    sb, _ = _sb_with_job("applying", error="apply_resent 2")
+    svc.apply_heartbeat_fw(sb, CAM_UUID, _release()["version"])
+    assert sb.one("ota_jobs", id="job-1")["error"] is None
+
+
 # ---------- 시한 스윕 ----------
 
 def test_scan_times_out_stale_download() -> None:
