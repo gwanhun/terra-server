@@ -173,6 +173,66 @@ def close_camera_session(camera_id_text: str, session_id: str) -> None:
     get_relay().drop_session(session_id)
 
 
+# ---------- 앱 → 카메라 ICE 후보 필터 (2026-10-21) ----------
+# 왜: 카메라의 esp_peer 는 원격 후보를 max_candidates(펌웨어 8)개까지만 받고 그 뒤는
+# "Remote candidate over limited" 로 버린다. 폰·브라우저는 host(v4·v6·mDNS)·srflx·relay 를
+# 20~30개 트리클로 보내는데 서버가 그대로 중계하면 가장 늦게 오는 relay(TURN) 후보가 잘려
+# NAT 뒤에서 연결이 늦거나 실패한다(10/21 p4cam-441a8f8c: over limited ×20, Failed to receive
+# request ×9). 카메라가 못 쓰는 후보(tcp·mDNS·IPv6·link-local·prflx)는 버리고, 타입별 상한으로
+# 8개 안에 relay 가 반드시 들어가게 한다. 뷰어 쪽 변경 없음(앱은 결과 ok 만 본다).
+_ICE_CAND_RE = re.compile(
+    r'^(?:a=)?candidate:(?P<found>\S+) (?P<comp>\d+) (?P<proto>udp|tcp) (?P<prio>\d+) '
+    r'(?P<addr>\S+) (?P<port>\d+) typ (?P<typ>host|srflx|prflx|relay)',
+    re.IGNORECASE,
+)
+ICE_BUDGET: dict[str, int] = {'host': 3, 'srflx': 2, 'relay': 3}   # 합 8 = 펌웨어 esp_peer max_candidates
+_ICE_SESSION_TTL_SEC = 180.0
+# session_id → (마지막 활동 monotonic, 타입별 전달 수, 전달한 (typ, addr, port))
+_ice_sessions: dict[str, tuple[float, dict[str, int], set[tuple[str, str, str]]]] = {}
+
+
+def ice_candidate_verdict(session_id: str, candidate: dict[str, Any], *, now: float | None = None) -> str | None:
+    """앱 ICE 후보를 카메라로 보낼지 결정. None = 전달, 문자열 = 버리는 이유."""
+    now = time.monotonic() if now is None else now
+    for sid in [s for s, (t, _, _) in _ice_sessions.items() if now - t > _ICE_SESSION_TTL_SEC]:
+        _ice_sessions.pop(sid, None)
+    raw = candidate.get('candidate')
+    if not isinstance(raw, str) or not raw.strip():
+        return None   # end-of-candidates(빈 문자열) 또는 알 수 없는 형태 → 손대지 않음
+    m = _ICE_CAND_RE.match(raw.strip())
+    if not m:
+        return None
+    proto, addr, port, typ = m['proto'].lower(), m['addr'], m['port'], m['typ'].lower()
+    if proto == 'tcp':
+        return 'tcp'            # esp_peer ICE 는 UDP 만
+    if addr.endswith('.local'):
+        return 'mdns'           # 호스트명 후보는 카메라가 못 푼다(offer 필터와 동일)
+    if ':' in addr:
+        return 'ipv6'           # 펌웨어 esp_peer_default_cfg.ipv6_support 미설정
+    if addr.startswith('169.254.'):
+        return 'link_local'
+    if typ == 'prflx':
+        return 'prflx'
+    _, counts, seen = _ice_sessions.get(session_id, (now, {}, set()))
+    key = (typ, addr, port)
+    if key in seen:
+        return 'dup'
+    if counts.get(typ, 0) >= ICE_BUDGET[typ]:
+        return f'budget_{typ}'
+    seen.add(key)
+    counts[typ] = counts.get(typ, 0) + 1
+    _ice_sessions[session_id] = (now, counts, seen)
+    return None
+
+
+def _ice_brief(candidate: dict[str, Any]) -> str:
+    raw = candidate.get('candidate')
+    m = _ICE_CAND_RE.match(raw.strip()) if isinstance(raw, str) else None
+    if not m:
+        return 'end' if raw == '' else 'unparsed'
+    return f"{m['typ'].lower()} {m['proto'].lower()} {m['addr']}:{m['port']}"
+
+
 def _command(action: str, session_id: str, ttl_sec: int, **extra: Any) -> dict[str, Any]:
     payload = {
         'msg_id': str(uuid4()),
@@ -392,6 +452,15 @@ def add_webrtc_ice(
 ) -> WebRTCCommandOut:
     camera = _owned_camera(camera_uuid, user_id)
     camera_uuid = camera['id']  # 정규화된 uuid (urn:uuid: 등 원본은 DB 캐스트 실패)
+    reason = ice_candidate_verdict(body.session_id, body.candidate)
+    if reason:
+        # 카메라 쪽 "Remote candidate over limited" 를 서버에서 미리 막는다. 앱엔 ok 로 답해
+        # 트리클 흐름을 깨지 않는다(버린 후보는 어차피 카메라가 쓸 수 없던 것).
+        logger.info('webrtc_ice 생략 camera=%s session=%s reason=%s cand=%s',
+                    camera['camera_id'], body.session_id, reason, _ice_brief(body.candidate))
+        return WebRTCCommandOut(ok=True, session_id=body.session_id)
+    logger.info('webrtc_ice 전달 camera=%s session=%s cand=%s',
+                camera['camera_id'], body.session_id, _ice_brief(body.candidate))
     command = _command(
         'webrtc_ice',
         body.session_id,

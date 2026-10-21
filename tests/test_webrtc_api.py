@@ -237,3 +237,73 @@ def test_webrtc_ice_publishes_command(
     assert published['camera_id'] == CAMERA_TEXT
     assert published['command']['action'] == 'webrtc_ice'
     assert published['command']['candidate'] == candidate
+
+
+# ---------- ICE 후보 필터 (2026-10-21) ----------
+
+def _cand(line: str) -> dict:
+    return {'candidate': line, 'sdpMid': '0', 'sdpMLineIndex': 0}
+
+
+def _ice_setup(app_client: TestClient, fake_sb: MagicMock, monkeypatch) -> list:
+    _setup_owned_camera(fake_sb)
+    published: list = []
+
+    class FakeSignaling:
+        def publish(self, camera_id, command, *, timeout_sec=5.0):
+            published.append(command['candidate']['candidate'])
+
+    from backend.routers import webrtc as webrtc_router
+
+    monkeypatch.setattr(webrtc_router, 'MqttWebRTCSignaling', FakeSignaling)
+    webrtc_router._ice_sessions.clear()
+    return published
+
+
+def _post_ice(app_client: TestClient, session: str, line: str) -> None:
+    res = app_client.post(
+        f'/cameras/{CAMERA_UUID}/webrtc/ice',
+        json={'session_id': session, 'candidate': _cand(line)},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json() == {'ok': True, 'session_id': session}
+
+
+def test_webrtc_ice_drops_candidates_camera_cannot_use(app_client, fake_sb, monkeypatch) -> None:
+    published = _ice_setup(app_client, fake_sb, monkeypatch)
+    for line in (
+        'candidate:2 1 tcp 1518214911 192.168.0.5 9 typ host tcptype active',          # tcp
+        'candidate:3 1 udp 2122260223 a1b2c3d4-0000.local 51234 typ host',              # mDNS
+        'candidate:4 1 udp 2122262783 2001:db8::1 51235 typ host',                      # IPv6
+        'candidate:5 1 udp 2122260223 169.254.10.2 51236 typ host',                     # link-local
+        'candidate:6 1 udp 1845501695 203.0.113.9 51237 typ prflx raddr 0.0.0.0 rport 0',  # prflx
+    ):
+        _post_ice(app_client, 'sess-f', line)
+    assert published == []
+    _post_ice(app_client, 'sess-f', 'candidate:7 1 udp 41885439 3.37.22.197 60001 typ relay raddr 0.0.0.0 rport 0')
+    assert len(published) == 1 and 'typ relay' in published[0]
+
+
+def test_webrtc_ice_budget_keeps_room_for_relay(app_client, fake_sb, monkeypatch) -> None:
+    published = _ice_setup(app_client, fake_sb, monkeypatch)
+    for i in range(6):   # host 6개 → 3개만 전달
+        _post_ice(app_client, 'sess-b', f'candidate:{i} 1 udp 2122260223 192.168.0.{10 + i} 5000{i} typ host')
+    for i in range(3):   # srflx 3개 → 2개
+        _post_ice(app_client, 'sess-b', f'candidate:{10 + i} 1 udp 1686052607 203.0.113.{i} 6000{i} typ srflx raddr 192.168.0.10 rport 50000')
+    for i in range(4):   # relay 4개 → 3개 (host 가 먼저 많이 와도 relay 자리는 남는다)
+        _post_ice(app_client, 'sess-b', f'candidate:{20 + i} 1 udp 41885439 3.37.22.197 7000{i} typ relay raddr 0.0.0.0 rport 0')
+    assert len(published) == 8
+    assert sum('typ host' in c for c in published) == 3
+    assert sum('typ srflx' in c for c in published) == 2
+    assert sum('typ relay' in c for c in published) == 3
+    # 다른 세션은 별도 예산
+    _post_ice(app_client, 'sess-c', 'candidate:1 1 udp 2122260223 192.168.0.99 50099 typ host')
+    assert len(published) == 9
+
+
+def test_webrtc_ice_passes_end_of_candidates_and_dedupes(app_client, fake_sb, monkeypatch) -> None:
+    published = _ice_setup(app_client, fake_sb, monkeypatch)
+    _post_ice(app_client, 'sess-d', 'candidate:1 1 udp 2122260223 192.168.0.5 50000 typ host')
+    _post_ice(app_client, 'sess-d', 'candidate:1 1 udp 2122260223 192.168.0.5 50000 typ host')   # 중복
+    _post_ice(app_client, 'sess-d', '')                                                          # end-of-candidates
+    assert published == ['candidate:1 1 udp 2122260223 192.168.0.5 50000 typ host', '']

@@ -169,6 +169,11 @@ body:
 
 `pc.onicecandidate` 콜백마다 호출. `candidate === null` (gathering 완료) 이벤트는 보내지 않음.
 
+**서버 필터 (2026-10-21):** 카메라의 esp_peer 는 원격 후보를 **8개**까지만 받고 나머지는 버린다(`Remote candidate over limited 8`). 폰·브라우저는 20~30개를 보내므로 서버가 중계 전에 걸러서 relay 자리가 남게 한다. 앱은 바꿀 것 없음 — 버려진 후보도 `200 ok` 로 답한다.
+- 버림: `tcp` 후보, mDNS(`*.local`) 호스트, IPv6, link-local(`169.254.*`), `prflx`, 같은 (typ, addr, port) 중복.
+- 세션별 상한: host 3 · srflx 2 · relay 3 (합 8). 상한 초과분은 버림.
+- 그래도 앱 쪽에서 `iceCandidatePoolSize: 0`, 후보 목록을 relay → srflx → host 순으로 보내면 더 빨리 붙는다(선택).
+
 #### 펌웨어 → 앱 (long-poll)
 ```
 GET /cameras/{camera_uuid}/webrtc/candidates?session_id=...&since_index=N&timeout_sec=20
