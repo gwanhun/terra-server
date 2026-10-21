@@ -38,7 +38,7 @@ X-Ops-Secret: <서버 .env OPS_REBOOT_SECRET>
 | 503 | `{"detail": "ops log unavailable"}` | **추가.** 기록 INSERT 실패 — **재부팅하지 않음**. 기록 없이 발행하면 쿨다운이 뚫리므로 막는다 |
 | 422 | FastAPI 기본 | 바디 필드 누락·길이 위반 |
 
-검사 순서: 401 → 404 → `not_beta` → `offline` → `live_active` → `ota_active` → 쿨다운 429 → 기록 → 발행.
+검사 순서: 401 → 404 → `not_beta` → `offline` → `live_active` → `ota_active` → 쿨다운 429 → 기록 → 발행. 404부터 발행까지는 라이브 시청 시작과 **같은 카메라 락** 안에서 돌아, 판정과 발행 사이에 시청이 끼어들지 못합니다.
 petcam 스크립트는 409 `ota_active` 를 `live_active` 와 같이 "건너뜀"으로, 503 은 "실패(다음 실행에서 재시도)"로 다루면 됩니다.
 
 - 인증은 상수 시간 비교, 시크릿·헤더 값은 로그에 남기지 않습니다. service_role 키는 쓰지 않습니다.
@@ -90,6 +90,20 @@ petcam 스크립트는 409 `ota_active` 를 `live_active` 와 같이 "건너뜀"
 4. 코드 배포 후 **API 와 브리지 둘 다 재시작**: `sudo systemctl restart terra-api terra-bridge` (ack 기록은 브리지 쪽 코드).
 5. beta 카메라 수 확인: `select count(*) from cameras where labeling_group = 'beta' and unlinked_at is null;` → **9** 여야 함.
 6. 요청서 4절 검증 1~6 실행. 4번의 "앱에 푸시·화면 표시 없음"은 앱 담당 확인.
+
+### 배포 후 검증 결과 (2026-10-21, 운영 `https://api.terra-server.uk`)
+
+| 요청서 4절 | 결과 | 방법 |
+|-----------|------|------|
+| 1. 시크릿 없이/틀리게 | ✅ 401 `invalid ops secret` (둘 다) | 실호출 |
+| 2. 내부 카메라 | ✅ 409 `not_beta` (`p4hub-cfb51bef`) | 실호출 |
+| 3. 라이브 중 | ⏭ **자동 테스트로 갈음** (owner 2026-10-21 승인) | 라이브 순간을 노려 부르면, 그 사이 시청이 끝날 경우 실제 재부팅이 나가서 실기 확인을 하지 않음. `tests/test_ops_reboot_api.py` 3건이 고정: 라이브 세션 있음 / `stream_until` 만 미래 / 락 대기 중 시청 시작 |
+| 4. 베타 1대 실재부팅 | ⏳ **첫 자동 재부팅으로 확인 예정** (owner 승인) | 테스터 카메라를 일부러 재부팅하지 않음. petcam 감시 스크립트가 처음 재부팅을 건 다음 날, `camera_ops_reboots`(`published=true`, `ack_result=ok`)와 그 카메라 `clip_stats.sys.reset == "SW:mqtt_reboot"`·녹화 재개를 확인 |
+| 5. 즉시 재호출 → 429 | ⏳ **4번 직후 확인 예정** | 쿨다운 검사가 발행보다 먼저라, 재부팅 후 2시간 안에 같은 카메라를 부르면 429만 나오고 재부팅은 안 일어남(테스터 카메라에 해도 안전) |
+| 6. 오프라인 카메라 | ✅ 409 `offline` (`p4cam-ac5cd849`) | 실호출 |
+| (추가) 없는 카메라 | ✅ 404 `camera not found` | 실호출 |
+
+검증 호출은 전부 건너뜀이라 `camera_ops_reboots` 는 0행 그대로입니다. **petcam 쪽 부탁:** 감시 스크립트가 처음 재부팅을 건 날 terra-server 담당에게 알려 주세요(카메라·시각). 그날 2시간 안이면 5번까지 확인합니다.
 
 ## 7. 시크릿 전달
 
