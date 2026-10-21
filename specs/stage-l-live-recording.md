@@ -2,7 +2,7 @@
 
 > **구현 방식 (CAOF):** 이 계획을 task 단위로 구현한다. Critical 트랙 — Implementer 에이전트 분리(GATE 4). Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 앱이 폰에서 만든 라이브 직접 녹화(≤60초 mp4 + jpg)를 R2에 올리고, 목록·재생·삭제할 수 있게 서버 API·테이블·정리 배치를 만든다.
+**Goal:** 앱이 폰에서 만든 라이브 직접 녹화(≤120초 mp4 + jpg — 2026-10-21 60초에서 상향)를 R2에 올리고, 목록·재생·삭제할 수 있게 서버 API·테이블·정리 배치를 만든다.
 
 **Architecture:** 새 테이블 `live_recordings`(RLS SELECT 본인만) + 새 라우터 `backend/routers/recordings.py`(등록·완료·URL·삭제, JWT). 업로드는 기존 클립처럼 presigned PUT로 앱이 R2에 직접 올린다. 24시간 넘은 `pending`은 API 프로세스의 백그라운드 스레드(`LiveSessionReaper` 패턴)가 지운다. 목록 API는 없다 — 앱이 Supabase에서 직접 SELECT.
 
@@ -15,7 +15,7 @@
 ## Global Constraints
 
 - 오류: 한도 초과 409 `{"detail":{"code":"recording_quota_exceeded","used":N,"limit":50}}` / 업로드 확인 실패 409 `{"detail":{"code":"upload_missing"}}` (+ 크기 불일치면 `"reason":"size_mismatch"`). 그 외 400·403·404는 문자열 `detail`, R2 실패는 502.
-- 검사값: `duration_ms` 3,000~60,000 / `size_bytes` 1~30MB(`30 * 1024 * 1024`) / 썸네일 ≤ 5MB(`5 * 1024 * 1024`) / 한도 50개(`pending`+`ready`).
+- 검사값: `duration_ms` 3,000~120,000(2026-10-21 60,000에서 상향) / `size_bytes` 1~30MB(`30 * 1024 * 1024`) / 썸네일 ≤ 5MB(`5 * 1024 * 1024`) / 한도 50개(`pending`+`ready`).
 - presigned PUT 유효 **1,800초**(30분). GET은 기존 `DEFAULT_GET_URL_TTL`(3,600초), 응답 필드는 `expires_in`(초).
 - R2 키: `terra-clips/recordings/{user_id}/{camera_id}/{recording_id}.mp4` / `.jpg`. `camera_id` = `cameras.id`(uuid). `recording_id`는 서버가 INSERT 전에 uuid4로 만든다(키와 행 id 일치 — clips와 같은 이유).
 - 카메라 소유 확인은 `cameras.owner_id = user_id`만. **`unlinked_at` 은 보지 않는다**(해제 뒤 업로드 허용). 남의 것·없는 것 → 403 `"camera not found or not owned"`.
@@ -138,7 +138,7 @@ create index if not exists live_recordings_status_created_idx
 
 **Context:**
 - Depends on: Task 1, 2 (fixture 가 `head_object_size` 를 patch), 6 (`purge_one`)
-- Produces: `router = APIRouter(prefix="/recordings", tags=["recordings"])`, 상수 `RECORDING_PUT_URL_TTL = 1800`, `RECORDING_QUOTA = 50`, `MIN_DURATION_MS = 3000`, `MAX_DURATION_MS = 60000`, `MAX_VIDEO_BYTES = 30 * 1024 * 1024`, `MAX_THUMB_BYTES = 5 * 1024 * 1024`; 헬퍼 `_build_key(user_id: str, camera_id: str, recording_id: str, ext: str) -> str`, `_load_recording_for_owner(sb, recording_id: str, user_id: str) -> dict` (uuid 파싱 실패·없음·남의 것 → 404 `"recording not found"`, `.limit(1)` 조회)
+- Produces: `router = APIRouter(prefix="/recordings", tags=["recordings"])`, 상수 `RECORDING_PUT_URL_TTL = 1800`, `RECORDING_QUOTA = 50`, `MIN_DURATION_MS = 3000`, `MAX_DURATION_MS = 120000`(2026-10-21 60000 → 120000), `MAX_VIDEO_BYTES = 30 * 1024 * 1024`, `MAX_THUMB_BYTES = 5 * 1024 * 1024`; 헬퍼 `_build_key(user_id: str, camera_id: str, recording_id: str, ext: str) -> str`, `_load_recording_for_owner(sb, recording_id: str, user_id: str) -> dict` (uuid 파싱 실패·없음·남의 것 → 404 `"recording not found"`, `.limit(1)` 조회)
 - Must know:
   - 요청 모델 `RecordingCreate`: `camera_id: UUID, client_id: UUID, started_at: datetime, duration_ms: int, size_bytes: int, width: int|None, height: int|None, has_thumbnail: bool`. 범위 위반은 pydantic `Field(ge/le)` → FastAPI 422 가 아니라 **400** 이어야 한다(앱은 400만 비재시도) → 핸들러 안에서 직접 검사해 `HTTPException(400)`.
   - 응답 `RecordingUpload`: `recording_id, status, video_upload_url: str|None, thumb_upload_url: str|None, expires_at: datetime|None`. 새 행 201, 기존 행 200 (`Response.status_code` 로 분기).
