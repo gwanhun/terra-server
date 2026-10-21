@@ -125,8 +125,8 @@
       <thead><tr><th>device_id</th><th>이름</th><th title="telemetry 가 보고한 펌웨어 버전(2026-10-07+ 펌웨어). 마우스 올리면 capabilities">fw</th><th>사육장</th><th>online</th><th>온도</th><th>습도</th><th>LED</th><th title="가동시간 · 마지막 재부팅 사유 · 힙 · RSSI. 빨강=지금 조치, 주황=관찰 (표 아래 기준)">sys</th><th>last_seen</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
-    <small class="legend muted">색 기준 — <span class="bad">빨강</span> 지금 조치: 크래시·전원 부족 재부팅(24시간 안), 내부 RAM 최대 블록 16K/여유 32K 미만, RSSI −80 이하, 클립 유실(24시간 안)·업로드 고착·인코더 연속 실패·MQTT 플래핑·SD fault 3+·스킵 20%+
-      · <span class="warn">주황</span> 관찰: 펌웨어 자가 복구 재부팅(net_wd·stall 계열, 24시간 안), RAM 24K/48K 미만, RSSI −75~−80, 스킵·즉시 업로드 실패(SD 재시도됨), SD 백로그 3+, WiFi 끊김 1시간 안
+    <small class="legend muted">색 기준 — <span class="bad">빨강</span> 지금 조치: 크래시·전원 부족 재부팅(24시간 안), 내부 RAM 최대 블록 16K/여유 32K 미만, RSSI −80 이하, 업로드 고착·인코더 연속 실패·MQTT 플래핑·SD fault 3+·스킵 20%+
+      · <span class="warn">주황</span> 관찰: 펌웨어 자가 복구 재부팅(net_wd·stall 계열, 24시간 안), RAM 24K/48K 미만, RSSI −75~−80, 스킵·업로드 실패·클립 유실(24시간 안), SD 백로그 3+, WiFi 끊김 1시간 안
       · 회색 정상(전원 투입·원격 재부팅·OTA·회전 등 의도된 재부팅). 하루 넘게 잘 돌면 재부팅 사유 색은 뺀다. 각 항목에 마우스를 올리면 설명.</small>
   </div>
 
@@ -280,8 +280,8 @@
       <thead><tr><th>camera_id</th><th>이름</th><th>model</th><th title="heartbeat 가 보고한 펌웨어 버전(esp_app_desc.version). 마우스 올리면 capabilities">fw</th><th>사육장</th><th>online</th><th title="rotate_180 설정(진실). capabilities.rotate_180 보고 전엔 비활성">회전 180°</th><th title="클립 파이프라인: 녹화/스킵/업로드실패/SD백로그 · 마지막 녹화 경과">클립</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
-    <small class="legend muted">색 기준 — <span class="bad">빨강</span> 지금 조치: 크래시·전원 부족 재부팅(24시간 안), 내부 RAM 최대 블록 16K/여유 32K 미만, RSSI −80 이하, 클립 유실(24시간 안)·업로드 고착·인코더 연속 실패·MQTT 플래핑·SD fault 3+·스킵 20%+
-      · <span class="warn">주황</span> 관찰: 펌웨어 자가 복구 재부팅(net_wd·stall 계열, 24시간 안), RAM 24K/48K 미만, RSSI −75~−80, 스킵·즉시 업로드 실패(SD 재시도됨), SD 백로그 3+, WiFi 끊김 1시간 안
+    <small class="legend muted">색 기준 — <span class="bad">빨강</span> 지금 조치: 크래시·전원 부족 재부팅(24시간 안), 내부 RAM 최대 블록 16K/여유 32K 미만, RSSI −80 이하, 업로드 고착·인코더 연속 실패·MQTT 플래핑·SD fault 3+·스킵 20%+
+      · <span class="warn">주황</span> 관찰: 펌웨어 자가 복구 재부팅(net_wd·stall 계열, 24시간 안), RAM 24K/48K 미만, RSSI −75~−80, 스킵·업로드 실패·클립 유실(24시간 안), SD 백로그 3+, WiFi 끊김 1시간 안
       · 회색 정상(전원 투입·원격 재부팅·OTA·회전 등 의도된 재부팅). 하루 넘게 잘 돌면 재부팅 사유 색은 뺀다. 각 항목에 마우스를 올리면 설명.</small>
   </div>
 
