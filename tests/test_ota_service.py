@@ -255,6 +255,77 @@ def test_heartbeat_without_applying_job_is_noop() -> None:
     assert sb.one("ota_jobs", id="job-1")["status"] == "ready"
 
 
+# ---------- 카메라 자동 재시도 ----------
+
+def _failed_job(**over) -> dict:
+    job = {"id": "job-f", "kind": "camera", "target_uuid": CAM_UUID, "release_id": REL_CAM,
+           "status": "failed", "error": "connect", "pct": 0, "prepare_msg_id": "msg-p",
+           "apply_msg_id": None, "prev_version": "fb2-p4 0.2.1-20261006", "issued_by": "owner-1",
+           "created_at": _iso(1800), "updated_at": _iso(1700), "finished_at": _iso(1700)}
+    job.update(over)
+    return job
+
+
+def _quiet_camera(**over) -> dict:
+    cam = _camera()
+    cam["clip_stats"] = {"up_busy_s": -1, "last_rec_s": 3600,
+                         "sys": {"uptime_s": 3600, "rssi": -55, "int_largest": 60_000, "reset": "SW"}}
+    cam.update(over)
+    return cam
+
+
+def test_auto_retry_reissues_connect_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("API_PUBLIC_BASE_URL", "https://api.test")
+    sb = FakeSB(firmware_releases=[_release()], ota_jobs=[_failed_job()], cameras=[_quiet_camera()])
+    sent: list[tuple[str, dict]] = []
+    assert svc.auto_retry_once(sb, lambda cid, cmd: sent.append((cid, cmd)) or True) == 1
+    assert len(sent) == 1 and sent[0][0] == "p4cam-aabbccdd" and sent[0][1]["action"] == "ota_prepare"
+    jobs = sb.rows("ota_jobs")
+    assert len(jobs) == 2
+    new = [j for j in jobs if j["id"] != "job-f"][0]
+    assert new["status"] == "pending" and new["release_id"] == REL_CAM and new["issued_by"] == "owner-1"
+    assert new["prepare_msg_id"] == sent[0][1]["msg_id"]
+
+
+@pytest.mark.parametrize("over_job, over_cam", [
+    ({"error": "sha256_mismatch"}, {}),                              # 재시도 무의미한 사유
+    ({"finished_at": _iso(60), "updated_at": _iso(60)}, {}),       # 간격 미경과
+    ({}, {"clip_stats": {"up_busy_s": 30, "last_rec_s": 3600,
+                         "sys": {"uptime_s": 3600, "rssi": -55, "int_largest": 60_000, "reset": "SW"}}}),  # 업로드 중
+    ({}, {"clip_stats": {"up_busy_s": -1, "last_rec_s": 30,
+                         "sys": {"uptime_s": 3600, "rssi": -55, "int_largest": 60_000, "reset": "SW"}}}),  # 방금 녹화
+    ({}, {"is_online": False}),                                     # 게이트(오프라인)
+    ({}, {"stream_mode": "webrtc"}),                                # 라이브 중
+])
+def test_auto_retry_skips(over_job: dict, over_cam: dict) -> None:
+    sb = FakeSB(firmware_releases=[_release()], ota_jobs=[_failed_job(**over_job)],
+                cameras=[_quiet_camera(**over_cam)])
+    assert svc.auto_retry_once(sb, lambda cid, cmd: True) == 0
+    assert len(sb.rows("ota_jobs")) == 1
+
+
+def test_auto_retry_stops_at_max() -> None:
+    jobs = [_failed_job(id=f"job-{i}", created_at=_iso(3600 * (i + 1)), finished_at=_iso(3600 * (i + 1)),
+                        updated_at=_iso(3600 * (i + 1))) for i in range(svc.AUTO_RETRY_MAX)]
+    sb = FakeSB(firmware_releases=[_release()], ota_jobs=jobs, cameras=[_quiet_camera()])
+    assert svc.auto_retry_once(sb, lambda cid, cmd: True) == 0
+
+
+def test_auto_retry_leaves_newer_human_job_alone() -> None:
+    sb = FakeSB(firmware_releases=[_release()],
+                ota_jobs=[_failed_job(), _failed_job(id="job-new", status="verified", error=None,
+                                                     created_at=_iso(100))],
+                cameras=[_quiet_camera()])
+    assert svc.auto_retry_once(sb, lambda cid, cmd: True) == 0
+
+
+def test_auto_retry_publish_failure_marks_job() -> None:
+    sb = FakeSB(firmware_releases=[_release()], ota_jobs=[_failed_job()], cameras=[_quiet_camera()])
+    assert svc.auto_retry_once(sb, lambda cid, cmd: False) == 0
+    new = [j for j in sb.rows("ota_jobs") if j["id"] != "job-f"][0]
+    assert new["status"] == "failed" and new["error"] == "publish_failed"
+
+
 # ---------- 시한 스윕 ----------
 
 def test_scan_times_out_stale_download() -> None:

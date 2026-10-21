@@ -88,6 +88,20 @@ TIMEOUT_BY_STATUS_SEC: dict[str, int] = {
 # 펌웨어가 보고하는 실패 사유 중 "다시 보내면 될 수도" 인 것 (콘솔 안내용)
 RETRYABLE_ERRORS: frozenset[str] = frozenset({"busy", "dns", "tcp", "tls", "http", "timeout"})
 
+# [2026-10-21] 카메라 자동 재시도 (OtaMonitor). 재부팅 직후 P4↔C6 링크가 몇 분간 TCP 를 못 여는
+# 보드(320062fb·19014459·441a8f8c)에서 prepare 다운로드가 `connect`/`read` 로 번번이 실패하고,
+# 현장 조치가 불가한 베타 환경이라 원격으로는 "될 때까지 다시 보내기" 뿐이다(320062fb 는 4번째에
+# 성공). 조건: 같은 (카메라, 릴리스) 로 24h 안 AUTO_RETRY_MAX 회까지, 직전 실패 뒤 INTERVAL 경과,
+# 카메라 온라인·게이트 통과·라이브 없음·업로드 중 아님·최근 녹화 없음(재부팅 비용 최소화).
+AUTO_RETRY_ERROR_PREFIXES: tuple[str, ...] = (
+    "connect", "read", "read_short", "len_mismatch",
+    "accepted > ", "downloading > ", "applying > ",
+)
+AUTO_RETRY_MAX = int(os.getenv("OTA_AUTO_RETRY_MAX", "6"))
+AUTO_RETRY_INTERVAL_SEC = int(os.getenv("OTA_AUTO_RETRY_INTERVAL_SEC", "900"))
+AUTO_RETRY_WINDOW_SEC = 24 * 3600
+AUTO_RETRY_QUIET_REC_SEC = 600      # clip_stats.last_rec_s 가 이보다 작으면(10분 내 녹화) 보류
+
 
 class OtaError(ValueError):
     """작업 생성/전이 거부 — 라우터에서 4xx 로 변환. `status_code` 힌트 포함."""
@@ -429,8 +443,102 @@ def scan_once(sb: Any | None = None) -> dict[str, int]:
     return {"timeout": timed_out, "failed": failed}
 
 
+def _auto_retry_error(err: str | None) -> bool:
+    return bool(err) and any(str(err).startswith(p) for p in AUTO_RETRY_ERROR_PREFIXES)
+
+
+def auto_retry_once(sb: Any, publish: Any, *, now: datetime | None = None) -> int:
+    """실패(connect/read/시한)한 카메라 작업을 조건이 맞으면 같은 릴리스로 다시 발행. 발행 수 반환.
+
+    `publish(camera_id_text, cmd) -> bool` 는 브리지의 publish_command. None 이면 아무것도 안 한다.
+    """
+    if publish is None:
+        return 0
+    now = now or _now()
+    since = (now - timedelta(seconds=AUTO_RETRY_WINDOW_SEC)).isoformat()
+    res = (
+        sb.table("ota_jobs")
+        .select("*")
+        .eq("kind", KIND_CAMERA)
+        .in_("status", ["failed", "timeout"])
+        .gte("created_at", since)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    retried = 0
+    seen: set[str] = set()
+    for job in res.data or []:
+        tu = job["target_uuid"]
+        if tu in seen:
+            continue
+        seen.add(tu)
+        if not _auto_retry_error(job.get("error")):
+            continue
+        # 이 카메라의 가장 최근 작업이어야 한다(그 뒤에 사람이 보냈거나 성공했으면 건드리지 않음)
+        latest = (
+            sb.table("ota_jobs").select("id").eq("target_uuid", tu)
+            .order("created_at", desc=True).limit(1).execute()
+        )
+        if not latest.data or latest.data[0]["id"] != job["id"]:
+            continue
+        ref = job.get("finished_at") or job.get("updated_at")
+        try:
+            if ref and (now - _parse_iso(ref)).total_seconds() < AUTO_RETRY_INTERVAL_SEC:
+                continue
+        except ValueError:
+            continue
+        tries = (
+            sb.table("ota_jobs").select("id").eq("target_uuid", tu)
+            .eq("release_id", job["release_id"]).gte("created_at", since).execute()
+        )
+        n_prev = len(tries.data or [])
+        if n_prev >= AUTO_RETRY_MAX:
+            continue
+        cres = sb.table("cameras").select("*").eq("id", tu).limit(1).execute()
+        cam = (cres.data or [None])[0]
+        if not cam or cam.get("unlinked_at"):
+            continue
+        if cam.get("stream_mode") or cam.get("live_session_id"):
+            continue
+        cs = cam.get("clip_stats") if isinstance(cam.get("clip_stats"), dict) else {}
+        if isinstance(cs.get("up_busy_s"), (int, float)) and cs["up_busy_s"] >= 0:
+            continue
+        last_rec = cs.get("last_rec_s")
+        if isinstance(last_rec, (int, float)) and 0 <= last_rec < AUTO_RETRY_QUIET_REC_SEC:
+            continue
+        if gate_reasons(KIND_CAMERA, cam, now=now):
+            continue
+        try:
+            new_job, release, payload = create_job(
+                sb, kind=KIND_CAMERA, entity=cam, release_id=job["release_id"],
+                issued_by=job.get("issued_by"),
+            )
+        except OtaError as exc:
+            logger.info("ota auto-retry 건너뜀 camera=%s: %s", cam.get("camera_id"), exc.detail)
+            continue
+        from backend.mqtt.camera_commands import ota_prepare_command  # 지연 import(순환 방지)
+        cmd = ota_prepare_command(
+            job_id=payload["job_id"], version=payload["version"], size_bytes=payload["size"],
+            sha256=payload["sha256"], url=payload["url"],
+        )
+        set_prepare_msg(sb, new_job["id"], cmd["msg_id"])
+        ok = False
+        try:
+            ok = bool(publish(cam.get("camera_id", ""), cmd))
+        except Exception:  # noqa: BLE001
+            logger.exception("ota auto-retry 발행 예외 camera=%s", cam.get("camera_id"))
+        if not ok:
+            mark_failed(sb, new_job["id"], "publish_failed")
+            continue
+        logger.warning("ota auto-retry %d/%d camera=%s job=%s (이전 %s: %s) version=%s",
+                       n_prev + 1, AUTO_RETRY_MAX, cam.get("camera_id"), new_job["id"],
+                       job["status"], job.get("error"), release.get("version"))
+        retried += 1
+    return retried
+
+
 class OtaMonitor:
-    """브리지 프로세스 스레드. 60초마다 scan_once (OfflineMonitor 와 같은 모양)."""
+    """브리지 프로세스 스레드. 60초마다 scan_once + 카메라 자동 재시도(OfflineMonitor 와 같은 모양)."""
 
     def __init__(self, interval_sec: float = 60.0) -> None:
         self._interval = interval_sec
@@ -458,6 +566,14 @@ class OtaMonitor:
                     logger.info("ota scan: %s", stats)
             except Exception:  # noqa: BLE001
                 logger.exception("ota scan 실패")
+            try:
+                from backend.mqtt import handlers as _h  # 브리지가 등록한 publish_command
+                from backend.supabase_client import get_supabase_client
+                n = auto_retry_once(get_supabase_client(), _h.get_command_publisher())
+                if n:
+                    logger.info("ota auto-retry 발행 %d건", n)
+            except Exception:  # noqa: BLE001
+                logger.exception("ota auto-retry 실패")
             self._stop.wait(self._interval)
 
 
@@ -483,6 +599,7 @@ __all__ = [
     "get_job",
     "get_release",
     "mark_applying",
+    "auto_retry_once",
     "mark_failed",
     "scan_once",
     "set_prepare_msg",

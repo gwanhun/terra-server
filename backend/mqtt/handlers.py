@@ -70,6 +70,11 @@ def set_command_publisher(publisher: CommandPublisher | None) -> None:
     _command_publisher = publisher
 
 
+def get_command_publisher() -> CommandPublisher | None:
+    """브리지 프로세스 안에서 카메라 명령을 직접 발행할 때(ota_service 자동 재시도)."""
+    return _command_publisher
+
+
 # ---------- device_id ↔ UUID 캐시 (TTL) ----------
 #
 # lru_cache 를 안 쓰는 이유: 브리지는 API 서버와 **별도 프로세스**라 기기 삭제·이름 변경
