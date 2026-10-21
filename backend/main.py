@@ -111,7 +111,7 @@ tags_metadata = [
     {
         "name": "recordings",
         "description": (
-            "라이브 직접 녹화(앱이 폰에서 만든 ≤60초 mp4 + jpg). 등록 → presigned PUT 업로드 → "
+            "라이브 직접 녹화(앱이 폰에서 만든 ≤120초 mp4 + jpg). 등록 → presigned PUT 업로드 → "
             "complete → 재생 URL·삭제. 목록은 Supabase 직결 SELECT."
         ),
     },
