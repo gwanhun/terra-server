@@ -136,6 +136,34 @@
     <span id="reg-bulk-status"></span>
   </div>
 
+  <!-- 선택 일괄 OTA -->
+  <div class="panel" id="ota-bulk">
+    <div class="row" style="margin:0">
+      <b style="font-size:12px">⬆️ 선택 일괄 OTA</b>
+      <span class="muted" id="ota-bulk-sel">선택 없음 — 줄 왼쪽 체크박스로 카메라·기기 선택</span>
+      <span style="flex:1"></span>
+      <button class="sm ghost" onclick="otaBulkLoadReleases()" title="선택된 종류(camera_p4 / hub_p4 / device_nano)별 릴리스 목록을 그 계정 JWT 로 조회">릴리스 불러오기</button>
+    </div>
+    <div class="row" id="ota-bulk-targets" style="margin:4px 0"></div>
+    <div class="row" style="margin:4px 0">
+      <label class="repeat" title="오프라인·약한 WiFi·내부 RAM 부족·부팅 직후 게이트를 무시. 개발용"><input type="checkbox" id="ota-bulk-force"> force</label>
+      <label class="repeat" title="발행 간격. 바이너리가 API 서버를 거쳐 내려가므로 한꺼번에 쏘지 않는다">간격 <input id="ota-bulk-gap" type="number" value="15" min="0" style="width:52px;font-size:11px;padding:3px 6px">초</label>
+      <button class="sm primary" id="ota-bulk-prep" onclick="otaBulkPrepare()" title="선택 전부에 ota_prepare 발행(간격 두고). 다운로드·검증만, 부팅 파티션 불변">1단계 prepare 모두</button>
+      <button class="sm primary" id="ota-bulk-apply" onclick="otaBulkApply()" title="표에서 ready 인 작업 전부 apply(전환+재부팅). 5초 간격">2단계 apply · ready 전부</button>
+      <button class="sm ghost" onclick="otaBulkStop()">폴링 중지</button>
+      <button class="sm ghost" onclick="otaBulkClear()">표 비우기</button>
+      <span id="ota-bulk-status" class="muted"></span>
+    </div>
+    <small class="muted">권장: 1대만 골라 prepare → apply → <b>verified</b> 확인(canary) 뒤 나머지. 서버는 기기당 진행 중 작업 1개만 허용(409 active job exists), 같은 버전이면 409 already on this version.
+      ready 가 되면 apply 전까지 지금 버전으로 계속 동작. apply 뒤 5분 안에 새 펌웨어가 MQTT 로 못 붙으면 자동 롤백.</small>
+    <div class="table-wrap">
+    <table id="ota-bulk-table" class="hidden" style="margin-top:8px">
+      <thead><tr><th>대상</th><th>테스터</th><th>현재</th><th>→ 버전</th><th>상태</th><th>진행</th><th>비고</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    </div>
+  </div>
+
   <!-- 계정 카드 -->
   <div id="accounts"></div>
 
@@ -309,14 +337,10 @@ function devRow(email, kind, obj) {
   const wrap = document.createElement('div'); wrap.className = 'dev-wrap';
   const line = document.createElement('div'); line.className = 'dev' + (obj.is_online ? '' : ' offline');
 
-  if (!isCam) {
-    const cb = document.createElement('input'); cb.type = 'checkbox';
-    cb.checked = !!regSelected[obj.id]; cb.title = '일괄 제어 선택';
-    cb.onchange = () => toggleRegSelect(obj.id, email, ident, cb.checked);
-    line.appendChild(cb);
-  } else {
-    const ph = document.createElement('span'); ph.style.width = '15px'; line.appendChild(ph);
-  }
+  const cb = document.createElement('input'); cb.type = 'checkbox';
+  cb.checked = !!regSelected[obj.id]; cb.title = isCam ? '일괄 OTA 선택' : '일괄 제어·OTA 선택';
+  cb.onchange = () => toggleRegSelect(obj.id, email, ident, cb.checked, kind, obj);
+  line.appendChild(cb);
   const dot = document.createElement('span'); dot.className = 'dot ' + (obj.is_online ? 'on' : 'off');
   dot.title = obj.is_online ? '온라인' : '오프라인';
   line.appendChild(dot);
@@ -657,16 +681,18 @@ async function bulkControl(action, ms) {
 // ── 선택 기기 일괄 제어 ──────────────────────────────────────────────────────
 // 기기 체크박스로 선택 → 상단 바 버튼 하나로 전체에 동시 명령. 계정이 섞여도
 // 계정별 토큰(캐시)으로 처리하고, 각 명령 ack 를 모아 요약 표시.
-const regSelected = {};  // deviceUuid -> {email, deviceId}
-function toggleRegSelect(uuid, email, deviceId, checked) {
-  if (checked) regSelected[uuid] = { email, deviceId }; else delete regSelected[uuid];
+const regSelected = {};  // uuid -> {email, deviceId(ident), kind:'device'|'camera', obj}
+function toggleRegSelect(uuid, email, deviceId, checked, kind, obj) {
+  if (checked) regSelected[uuid] = { email, deviceId, kind: kind || 'device', obj }; else delete regSelected[uuid];
   updateBulkCount();
 }
 function updateBulkCount() {
-  const n = Object.keys(regSelected).length;
+  const all = Object.values(regSelected);
+  const nd = all.filter(v => v.kind !== 'camera').length, nc = all.length - nd;
   const el = document.getElementById('reg-bulk-count');
-  if (el) { el.textContent = '선택 ' + n + '대'; el.className = 'count' + (n ? ' good' : ''); }
-  document.getElementById('bulk-bar').classList.toggle('has-sel', n > 0);
+  if (el) { el.textContent = `기기 ${nd} · 카메라 ${nc}`; el.className = 'count' + (all.length ? ' good' : ''); }
+  document.getElementById('bulk-bar').classList.toggle('has-sel', nd > 0);
+  updateOtaBulkSel();
 }
 function clearRegSelection() {
   Object.keys(regSelected).forEach(k => delete regSelected[k]);
@@ -675,8 +701,8 @@ function clearRegSelection() {
   const st = document.getElementById('reg-bulk-status'); if (st) st.textContent = '';
 }
 async function runBulkOnce(action, ms, suffix) {
-  const sel = Object.entries(regSelected);
-  if (!sel.length) { toast('선택된 기기 없음 — 기기 줄 왼쪽 체크박스로 선택', 'bad'); return; }
+  const sel = Object.entries(regSelected).filter(([, v]) => v.kind !== 'camera');   // 제어 명령은 기기만
+  if (!sel.length) { toast('선택된 기기 없음 — 기기 줄 왼쪽 체크박스로 선택 (카메라는 OTA 만)', 'bad'); return; }
   const base = regApiBase();
   const st = document.getElementById('reg-bulk-status');
   st.className = 'muted'; st.textContent = ' 전송 중… (' + sel.length + '대)';
@@ -722,6 +748,173 @@ async function runBulkOnce(action, ms, suffix) {
   }));
   st.className = (acked === cmds.length && !sendFail) ? 'good' : 'bad';
   st.textContent = ' 완료: 전송 ' + cmds.length + ' / ✅ ' + acked + ' / ⏳ ' + noack + (sendFail ? ' / 전송실패 ' + sendFail : '') + (suffix || '');
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 선택 일괄 OTA — 체크한 카메라·기기에 같은 릴리스를 순서대로 prepare, 작업 표를 폴링, ready 전부 apply.
+// 서버 제약: 기기당 진행 중 작업 1개(409), 같은 버전 409, 게이트(오프라인·약한 WiFi·RAM·부팅 직후) 는 force 로만 통과.
+// 동시 발행 자체는 막지 않지만 바이너리가 API 서버(단일 uvicorn, def 스트리밍=스레드풀)를 거치므로 간격을 둔다.
+// 각 대상은 소유 계정이 달라 요청마다 그 계정 JWT(regFetch) 를 쓴다. 폴링은 GET /firmware/jobs/{id} (소유자만 조회 가능).
+// ─────────────────────────────────────────────────────────────────────────
+const OTA_BULK = { releases: {}, pick: {}, jobs: {}, timer: null, busy: false };  // jobs: uuid → 행
+const OTA_TERMINAL = ['verified', 'rolled_back', 'failed', 'timeout'];
+const OTA_TARGET_KO = { camera_p4: '📷 카메라(camera_p4)', hub_p4: '📷 허브(hub_p4)', device_nano: '📟 기기(device_nano)' };
+
+function otaSelEntries() {
+  return Object.entries(regSelected).map(([uuid, v]) => ({
+    uuid, email: v.email, ident: v.deviceId, obj: v.obj, kind: v.kind === 'camera' ? 'cameras' : 'devices',
+    target: v.kind === 'camera' ? otaTargetOf(true, v.obj) : 'device_nano',
+  }));
+}
+function updateOtaBulkSel() {
+  const sel = otaSelEntries();
+  const el = document.getElementById('ota-bulk-sel'); if (!el) return;
+  if (!sel.length) { el.textContent = '선택 없음 — 줄 왼쪽 체크박스로 카메라·기기 선택'; }
+  else {
+    const by = {}; sel.forEach(s => { by[s.target] = (by[s.target] || 0) + 1; });
+    el.textContent = '선택 ' + sel.length + '대: ' + Object.entries(by).map(([t, n]) => `${OTA_TARGET_KO[t] || t} ${n}`).join(' · ');
+  }
+  renderOtaTargets();
+}
+// target 별 릴리스 드롭다운 (선택에 있는 target 만)
+function renderOtaTargets() {
+  const host = document.getElementById('ota-bulk-targets'); if (!host) return;
+  const targets = [...new Set(otaSelEntries().map(s => s.target))];
+  host.innerHTML = '';
+  targets.forEach(t => {
+    const rels = OTA_BULK.releases[t];
+    const lab = document.createElement('label'); lab.className = 'repeat'; lab.style.fontSize = '12px';
+    lab.textContent = (OTA_TARGET_KO[t] || t) + ' ';
+    const sel = document.createElement('select'); sel.style.cssText = 'font-size:12px;max-width:320px';
+    if (!rels) sel.innerHTML = '<option value="">(릴리스 불러오기)</option>';
+    else if (!rels.length) sel.innerHTML = '<option value="">(등록된 릴리스 없음)</option>';
+    else sel.innerHTML = rels.map(r => `<option value="${esc(r.id)}">${esc(r.version)} — ${(r.size_bytes / 1048576).toFixed(2)}MB${r.notes ? ' · ' + esc(r.notes).slice(0, 40) : ''}</option>`).join('');
+    if (OTA_BULK.pick[t]) sel.value = OTA_BULK.pick[t];
+    sel.onchange = () => { OTA_BULK.pick[t] = sel.value; };
+    if (sel.value) OTA_BULK.pick[t] = sel.value;
+    lab.appendChild(sel); host.appendChild(lab);
+  });
+}
+async function otaBulkLoadReleases() {
+  const sel = otaSelEntries();
+  if (!sel.length) return toast('먼저 카메라·기기를 체크', 'bad');
+  const st = document.getElementById('ota-bulk-status'); st.className = 'muted'; st.textContent = '릴리스 조회 중…';
+  for (const t of [...new Set(sel.map(s => s.target))]) {
+    const email = sel.find(s => s.target === t).email;   // 릴리스 목록은 계정 무관(로그인만 필요) → 첫 계정 JWT
+    try {
+      const r = await regFetch(email, '/firmware/releases?target=' + t);
+      OTA_BULK.releases[t] = r.ok && Array.isArray(r.body) ? r.body : [];
+    } catch (e) { OTA_BULK.releases[t] = []; toast(t + ' 릴리스 조회 실패: ' + (e.message || e), 'bad'); }
+  }
+  st.textContent = '릴리스 조회 완료';
+  renderOtaTargets();
+}
+
+function otaRow(s) {
+  return OTA_BULK.jobs[s.uuid] || (OTA_BULK.jobs[s.uuid] = { ...s, jobId: null, status: '-', version: '', pct: 0, note: '' });
+}
+function otaBulkRender() {
+  const table = document.getElementById('ota-bulk-table'), tb = table.querySelector('tbody');
+  const rows = Object.values(OTA_BULK.jobs);
+  table.classList.toggle('hidden', !rows.length);
+  tb.innerHTML = rows.map(j => {
+    const cls = j.status === 'verified' ? 'good' : OTA_TERMINAL.includes(j.status) || j.status === 'error' ? 'bad' : j.status === 'ready' ? 'warn' : '';
+    const pct = j.status === 'downloading' ? `${j.pct || 0}%` : ['ready', 'applying', 'verified'].includes(j.status) ? '100%' : '';
+    const act = j.status === 'ready' ? `<button class="sm primary" onclick="otaBulkApplyOne('${j.uuid}')">apply</button>`
+      : (j.status === 'error' || OTA_TERMINAL.includes(j.status)) ? `<button class="sm ghost" onclick="otaBulkPrepareOne('${j.uuid}')" title="이 대상만 다시 prepare">재시도</button>` : '';
+    return `<tr><td class="nw">${j.kind === 'cameras' ? '📷' : '📟'} <code>${esc(j.ident)}</code></td><td class="nw">${esc(testerLabel(j.email))}</td>
+      <td><code>${esc(j.obj.firmware_ver || '—')}</code></td><td><code>${esc(j.version || '')}</code></td>
+      <td><span class="${cls}">${esc(j.status)}</span> <small class="muted">${OTA_STATUS_KO[j.status] || ''}</small></td>
+      <td>${pct}</td><td><small class="${j.status === 'error' ? 'bad' : 'muted'}">${esc(j.note || '')}</small></td><td>${act}</td></tr>`;
+  }).join('');
+  const n = rows.length, done = rows.filter(j => j.status === 'verified').length, bad = rows.filter(j => OTA_TERMINAL.includes(j.status) && j.status !== 'verified' || j.status === 'error').length;
+  const ready = rows.filter(j => j.status === 'ready').length;
+  const st = document.getElementById('ota-bulk-status');
+  if (n) st.textContent = `${n}대 · verified ${done} · ready ${ready} · 실패 ${bad}` + (OTA_BULK.timer ? ' · 8초마다 갱신' : '');
+}
+function otaErrText(r) {
+  const b = r.body; if (typeof b === 'string') return b.slice(0, 80);
+  const d = b && b.detail; return typeof d === 'string' ? d : JSON.stringify(d || b).slice(0, 80);
+}
+async function otaBulkPrepareOne(uuid) {
+  const s = otaSelEntries().find(x => x.uuid === uuid) || OTA_BULK.jobs[uuid]; if (!s) return;
+  const relId = OTA_BULK.pick[s.target];
+  const j = otaRow(s);
+  if (!relId) { j.status = 'error'; j.note = '릴리스 미선택(' + s.target + ')'; otaBulkRender(); return; }
+  const force = document.getElementById('ota-bulk-force').checked;
+  j.status = 'sending'; j.note = ''; otaBulkRender();
+  try {
+    const r = await regFetch(s.email, `/${s.kind}/${s.uuid}/ota`, { method: 'POST', body: JSON.stringify({ release_id: relId, force }) });
+    if (!r.ok) { j.status = 'error'; j.note = `${r.status} ${otaErrText(r)}`; }
+    else {
+      j.jobId = r.body.job_id; j.version = r.body.version || ''; j.status = r.body.status || 'pending';
+      j.note = r.body.published === false ? '발행 실패(브로커)' : (r.body.gate_reasons && r.body.gate_reasons.length ? '게이트 무시: ' + r.body.gate_reasons.map(g => OTA_GATE_KO[g] || g).join(', ') : '');
+    }
+  } catch (e) { j.status = 'error'; j.note = e.message || String(e); }
+  otaBulkRender();
+}
+async function otaBulkPrepare() {
+  const sel = otaSelEntries();
+  if (!sel.length) return toast('선택된 대상 없음', 'bad');
+  const missing = [...new Set(sel.map(s => s.target))].filter(t => !OTA_BULK.pick[t]);
+  if (missing.length) return toast('릴리스 선택 필요: ' + missing.join(', ') + ' — [릴리스 불러오기]', 'bad');
+  if (!confirm(`${sel.length}대에 prepare 발행? (다운로드·검증만, 전환은 2단계)\n` + sel.map(s => `${s.ident} ← ${OTA_BULK.releases[s.target].find(r => r.id === OTA_BULK.pick[s.target])?.version || '?'}`).join('\n'))) return;
+  const gap = Math.max(0, parseInt(document.getElementById('ota-bulk-gap').value) || 0);
+  const btn = document.getElementById('ota-bulk-prep'); btn.disabled = true;
+  try {
+    for (let i = 0; i < sel.length; i++) {
+      await otaBulkPrepareOne(sel[i].uuid);
+      otaBulkStartPoll();
+      if (i < sel.length - 1 && gap) {
+        for (let left = gap; left > 0; left--) { btn.textContent = `다음까지 ${left}초 (${i + 1}/${sel.length})`; await new Promise(r => setTimeout(r, 1000)); }
+      }
+    }
+  } finally { btn.disabled = false; btn.textContent = '1단계 prepare 모두'; }
+}
+async function otaBulkApplyOne(uuid) {
+  const j = OTA_BULK.jobs[uuid]; if (!j || !j.jobId) return;
+  try {
+    const r = await regFetch(j.email, `/${j.kind}/${j.uuid}/ota/${j.jobId}/apply`, { method: 'POST' });
+    if (!r.ok) { j.note = `apply ${r.status} ${otaErrText(r)}`; }
+    else { j.status = r.body.status || 'applying'; j.note = r.body.published === false ? 'apply 발행 실패(브로커)' : ''; }
+  } catch (e) { j.note = 'apply 오류: ' + (e.message || e); }
+  otaBulkRender();
+}
+async function otaBulkApply() {
+  const ready = Object.values(OTA_BULK.jobs).filter(j => j.status === 'ready');
+  if (!ready.length) return toast('ready 상태 작업 없음', 'bad');
+  if (!confirm(`${ready.length}대 전환 + 재부팅(apply)? 약 30초 다운타임, 라이브·녹화 잠깐 끊김.\n` + ready.map(j => j.ident).join(', '))) return;
+  const btn = document.getElementById('ota-bulk-apply'); btn.disabled = true;
+  try {
+    for (let i = 0; i < ready.length; i++) {
+      await otaBulkApplyOne(ready[i].uuid);
+      if (i < ready.length - 1) await new Promise(r => setTimeout(r, 5000));
+    }
+    otaBulkStartPoll();
+  } finally { btn.disabled = false; }
+}
+function otaBulkStartPoll() {
+  if (OTA_BULK.timer) return;
+  OTA_BULK.timer = setInterval(otaBulkPoll, 8000);
+  otaBulkRender();
+}
+function otaBulkStop() { clearInterval(OTA_BULK.timer); OTA_BULK.timer = null; otaBulkRender(); }
+function otaBulkClear() { otaBulkStop(); Object.keys(OTA_BULK.jobs).forEach(k => delete OTA_BULK.jobs[k]); otaBulkRender(); document.getElementById('ota-bulk-status').textContent = ''; }
+async function otaBulkPoll() {
+  if (OTA_BULK.busy) return; OTA_BULK.busy = true;
+  try {
+    const live = Object.values(OTA_BULK.jobs).filter(j => j.jobId && !OTA_TERMINAL.includes(j.status) && j.status !== 'error');
+    for (const j of live) {
+      try {
+        const r = await regFetch(j.email, '/firmware/jobs/' + j.jobId);
+        if (r.ok) { j.status = r.body.status; j.pct = r.body.pct || 0; j.version = r.body.version || j.version; if (r.body.error) j.note = r.body.error; }
+      } catch (e) { /* 다음 턴 */ }
+    }
+    otaBulkRender();
+    if (!Object.values(OTA_BULK.jobs).some(j => j.jobId && !OTA_TERMINAL.includes(j.status) && j.status !== 'error')) otaBulkStop();   // 전부 끝나면 폴링 종료
+    // verified 된 대상은 카드의 fw 도 바뀌었을 테니 그 계정만 다시 조회
+    Object.values(OTA_BULK.jobs).filter(j => j.status === 'verified' && !j.refreshed).forEach(j => { j.refreshed = true; checkAccount(j.email); });
+  } finally { OTA_BULK.busy = false; }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
