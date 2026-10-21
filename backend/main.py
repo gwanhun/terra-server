@@ -255,5 +255,21 @@ app.include_router(ops.router)
 # 라우터들 다음에 등록해야 /devices, /cameras, /web-config 등이 우선 매칭됨.
 # html=True 면 / 요청 시 index.html 자동 서빙.
 _WEB_DIR = REPO_ROOT / "web"
+
+
+class _NoCacheStaticFiles(StaticFiles):
+    """콘솔 정적 파일에 Cache-Control: no-cache.
+
+    왜: 2026-10-21 beta.html 은 새로 받았는데 shared.js 는 브라우저 휴리스틱 캐시(명시 헤더 없을 때 Last-Modified
+    기준으로 알아서 오래 보관)가 옛 파일을 써서 "liveBadgeHtml is not defined" 로 깨졌다. no-cache 는 "쓰기 전에
+    매번 서버에 물어봐라" — StaticFiles 가 ETag/Last-Modified 를 주므로 안 바뀐 파일은 304 로 싸게 끝난다.
+    """
+
+    def file_response(self, *args, **kwargs):  # type: ignore[override]
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
 if _WEB_DIR.is_dir():
-    app.mount("/", StaticFiles(directory=_WEB_DIR, html=True), name="web")
+    app.mount("/", _NoCacheStaticFiles(directory=_WEB_DIR, html=True), name="web")
