@@ -34,6 +34,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from postgrest.exceptions import APIError
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.auth import get_current_user_id
@@ -392,7 +393,27 @@ def create_clip_meta(
     }
 
     sb = get_supabase_client()
-    res = sb.table("motion_clips").insert(payload).execute()
+    try:
+        res = sb.table("motion_clips").insert(payload).execute()
+    except APIError as exc:
+        # [2026-10-21] 멱등 처리: 펌웨어 0.4.13 이 연결 단계 실패에 meta POST 를 재시도한다.
+        # 첫 요청이 INSERT 까지 되고 응답만 유실되면 재시도가 같은 id 로 다시 들어오므로,
+        # unique 위반(23505)은 "이미 등록됨" 으로 보고 기존 행 id 를 돌려준다. 그 전엔 500 →
+        # 펌웨어가 실패로 보고 12MB 를 처음부터 재업로드했다(R2 고아 + 중복 전송).
+        if exc.code != "23505":
+            raise
+        existing = (
+            sb.table("motion_clips")
+            .select("id, camera_id")
+            .eq("id", clip_id)
+            .limit(1)
+            .execute()
+        )
+        row = first_row(existing.data)
+        if not row or row.get("camera_id") != camera["id"]:
+            raise HTTPException(status_code=409, detail="clip id 충돌 (다른 카메라의 클립)")
+        logger.info("clip meta 중복 등록 무시 (재시도) camera=%s clip=%s", camera["camera_id"], clip_id)
+        return ClipMetaCreated(id=row["id"])
     if not res.data:
         raise HTTPException(status_code=500, detail="motion_clips INSERT 실패")
     return ClipMetaCreated(id=res.data[0]["id"])

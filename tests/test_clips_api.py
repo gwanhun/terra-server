@@ -153,6 +153,47 @@ def test_create_clip_meta_ok(
     assert insert_payload["clip_purpose"] == "production"
 
 
+def test_create_clip_meta_duplicate_is_idempotent(
+    app_client: TestClient, fake_sb: MagicMock, authed_camera_row: dict
+) -> None:
+    """펌웨어 0.4.13 의 meta POST 재시도: 같은 id 재INSERT(23505) 는 기존 행 id 로 201."""
+    from postgrest.exceptions import APIError
+
+    clip_id = "abcdef12-3456-7890-abcd-ef1234567890"
+    key = f"terra-clips/clips/{CAMERA_ID_TEXT}/2026-05-27/120000_{clip_id}.mp4"
+
+    # cameras / motion_clips 가 같은 select→eq→limit→execute 체인을 쓰므로 테이블 이름으로 가른다.
+    cameras_tbl = MagicMock()
+    cameras_tbl.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+        authed_camera_row
+    ]
+    clips_tbl = MagicMock()
+    clips_tbl.insert.return_value.execute.side_effect = APIError(
+        {"message": "duplicate key value violates unique constraint", "code": "23505"}
+    )
+    clips_tbl.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+        {"id": clip_id, "camera_id": CAMERA_UUID}
+    ]
+    fake_sb.table.side_effect = lambda name: cameras_tbl if name == "cameras" else clips_tbl
+
+    res = app_client.post(
+        f"/cameras/{CAMERA_UUID}/clips",
+        headers={"Authorization": f"Bearer {CAMERA_TOKEN}"},
+        json={
+            "key": key,
+            "started_at": "2026-05-27T12:00:00Z",
+            "duration_sec": 10.0,
+            "file_size": 1048576,
+            "width": 1280,
+            "height": 720,
+            "fps": 24.0,
+            "motion_score": 0.42,
+        },
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["id"] == clip_id
+
+
 def test_create_clip_meta_rejects_key_for_other_camera(
     app_client: TestClient, fake_sb: MagicMock, authed_camera_row: dict
 ) -> None:
