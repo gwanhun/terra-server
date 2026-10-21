@@ -813,6 +813,10 @@ POST /cameras/{camera_uuid}/reboot        (본문 없음)
   `last_rec_s`/`up_busy_s`(초, -1=없음), `last_err{stage,err,http,age_s}`(신 펌웨어, 마지막 업로드 실패),
   `sys{uptime_s,reset,heap,rssi}`(`rssi` dBm 은 신 펌웨어). `clip_stats_at` 은 마지막 갱신 시각.
 - `firmware_ver`: 페어링 값 + 신 펌웨어부터 하트비트 `fw` 로 갱신(값이 다를 때만 UPDATE). 구 펌웨어는 `"fb2-p4 0.1.0"`/null 고정.
+- 라이브 시청 상태(2026-10-21 추가, 규칙은 [APP_LIVE_VIEW_LIMIT_2026-09-30.md](APP_LIVE_VIEW_LIMIT_2026-09-30.md)):
+  `live_session_id`(null 이면 시청 없음), `live_viewer`(시청 기기 표시명 — 세션이 끝나도 마지막 값이 남으니 **시청 중 판정은 `live_session_id`**),
+  `live_started_at`, `stream_until`(= live_until, 15분 상한 종료 예정), `live_ended_at`, `live_end_reason`(time_limit|taken_over|closed|failed), `live_cooldown_until`.
+  앱은 이미 cameras Realtime 으로 같은 컬럼을 받고 있고, REST 에도 같은 값이 나온다. 운영 콘솔(beta.html·live.html)이 "📱 누가 보는 중" 배지에 쓴다.
 
 ### 4.10 펌웨어 OTA — Stage J (2026-10-07, [specs/stage-j-ota.md](../specs/stage-j-ota.md))
 

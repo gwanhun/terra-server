@@ -160,7 +160,14 @@ class CameraOut(BaseModel):
     fps: int | None
     clip_sec: int | None
     stream_mode: str | None = Field(None, description="NULL | snapshot | webrtc (Stage G)")
-    stream_until: str | None
+    stream_until: str | None = Field(None, description="라이브 중이면 서버가 세션을 끝내는 시각(15분 상한) = live_until")
+    # 라이브 시청 상태(2026-10-21, 운영 콘솔 '누가 보고 있나'). 소유자 본인 데이터라 노출 OK. 규칙: backend/live_session.py
+    live_session_id: str | None = Field(None, description="지금 시청 중인 WebRTC 세션. null = 시청 없음")
+    live_viewer: str | None = Field(None, description='시청 기기 표시명(앱 viewer_label, 예 "iPhone 15"). 세션이 끝나도 마지막 값이 남는다')
+    live_started_at: str | None = Field(None, description="연속 시청 시작(15분 시계 기준)")
+    live_ended_at: str | None = Field(None, description="마지막 세션 종료 시각")
+    live_end_reason: str | None = Field(None, description="time_limit | taken_over | closed | failed")
+    live_cooldown_until: str | None = Field(None, description="15분 다 쓴 뒤 이 시각까지 새 시청 거절")
     rotate_180: bool = Field(False, description="영상 180° 회전 설정값 (선언적, 진실)")
     capabilities: dict[str, Any] | None = Field(
         None,
@@ -194,7 +201,9 @@ class CameraOut(BaseModel):
 # tests/test_cameras_api.py 가 CameraOut 과 어긋나지 않는지 검사한다.
 _CAMERA_OUT_COLUMNS = (
     "id, camera_id, enclosure_id, name, model, firmware_ver, "
-    "resolution, fps, clip_sec, stream_mode, stream_until, rotate_180, capabilities, "
+    "resolution, fps, clip_sec, stream_mode, stream_until, "
+    "live_session_id, live_viewer, live_started_at, live_ended_at, live_end_reason, live_cooldown_until, "
+    "rotate_180, capabilities, "
     "clip_stats, clip_stats_at, image_state, "
     "created_at, updated_at, last_seen_at, is_online"
 )

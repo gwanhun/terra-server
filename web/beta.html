@@ -44,6 +44,7 @@
 .dev .ident { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--text); }
 .dev .ident .name { font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); font-size: 12px; margin-left: 6px; }
 .dev .spacer { flex: 1; }
+.dev .cam-level .live-badge { max-width: none; }
 .dev .cam-level .chip { font-size: 11px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: middle; }
 .dev .actions { display: flex; gap: 4px; flex-wrap: wrap; }
 .dev.offline .ident { color: var(--muted); }
@@ -89,6 +90,7 @@
       <div class="stat"><b id="st-dev">–</b><span>기기 <span id="st-dev-on" class="good"></span></span></div>
       <div class="stat"><b id="st-cam">–</b><span>카메라 <span id="st-cam-on" class="good"></span></span></div>
       <div class="stat" title="온라인 카메라 중 지금 조치(🔴)·관찰(🟠) 등급 수. 기준은 메인 콘솔 카메라 표 아래 범례와 같음"><b id="st-cam-lv">–</b><span>카메라 상태</span></div>
+      <div class="stat" title="테스터 앱(또는 웹)이 지금 라이브를 보고 있는 카메라 수 — cameras.live_session_id 기준. 목록을 조회한 시점 값이라 [전체 새로고침]으로 갱신"><b id="st-live" style="color:var(--warn)">–</b><span>📱 시청 중</span></div>
       <div class="stat"><b id="st-prog" class="muted" style="font-size:14px">대기</b><span>조회 상태</span></div>
     </div>
     <div class="notice">⚠️ 해제·삭제·명령은 <b>프로덕션 API</b>(api.terra-server.uk)로 호출해야 mosquitto 계정 정리와 실제 전달이 된다.
@@ -257,6 +259,9 @@ function updateStats() {
   document.getElementById('st-cam-on').textContent = cam ? `· 🟢 ${camOn}` : '';
   let bad = 0, warn = 0;
   emails.forEach(e => (ACCT[e].cams || []).forEach(c => { if (!c.is_online) return; const lv = camLevel(c).level; if (lv === 'bad') bad++; else if (lv === 'warn') warn++; }));
+  let watching = 0;
+  emails.forEach(e => (ACCT[e].cams || []).forEach(c => { if (liveActive(c)) watching++; }));
+  document.getElementById('st-live').textContent = cam ? watching : '–';
   const lvEl = document.getElementById('st-cam-lv');
   lvEl.innerHTML = cam ? `<span class="${bad ? 'bad' : ''}">🔴 ${bad}</span> <span class="${warn ? 'warn' : ''}" style="font-size:14px">🟠 ${warn}</span>` : '–';
   const prog = document.getElementById('st-prog');
@@ -361,7 +366,7 @@ function devRow(email, kind, obj) {
     // 한눈에 보는 상태 점 — 클립 파이프라인 + sys 등급(shared.js camLevel). 오프라인은 등급 없음.
     const lvEl = document.createElement('span'); lvEl.className = 'cam-level';
     const { level, reasons } = camLevel(obj);
-    lvEl.innerHTML = obj.clip_stats ? levelDotHtml(level, reasons, !obj.is_online) : '';
+    lvEl.innerHTML = (obj.clip_stats ? levelDotHtml(level, reasons, !obj.is_online) : '') + ' ' + liveBadgeHtml(obj);
     line.appendChild(lvEl);
     wrap.dataset.kind = 'camera'; wrap._cam = obj; wrap._email = email;
   }
@@ -574,13 +579,12 @@ function camStatusPanel(cam, email, fresh) {
   const rows = [
     'online: ' + (c.is_online ? '🟢 온라인' : '⚪ 오프라인') + (c.firmware_ver ? '  ·  fw ' + c.firmware_ver : ''),
     'model: ' + val(c.model) + '  ·  ' + val(c.resolution) + ' @ ' + val(c.fps) + 'fps',
-    'stream: ' + (c.stream_mode || 'idle') + '  ·  rotate180: ' + val(c.rotate_180)
-      + (c.live_viewer ? '  ·  라이브 시청: ' + c.live_viewer : ''),
+    'stream: ' + (c.stream_mode || 'idle') + '  ·  rotate180: ' + val(c.rotate_180),
   ];
   const panel = document.createElement('div');
   panel.className = 'dev-test-panel';
   const lv = camLevel(c);
-  panel.innerHTML = (c.is_online ? levelDotHtml(lv.level, lv.reasons, false) + '<br>' : '')
+  panel.innerHTML = (c.is_online ? levelDotHtml(lv.level, lv.reasons, false) + ' ' : '') + liveBadgeHtml(c) + ((c.is_online || liveBadgeHtml(c)) ? '<br>' : '')
     + rows.map(esc).join('<br>') + '<br>클립: ' + clipCellHtml(c)
     + '<br><span class="muted">' + (fresh === cam ? '목록 조회 시점 값 (줄의 [상태] 로 재조회)' : fresh ? '방금 재조회' : '⚠ 재조회 실패 — 목록 조회 시점 값')
     + (c.clip_stats_at ? ' · 카메라 보고 ' + esc(c.clip_stats_at.slice(11, 19)) + 'Z' : '')

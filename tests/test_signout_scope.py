@@ -18,7 +18,9 @@ ROOT = Path(__file__).resolve().parent.parent
 CALL = re.compile(r"\.(signOut|sign_out)\(([^)]*)\)")
 LOCAL = re.compile(r"""scope["']?\s*:\s*["']local["']""")
 
-TARGETS = [ROOT / "web" / "index.html", *sorted((ROOT / "scripts").glob("*.py"))]
+# 2026-10-21: 콘솔이 index.html / beta.html / live.html + shared.js 로 나뉨 — 베타 계정 배치 로그인(regSession)은 shared.js
+WEB_FILES = sorted((ROOT / "web").glob("*.html")) + sorted((ROOT / "web").glob("*.js"))
+TARGETS = [*WEB_FILES, *sorted((ROOT / "scripts").glob("*.py"))]
 
 
 def _calls(path: Path) -> list[tuple[int, str]]:
@@ -35,5 +37,7 @@ def test_signout_is_local_scope(path: Path) -> None:
 
 
 def test_web_console_has_signout_calls() -> None:
-    """정규식이 아무것도 못 잡아서 통과하는 걸 막는 가드."""
-    assert len(_calls(ROOT / "web" / "index.html")) >= 9
+    """정규식이 아무것도 못 잡아서 통과하는 걸 막는 가드 — 메인 로그아웃(index.html) + 베타 배치 로그인(shared.js regSession)."""
+    assert len(_calls(ROOT / "web" / "index.html")) >= 1
+    assert len(_calls(ROOT / "web" / "shared.js")) >= 1
+    assert sum(len(_calls(f)) for f in WEB_FILES) >= 2

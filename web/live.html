@@ -29,6 +29,7 @@
 .tile-head .name { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tile-head .spacer { flex: 1; }
 .tile-head .timer { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--good); white-space: nowrap; }
+.tile-head .lv .chip { font-size: 10px; }
 .tile-head .timer.warn { color: var(--warn); }
 .vid { position: relative; background: #000; aspect-ratio: 4 / 3; }
 .vid video { width: 100%; height: 100%; display: block; object-fit: contain; background: #000; }
@@ -243,6 +244,7 @@ function buildTile(id) {
       <span class="dot"></span>
       <span class="ident"></span><span class="name"></span>
       <span class="spacer"></span>
+      <span class="lv"></span>
       <span class="timer"></span>
       <button class="sm ghost" data-act="focus" title="크게 보기 토글">⛶</button>
     </div>
@@ -284,6 +286,8 @@ function refreshTileHead(id) {
   el.querySelector('.ident').textContent = c.camera_id;
   el.querySelector('.ident').title = (c.model || '') + (c.firmware_ver ? ' · fw ' + c.firmware_ver : '');
   el.querySelector('.name').textContent = c.name ? '· ' + c.name : '';
+  // 앱이 보고 있으면 연결 전에 알 수 있게 (연결하면 409 live_in_use → [가져오기]). 내가 보는 중(state live)엔 서버 행도 내 세션이라 생략.
+  el.querySelector('.lv').innerHTML = t.state === 'live' || t.state === 'connecting' ? '' : liveBadgeHtml(c);
   el.querySelector('.acct').textContent = testerLabel(t.email) + (c.firmware_ver ? ' · ' + c.firmware_ver : '');
   el.querySelector('.acct').title = t.email;
 }

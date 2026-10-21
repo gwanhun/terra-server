@@ -233,6 +233,32 @@ function camLevel(r) {
   const reasons = [...cf.reasons, ...sl.reasons];
   return { level: maxLevel(cf.level, sl.level), reasons };
 }
+// 라이브 시청 배지 — cameras.live_* (서버 live_session.py 규칙: 15분 상한·5분 쉼·한 기기)
+//   시청 중: live_session_id 가 있을 때만(live_viewer 는 세션이 끝나도 남는다). 몇 분째·남은 시간(stream_until) 표시.
+//   최근 종료(1시간 안): 누가 언제까지 봤는지 + 사유. 쉬는 중: live_cooldown_until 까지.
+const LIVE_END_KO = { time_limit: '15분 다 써서 종료', taken_over: '다른 기기가 가져감', closed: '사용자가 닫음', failed: '연결 실패' };
+function liveBadgeHtml(c) {
+  if (!c) return '';
+  const now = Date.now();
+  const mins = iso => Math.max(0, Math.round((now - Date.parse(iso)) / 60000));
+  if (c.live_session_id) {
+    const since = c.live_started_at ? mins(c.live_started_at) : null;
+    const left = c.stream_until ? Math.max(0, Math.round((Date.parse(c.stream_until) - now) / 60000)) : null;
+    const who = c.live_viewer || '앱';
+    return `<span class="chip warn live-badge" title="지금 ${esc(who)} 에서 라이브 시청 중${since != null ? ' · ' + since + '분째' : ''}${left != null ? ' · 서버가 ' + left + '분 뒤 종료(15분 상한)' : ''}. 라이브 대시보드에서 [가져오기]로 끊고 볼 수 있음">📱 ${esc(who)} 시청 중${since != null ? ' · ' + since + '분' : ''}</span>`;
+  }
+  if (c.live_cooldown_until && Date.parse(c.live_cooldown_until) > now) {
+    const left = Math.max(1, Math.round((Date.parse(c.live_cooldown_until) - now) / 60000));
+    return `<span class="chip live-badge" title="15분 시청을 다 써서 ${left}분 뒤까지 새 라이브 거절">⏳ 라이브 쉬는 중 ${left}분</span>`;
+  }
+  if (c.live_ended_at && now - Date.parse(c.live_ended_at) < 3600e3) {
+    const ago = mins(c.live_ended_at);
+    return `<span class="chip live-badge muted" title="마지막 시청: ${esc(c.live_viewer || '앱')} · ${ago}분 전 종료 · ${LIVE_END_KO[c.live_end_reason] || c.live_end_reason || ''}">📱 ${esc(c.live_viewer || '앱')} ${ago}분 전까지</span>`;
+  }
+  return '';
+}
+const liveActive = c => !!(c && c.live_session_id);
+
 // 등급 점 HTML — 베타 카드·라이브 타일에서 한눈에 보는 용도
 function levelDotHtml(lv, reasons, offline) {
   if (offline) return `<span class="chip" title="오프라인 — 마지막 보고 기준이라 등급 안 매김">⚪ 오프라인</span>`;
