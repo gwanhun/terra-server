@@ -1,7 +1,7 @@
 """
 라이브 직접 녹화 라우터 (Stage L, 2026-10-20).
 
-앱이 라이브 화면에서 폰으로 직접 녹화한 영상(≤60초 mp4 + jpg)을 R2 에 올리고 관리한다.
+앱이 라이브 화면에서 폰으로 직접 녹화한 영상(≤120초 mp4 + jpg)을 R2 에 올리고 관리한다.
 계약 SOT: docs/BACKEND_HANDOFF_REPLY_LIVE_RECORDING_2026-10-20.md
 
 엔드포인트 (전부 JWT):
@@ -53,10 +53,10 @@ router = APIRouter(prefix="/recordings", tags=["recordings"])
 
 TABLE = "live_recordings"
 
-RECORDING_PUT_URL_TTL = 1800          # 30분 — 60초·30MB 업로드를 느린 망에서도 마치게
+RECORDING_PUT_URL_TTL = 1800          # 30분 — 120초·30MB 업로드를 느린 망에서도 마치게
 RECORDING_QUOTA = 50                  # 계정당 pending + ready
 MIN_DURATION_MS = 3000
-MAX_DURATION_MS = 60000
+MAX_DURATION_MS = 120000              # 2026-10-21 60초 → 120초 (디자인 확정, 크기 한도는 30MB 유지)
 MAX_VIDEO_BYTES = 30 * 1024 * 1024
 MAX_THUMB_BYTES = 5 * 1024 * 1024
 # 재호출 때 이보다 오래된 pending 은 새로 등록한다. 24h 직전에 30분 URL 을 주면 업로드 도중

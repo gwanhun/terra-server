@@ -865,14 +865,14 @@ GET  /firmware/jobs/{job_id}/bin           Authorization: Bearer <camera_token |
 
 ### 4.11 라이브 직접 녹화 — Stage L (2026-10-20, [specs/stage-l-live-recording.md](../specs/stage-l-live-recording.md))
 
-앱이 라이브 화면에서 폰으로 직접 녹화한 영상(≤60초 mp4 + jpg)을 R2 에 올린다. 계약 SOT: [BACKEND_HANDOFF_REPLY_LIVE_RECORDING_2026-10-20.md](BACKEND_HANDOFF_REPLY_LIVE_RECORDING_2026-10-20.md).
+앱이 라이브 화면에서 폰으로 직접 녹화한 영상(≤120초 mp4 + jpg)을 R2 에 올린다. 계약 SOT: [BACKEND_HANDOFF_REPLY_LIVE_RECORDING_2026-10-20.md](BACKEND_HANDOFF_REPLY_LIVE_RECORDING_2026-10-20.md).
 `motion_clips` 와 섞지 않는다 — 테이블 `live_recordings`, 라우터 `backend/routers/recordings.py`. **목록 REST 는 없다**(앱이 Supabase 직결 SELECT, RLS 본인 행만).
 
 ```
 POST /recordings     { camera_id, client_id, started_at, duration_ms, size_bytes, width, height, has_thumbnail }
 → 201 새 등록 / 200 같은 client_id 재호출
   { "recording_id", "status": "pending"|"ready", "video_upload_url"|null, "thumb_upload_url"|null, "expires_at"|null }
-→ 400 duration_ms 3000~60000 · size_bytes 1~31457280(30MB) 위반, 필드 누락·형식 오류 (문자열 detail)
+→ 400 duration_ms 3000~120000(2026-10-21 60초→120초) · size_bytes 1~31457280(30MB) 위반, 필드 누락·형식 오류 (문자열 detail)
 → 403 "camera not found or not owned"   (cameras.owner_id 만 봄 — unlink 된 본인 카메라는 허용)
 → 409 { "detail": { "code": "recording_quota_exceeded", "used": 50, "limit": 50 } }
 → 502 R2 presign 실패

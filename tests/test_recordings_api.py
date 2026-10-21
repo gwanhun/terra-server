@@ -181,12 +181,18 @@ def test_create_allows_unlinked_own_camera(env: Env) -> None:
     assert res.status_code == 201
 
 
-@pytest.mark.parametrize("duration", [2999, 60001])
+@pytest.mark.parametrize("duration", [2999, 120001])
 def test_create_duration_out_of_range_400(env: Env, duration: int) -> None:
     res = env.client.post("/recordings", json=_body(duration_ms=duration))
     assert res.status_code == 400
-    assert res.json()["detail"] == "duration_ms must be between 3000 and 60000"
+    assert res.json()["detail"] == "duration_ms must be between 3000 and 120000"
     assert env.recs == []
+
+
+@pytest.mark.parametrize("duration", [3000, 60001, 120000])
+def test_create_duration_in_range_201(env: Env, duration: int) -> None:
+    res = env.client.post("/recordings", json=_body(duration_ms=duration))
+    assert res.status_code == 201
 
 
 def test_create_size_too_large_400(env: Env) -> None:
