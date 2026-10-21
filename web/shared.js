@@ -149,6 +149,24 @@ function resetTitle(reset) {
   return `마지막 재부팅 사유: ${reset} — ${ko}. 24시간 넘게 잘 돌면 색 없음`;
 }
 const rssiLevel = r => (typeof r !== 'number' ? '' : r <= -80 ? 'bad' : r <= -75 ? 'warn' : '');
+// 내부 RAM 등급 — 최대 블록 16K/여유 32K 미만 bad, 24K/48K 미만 warn (위 주석 참고)
+function intLevel(sy) {
+  if (!sy || typeof sy.int_free !== 'number') return '';
+  const largest = sy.int_largest || 1e9;
+  return (sy.int_free < 32*1024 || largest < 16*1024) ? 'bad' : (sy.int_free < 48*1024 || largest < 24*1024) ? 'warn' : '';
+}
+const LV_RANK = { '': 0, warn: 1, bad: 2 };
+const maxLevel = (...lv) => lv.reduce((a, b) => (LV_RANK[b] > LV_RANK[a] ? b : a), '');
+// sys_state 한 덩어리의 등급 + 사유 목록 (카메라·기기 공용)
+function sysLevel(sy) {
+  if (!sy) return { level: '', reasons: [] };
+  const reasons = [];
+  const rl = resetLevel(sy.reset, sy.uptime_s); if (rl) reasons.push([rl, `재부팅 ${sy.reset}`]);
+  const il = intLevel(sy); if (il) reasons.push([il, `내부 RAM ${Math.round(sy.int_free/1024)}K/${Math.round((sy.int_largest||0)/1024)}K`]);
+  const wl = rssiLevel(sy.rssi); if (wl) reasons.push([wl, `rssi ${sy.rssi}`]);
+  if (sy.net && sy.net.flap) reasons.push(['bad', 'MQTT 플래핑']);
+  return { level: maxLevel(...reasons.map(r => r[0])), reasons };
+}
 
 // sys_state / clip_stats.sys → 한 줄 텍스트 (가동시간·리셋 사유·힙·RSSI·AP·net 진단). 토큰별로만 색을 입힌다.
 function sysStateText(sy) {
@@ -156,7 +174,7 @@ function sysStateText(sy) {
   const rl = resetLevel(sy.reset, sy.uptime_s);
   const resetTxt = `<span class="${rl}" title="${esc(resetTitle(sy.reset))}">reset ${esc(sy.reset || '?')}</span>`;
   const rssiTxt = typeof sy.rssi === 'number' ? ` · <span class="${rssiLevel(sy.rssi)}" title="WiFi RSSI(dBm). -75 이하 약함(주황), -80 이하 매우 약함(빨강)">rssi ${sy.rssi}</span>` : '';
-  const intLv = typeof sy.int_free !== 'number' ? '' : (sy.int_free < 32*1024 || (sy.int_largest || 1e9) < 16*1024) ? 'bad' : (sy.int_free < 48*1024 || (sy.int_largest || 1e9) < 24*1024) ? 'warn' : '';
+  const intLv = intLevel(sy);
   const intTxt = typeof sy.int_free === 'number' ? ` · <span class="${intLv}" title="내부 RAM 여유/최대 블록(KB). P4 평시 60~128K/31~42K. 16KB 미만 할당은 내부 RAM 에서만 나와서 최대 블록 16K 미만(또는 여유 32K 미만)이면 할당 실패 시작 → 빨강. 24K/48K 미만 주황">int ${Math.round(sy.int_free/1024)}K/${Math.round((sy.int_largest||0)/1024)}K</span>` : '';
   // 접속 AP(0.3.6~): BSSID 뒤 3옥텟 + 채널. 같은 SSID 의 확장기/공유기 중 어디에 붙었는지.
   const apTxt = sy.bssid ? ` · <span title="접속 중인 AP BSSID ${esc(sy.bssid)} · 채널 ${sy.ch ?? '?'}. 같은 집 다른 기기와 다르면 확장기에 붙은 것">ap ${esc(sy.bssid.slice(-8))}${sy.ch ? ' ch' + sy.ch : ''}</span>` : '';
@@ -181,9 +199,8 @@ function sysStateText(sy) {
 //   warn: 스킵·즉시 업로드 실패(SD 로 재시도되므로) · 유실이 있었지만 24시간 넘게 전 · 인코더 누적 실패(연속 0 = 복구됨) · SD fault 2 · SD 백로그 3~9 · 1시간 안 마지막 실패
 //   회색: SD 백로그 1~2(부팅 직후 업로드 대기는 정상) · SD fault 1 · 24시간 넘은 실패
 // 카운터는 부팅 후 누적이라 시점을 모른다 — last_err.age_s 로 "최근인지"를 가늠한다(없으면 최근으로 본다).
-function clipCellHtml(r) {
-  const c = r.clip_stats;
-  if (!c) return '<small class="muted">—</small>';
+// clip_stats → 등급 계산에 쓰는 값들 + 클립 파이프라인 등급(level). clipCellHtml 과 camLevel 이 같이 쓴다.
+function clipFlags(c) {
   const skips = (c.skip || 0) + (c.skip_lock || 0), upFail = c.up_fail || 0, lost = c.sd_fail || 0, backlog = c.sd_backlog || 0;
   const stuck = (c.up_busy_s ?? -1) >= 300;
   const encErr = c.enc_err || 0, encStreak = c.enc_streak || 0, sdFault = c.sd_fault || 0;
@@ -197,6 +214,38 @@ function clipCellHtml(r) {
   const sdFaultLv = sdFault >= 3 ? 'bad' : sdFault >= 2 ? 'warn' : '';
   const level = (lostLv === 'bad' || stuck || encStreak > 0 || sdFaultLv === 'bad' || flap || backlogLv === 'bad' || skipBad) ? 'bad'
     : (skips > 0 || lostLv === 'warn' || encErr > 0 || sdFaultLv === 'warn' || backlogLv === 'warn') ? 'warn' : '';
+  const reasons = [];
+  if (skipBad) reasons.push(['bad', `스킵 ${skips}/녹화 ${c.rec || 0}`]); else if (skips) reasons.push(['warn', `스킵 ${skips}`]);
+  if (lostLv) reasons.push([lostLv, lost ? `클립 유실 ${lost}` : `업로드 실패 ${upFail}`]);
+  if (stuck) reasons.push(['bad', `업로드 고착 ${Math.round(c.up_busy_s/60)}분`]);
+  if (encStreak > 0) reasons.push(['bad', `인코더 연속 실패 ${encStreak}`]); else if (encErr) reasons.push(['warn', `인코더 실패 ${encErr}(복구)`]);
+  if (sdFaultLv) reasons.push([sdFaultLv, `SD fault ${sdFault}`]);
+  if (backlogLv) reasons.push([backlogLv, `SD 백로그 ${backlog}`]);
+  return { skips, upFail, lost, backlog, stuck, encErr, encStreak, sdFault, flap, skipBad, le, errAge, failRecent, lostLv, backlogLv, sdFaultLv, level, reasons };
+}
+
+// 카메라 행 전체 등급 — 클립 파이프라인 + sys(재부팅·RAM·RSSI·플래핑). {level:'bad'|'warn'|'', reasons:[[level, 글], …]}
+// 오프라인은 등급을 매기지 않는다(마지막 보고가 오래됐을 수 있음) — 호출측이 따로 표시.
+function camLevel(r) {
+  const c = r.clip_stats;
+  if (!c) return { level: '', reasons: [] };
+  const cf = clipFlags(c), sl = sysLevel(c.sys);
+  const reasons = [...cf.reasons, ...sl.reasons];
+  return { level: maxLevel(cf.level, sl.level), reasons };
+}
+// 등급 점 HTML — 베타 카드·라이브 타일에서 한눈에 보는 용도
+function levelDotHtml(lv, reasons, offline) {
+  if (offline) return `<span class="chip" title="오프라인 — 마지막 보고 기준이라 등급 안 매김">⚪ 오프라인</span>`;
+  const txt = (reasons || []).map(x => x[1]).join(' · ');
+  if (lv === 'bad') return `<span class="chip bad" title="지금 조치: ${esc(txt)}">🔴 ${esc(txt || '조치')}</span>`;
+  if (lv === 'warn') return `<span class="chip warn" title="관찰: ${esc(txt)}">🟠 ${esc(txt || '관찰')}</span>`;
+  return `<span class="chip good" title="클립·sys 모두 정상 범위">🟢 정상</span>`;
+}
+
+function clipCellHtml(r) {
+  const c = r.clip_stats;
+  if (!c) return '<small class="muted">—</small>';
+  const { skips, upFail, lost, backlog, stuck, encErr, encStreak, sdFault, skipBad, le, errAge, lostLv, backlogLv, sdFaultLv, level } = clipFlags(c);
   const age = c.last_rec_s >= 0 ? (c.last_rec_s < 3600 ? Math.round(c.last_rec_s/60)+'m' : Math.round(c.last_rec_s/3600)+'h') : '없음';
   const tok = (cls, title, txt) => `<span class="${cls}" title="${esc(title)}">${txt}</span>`;
   const parts = [

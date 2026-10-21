@@ -44,6 +44,7 @@
 .dev .ident { font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--text); }
 .dev .ident .name { font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); font-size: 12px; margin-left: 6px; }
 .dev .spacer { flex: 1; }
+.dev .cam-level .chip { font-size: 11px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: middle; }
 .dev .actions { display: flex; gap: 4px; flex-wrap: wrap; }
 .dev.offline .ident { color: var(--muted); }
 .dev-test-panel { margin: 2px 0 8px 32px; padding: 8px 10px; border-left: 2px solid #3a6a9a; background: rgba(90,170,255,.04); border-radius: 0 6px 6px 0; font-size: 11px; }
@@ -79,6 +80,7 @@
       </div>
       <div class="actions">
         <button class="ghost" onclick="checkAllAccounts()" title="모든 계정의 등록 기기·카메라 다시 조회 (로그인 rate limit 약 30회/5분 — 토큰은 1시간 캐시)">🔄 전체 새로고침</button>
+        <button class="ghost" id="btn-camstatus" onclick="setCamStatusAll(!CAM_STATUS_ALL)" title="모든 카메라 줄 아래에 상태(클립 파이프라인·sys·이미지)를 펼친다. 추가 요청 없이 목록 조회 데이터로 그림. 설정은 기억됨">📷 카메라 상태 모두 펼치기</button>
         <a class="nav" href="live.html"><button class="primary">🎥 라이브 대시보드</button></a>
       </div>
     </div>
@@ -86,6 +88,7 @@
       <div class="stat"><b id="st-acct">–</b><span>계정</span></div>
       <div class="stat"><b id="st-dev">–</b><span>기기 <span id="st-dev-on" class="good"></span></span></div>
       <div class="stat"><b id="st-cam">–</b><span>카메라 <span id="st-cam-on" class="good"></span></span></div>
+      <div class="stat" title="온라인 카메라 중 지금 조치(🔴)·관찰(🟠) 등급 수. 기준은 메인 콘솔 카메라 표 아래 범례와 같음"><b id="st-cam-lv">–</b><span>카메라 상태</span></div>
       <div class="stat"><b id="st-prog" class="muted" style="font-size:14px">대기</b><span>조회 상태</span></div>
     </div>
     <div class="notice">⚠️ 해제·삭제·명령은 <b>프로덕션 API</b>(api.terra-server.uk)로 호출해야 mosquitto 계정 정리와 실제 전달이 된다.
@@ -189,6 +192,7 @@ function start() {
   ta.value = betaEmailsText();
   // 로컬 콘솔에서 띄웠어도 제어·해제는 프로덕션으로 가게 기본값을 채워 둔다 (비우면 CONFIG.apiBase).
   if (CONFIG.apiBase.includes('localhost')) document.getElementById('reg-apibase').value = 'https://api.terra-server.uk';
+  setCamStatusAll(CAM_STATUS_ALL);   // 버튼 문구만 맞춤(카드는 아직 없음)
   renderRegAccounts();
 }
 
@@ -223,6 +227,10 @@ function updateStats() {
   document.getElementById('st-dev-on').textContent = dev ? `· 🟢 ${devOn}` : '';
   document.getElementById('st-cam').textContent = cam;
   document.getElementById('st-cam-on').textContent = cam ? `· 🟢 ${camOn}` : '';
+  let bad = 0, warn = 0;
+  emails.forEach(e => (ACCT[e].cams || []).forEach(c => { if (!c.is_online) return; const lv = camLevel(c).level; if (lv === 'bad') bad++; else if (lv === 'warn') warn++; }));
+  const lvEl = document.getElementById('st-cam-lv');
+  lvEl.innerHTML = cam ? `<span class="${bad ? 'bad' : ''}">🔴 ${bad}</span> <span class="${warn ? 'warn' : ''}" style="font-size:14px">🟠 ${warn}</span>` : '–';
   const prog = document.getElementById('st-prog');
   if (done < emails.length) { prog.className = 'warn'; prog.textContent = `${done}/${emails.length} 조회 중`; }
   else if (err) { prog.className = 'bad'; prog.textContent = `${err}개 계정 실패`; }
@@ -325,6 +333,14 @@ function devRow(email, kind, obj) {
     fw.title = 'heartbeat 가 보고한 펌웨어 버전' + (otaOk ? ' · OTA 지원' : ' · OTA 미지원(구 펌웨어)');
     line.appendChild(fw);
   }
+  if (isCam) {
+    // 한눈에 보는 상태 점 — 클립 파이프라인 + sys 등급(shared.js camLevel). 오프라인은 등급 없음.
+    const lvEl = document.createElement('span'); lvEl.className = 'cam-level';
+    const { level, reasons } = camLevel(obj);
+    lvEl.innerHTML = obj.clip_stats ? levelDotHtml(level, reasons, !obj.is_online) : '';
+    line.appendChild(lvEl);
+    wrap.dataset.kind = 'camera'; wrap._cam = obj; wrap._email = email;
+  }
   const sp = document.createElement('span'); sp.className = 'spacer'; line.appendChild(sp);
 
   const act = document.createElement('div'); act.className = 'actions';
@@ -335,6 +351,7 @@ function devRow(email, kind, obj) {
     () => isCam ? toggleCameraTest(obj, wrap, test, email) : toggleDeviceTest(email, obj, wrap, test));
   act.appendChild(test);
   if (isCam) {
+    wrap._btn = test;
     act.appendChild(mkBtn('▶ 라이브', '라이브 대시보드에서 이 카메라 보기', () => { location.href = 'live.html?cam=' + encodeURIComponent(obj.id); }));
     act.appendChild(mkBtn('재부팅', 'MQTT reboot 명령 1회 발행 — 신 펌웨어(≥0.2.0)만 반응, 구 펌웨어는 rejected 로그만',
       () => rebootRegisteredCamera(email, obj.id, ident)));
@@ -350,6 +367,8 @@ function devRow(email, kind, obj) {
     () => deleteRegistered(email, kind, obj.id, ident, () => checkAccount(email)), 'danger'));
   line.appendChild(act);
   wrap.appendChild(line);
+  // "카메라 상태 모두 펼치기" 가 켜져 있으면 줄 아래에 패널을 바로 붙인다 (line 뒤에 와야 순서가 맞음)
+  if (isCam && CAM_STATUS_ALL) { wrap.appendChild(camStatusPanel(obj, email, obj)); test.textContent = '닫기'; }
   return wrap;
 }
 
@@ -493,8 +512,24 @@ async function toggleDeviceTest(email, dev, hostDiv, btn) {
   } finally { btn.disabled = false; }
 }
 
+// ── 카메라 상태 모두 펼치기 ─────────────────────────────────────────────────
+// 한 줄씩 [상태] 누르는 대신 헤더 토글 하나로 전 카메라의 상태 패널을 펼친다/접는다.
+// 추가 요청 없이 계정 조회 때 받은 카메라 객체(clip_stats 포함)로 그리고, 설정은 localStorage 에 기억 → 새로고침해도 유지.
+let CAM_STATUS_ALL = localStorage.getItem('terra-beta-camstatus') === '1';
+function setCamStatusAll(on) {
+  CAM_STATUS_ALL = !!on;
+  localStorage.setItem('terra-beta-camstatus', on ? '1' : '0');
+  const b = document.getElementById('btn-camstatus');
+  if (b) { b.textContent = on ? '📷 카메라 상태 모두 접기' : '📷 카메라 상태 모두 펼치기'; b.classList.toggle('primary', on); b.classList.toggle('ghost', !on); }
+  document.querySelectorAll('.dev-wrap[data-kind="camera"]').forEach(wrap => {
+    const open = wrap.querySelector('.dev-test-panel');
+    if (on && !open) { wrap.appendChild(camStatusPanel(wrap._cam, wrap._email, wrap._cam)); if (wrap._btn) wrap._btn.textContent = '닫기'; }
+    else if (!on && open) { open.remove(); if (wrap._btn) wrap._btn.textContent = '상태'; }
+  });
+}
+
 // 카메라 상태 — 상태·클립 파이프라인 통계를 펼쳐 보여줌(녹화/업로드 확인). 다시 누르면 닫힘.
-// 열 때마다 GET /cameras/{id} 를 다시 읽고, 클립 줄은 메인 카메라 패널과 같은 clipCellHtml 로 그린다.
+// 줄의 [상태] 는 GET /cameras/{id} 를 다시 읽고, "모두 펼치기"는 목록 조회 스냅샷으로 그린다. 클립 줄은 메인 카메라 패널과 같은 clipCellHtml.
 async function toggleCameraTest(cam, hostDiv, btn, email) {
   const open = hostDiv.querySelector('.dev-test-panel');
   if (open) { open.remove(); btn.textContent = '상태'; return; }
@@ -505,6 +540,11 @@ async function toggleCameraTest(cam, hostDiv, btn, email) {
     if (r.ok) fresh = r.body;
   } catch (e) { /* 재조회 실패 → 스냅샷으로 표시 */ }
   btn.disabled = false;
+  hostDiv.appendChild(camStatusPanel(cam, email, fresh)); btn.textContent = '닫기';
+}
+
+// 상태 패널 DOM. fresh: 방금 재조회한 행(없으면 cam 스냅샷으로 그리고 표시만 다르게)
+function camStatusPanel(cam, email, fresh) {
   const c = fresh || cam;
   const val = v => (v === undefined || v === null ? '-' : v);
   const rows = [
@@ -515,8 +555,10 @@ async function toggleCameraTest(cam, hostDiv, btn, email) {
   ];
   const panel = document.createElement('div');
   panel.className = 'dev-test-panel';
-  panel.innerHTML = rows.map(esc).join('<br>') + '<br>클립: ' + clipCellHtml(c)
-    + '<br><span class="muted">' + (fresh ? '방금 재조회' : '⚠ 재조회 실패 — 목록 조회 시점 값')
+  const lv = camLevel(c);
+  panel.innerHTML = (c.is_online ? levelDotHtml(lv.level, lv.reasons, false) + '<br>' : '')
+    + rows.map(esc).join('<br>') + '<br>클립: ' + clipCellHtml(c)
+    + '<br><span class="muted">' + (fresh === cam ? '목록 조회 시점 값 (줄의 [상태] 로 재조회)' : fresh ? '방금 재조회' : '⚠ 재조회 실패 — 목록 조회 시점 값')
     + (c.clip_stats_at ? ' · 카메라 보고 ' + esc(c.clip_stats_at.slice(11, 19)) + 'Z' : '')
     + (c.clip_stats ? '' : ' · clip_stats 미보고(구 펌웨어이거나 아직 녹화 전)') + '</span>';
   // 에러 로그(펌웨어 ESP_LOGE, 하트비트 errs → camera_logs). 재부팅 전 줄은 [이전 부팅] 표시.
@@ -533,7 +575,7 @@ async function toggleCameraTest(cam, hostDiv, btn, email) {
     } catch (e) { logBox.textContent = '조회 실패: ' + (e.message || e); }
   };
   panel.appendChild(logBtn); panel.appendChild(logBox);
-  hostDiv.appendChild(panel); btn.textContent = '닫기';
+  return panel;
 }
 
 // 명령 ack 폴링 (PostgREST 로 commands.status 조회, 최대 8초).
