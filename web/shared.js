@@ -195,8 +195,8 @@ function sysStateText(sy) {
 }
 
 // 카메라 행의 클립 파이프라인 요약 (clip_stats + image_state). 카운터는 부팅 후 누적이라 "지금 위험"과 "예전에 한 번"을 구분한다.
-//   bad : 클립 유실(sd_fail, 마지막 실패가 24시간 안) · 업로드 고착(up_busy_s ≥300) · 인코더 연속 실패 · SD fault 3회+ · MQTT 플래핑 · SD 백로그 10+ · 스킵이 녹화의 20% 이상(3건+)
-//   warn: 스킵·즉시 업로드 실패(SD 로 재시도되므로) · 유실이 있었지만 24시간 넘게 전 · 인코더 누적 실패(연속 0 = 복구됨) · SD fault 2 · SD 백로그 3~9 · 1시간 안 마지막 실패
+//   bad : 클립 유실(sd_fail, 마지막 실패가 24시간 안) · 업로드 고착(up_busy_s ≥300) · 인코더 연속 실패 · SD fault 3회+ · MQTT 플래핑 · 스킵이 녹화의 20% 이상(3건+)
+//   warn: 스킵·즉시 업로드 실패(SD 로 재시도되므로) · 유실이 있었지만 24시간 넘게 전 · 인코더 누적 실패(연속 0 = 복구됨) · SD fault 2 · SD 백로그 3+(나중에 올라감, 빨강 없음) · 1시간 안 마지막 실패
 //   회색: SD 백로그 1~2(부팅 직후 업로드 대기는 정상) · SD fault 1 · 24시간 넘은 실패
 // 카운터는 부팅 후 누적이라 시점을 모른다 — last_err.age_s 로 "최근인지"를 가늠한다(없으면 최근으로 본다).
 // clip_stats → 등급 계산에 쓰는 값들 + 클립 파이프라인 등급(level). clipCellHtml 과 camLevel 이 같이 쓴다.
@@ -210,9 +210,9 @@ function clipFlags(c) {
   const errAge = le && typeof le.age_s === 'number' ? le.age_s : -1;    // 마지막 업로드 실패 경과초(-1 = 기록 없음)
   const failRecent = errAge < 0 || errAge < 24 * 3600;                    // 24시간 넘은 실패는 지금 문제 아님
   const lostLv = lost > 0 ? (failRecent ? 'bad' : 'warn') : upFail > 0 ? (failRecent ? 'warn' : '') : '';
-  const backlogLv = backlog >= 10 ? 'bad' : backlog >= 3 ? 'warn' : '';
+  const backlogLv = backlog >= 3 ? 'warn' : '';   // 백로그는 나중에 다시 올라가므로 빨강까지는 안 함(2026-10-21 owner)
   const sdFaultLv = sdFault >= 3 ? 'bad' : sdFault >= 2 ? 'warn' : '';
-  const level = (lostLv === 'bad' || stuck || encStreak > 0 || sdFaultLv === 'bad' || flap || backlogLv === 'bad' || skipBad) ? 'bad'
+  const level = (lostLv === 'bad' || stuck || encStreak > 0 || sdFaultLv === 'bad' || flap || skipBad) ? 'bad'
     : (skips > 0 || lostLv === 'warn' || encErr > 0 || sdFaultLv === 'warn' || backlogLv === 'warn') ? 'warn' : '';
   const reasons = [];
   if (skipBad) reasons.push(['bad', `스킵 ${skips}/녹화 ${c.rec || 0}`]); else if (skips) reasons.push(['warn', `스킵 ${skips}`]);
@@ -278,7 +278,7 @@ function clipCellHtml(r) {
     tok('', '녹화 완료 건수(부팅 후)', `rec ${c.rec}`),
     tok(skipBad ? 'bad' : skips ? 'warn' : '', '스킵 = 녹화 못 한 모션(슬롯 없음 + H.264 락 실패). 녹화의 20% 이상이면 빨강', `skip ${skips}`),
     tok(lostLv, `즉시 업로드 실패 ${upFail}(SD 로 재시도됨) / SD 재업로드 실패 ${lost}(클립 유실). 마지막 실패가 24시간 안이면 색, 지났으면 회색` + (errAge >= 0 ? ` · 마지막 실패 ${Math.round(errAge/3600)}시간 전` : ''), `fail ${upFail + lost}`),
-    tok(backlogLv, 'SD 에 쌓인 업로드 대기 건수. 1~2 는 정상(부팅 직후·연속 모션), 3+ 주황, 10+ 빨강(R2 접속 불가 의심)', `sd ${backlog}`),
+    tok(backlogLv, 'SD 에 쌓인 업로드 대기 건수 — 나중에 다시 올라가므로 조치 대상 아님. 1~2 정상(부팅 직후·연속 모션), 3+ 주황(주의). 며칠째 계속 늘면 R2 접속 확인', `sd ${backlog}`),
     tok('', '마지막 녹화 후 경과(모션이 없으면 길어지는 게 정상)', age),
   ];
   if (stuck) parts.push(tok('bad', '한 클립 업로드가 5분 넘게 진행 중 — 고착', `up ${Math.round(c.up_busy_s/60)}m!`));
