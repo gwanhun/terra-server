@@ -443,22 +443,47 @@ function mainClient() {
   if (!sbMain) sbMain = window.supabase.createClient(CONFIG.supabaseUrl, CONFIG.supabasePublishable);
   return sbMain;
 }
+// 인증 패널 마크업 — 세 페이지 공통(메인 콘솔 #auth-panel 과 베타·라이브 #gate 가 같은 걸 그린다)
+function authPanelHtml() {
+  return `<h2>🔑 인증</h2>
+  <div class="tabs">
+    <button id="tab-login" class="active" onclick="showAuthTab('login')">로그인</button>
+    <button id="tab-signup" onclick="showAuthTab('signup')">회원가입</button>
+  </div>
+  <div id="auth-login">
+    <div class="row"><label>Email</label><input id="login-email" type="email" placeholder="test@example.com" autocomplete="username"></div>
+    <div class="row"><label>Password</label><input id="login-pw" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')gateLogin()"></div>
+    <div class="row"><button class="primary" onclick="gateLogin()">로그인</button><small class="muted" id="gate-msg"></small></div>
+  </div>
+  <div id="auth-signup" class="hidden">
+    <div class="row"><label>Email</label><input id="signup-email" type="email" placeholder="test@example.com"></div>
+    <div class="row"><label>Password</label><input id="signup-pw" type="password" placeholder="6자 이상"></div>
+    <div class="row">
+      <button onclick="gateSignup()">회원가입</button>
+      <small>Supabase 가 confirmation 메일 보낼 수 있음 (대시보드 설정에 따름)</small>
+    </div>
+  </div>`;
+}
+function showAuthTab(name) {
+  document.getElementById('tab-login').classList.toggle('active', name === 'login');
+  document.getElementById('tab-signup').classList.toggle('active', name === 'signup');
+  document.getElementById('auth-login').classList.toggle('hidden', name !== 'login');
+  document.getElementById('auth-signup').classList.toggle('hidden', name !== 'signup');
+}
+async function gateSignup() {
+  const email = document.getElementById('signup-email').value.trim();
+  const password = document.getElementById('signup-pw').value;
+  const { data, error } = await mainClient().auth.signUp({ email, password });
+  if (error) return toast(error.message, 'bad');
+  toast('회원가입 OK. 메일 확인 필요할 수도', 'good');
+  log({ signup: data });
+}
 async function requireConsoleLogin(pageKey, onReady) {
   const gate = document.getElementById('gate'); if (!gate) return;
   const sb = mainClient();
   const show = (html) => { gate.innerHTML = html; gate.classList.remove('hidden'); const m = document.getElementById('main'); if (m) m.classList.add('hidden'); };
   const check = async (session) => {
-    if (!session) {
-      show(`<div class="panel auth-card">
-        <h2>🔒 로그인 필요</h2>
-        <small class="muted">메인 콘솔과 같은 계정·세션으로 로그인해야 열린다.</small>
-        <div class="row" style="margin-top:10px"><label>Email</label><input id="gate-email" type="email" autocomplete="username"></div>
-        <div class="row"><label>Password</label><input id="gate-pw" type="password" autocomplete="current-password"></div>
-        <div class="row"><span style="flex:0 0 100px"></span><button class="primary" onclick="gateLogin()">로그인</button><small class="muted" id="gate-msg"></small></div>
-      </div>`);
-      const pw = document.getElementById('gate-pw'); if (pw) pw.onkeydown = e => { if (e.key === 'Enter') gateLogin(); };
-      return;
-    }
+    if (!session) { show(`<div class="panel auth-card">${authPanelHtml()}</div>`); return; }
     gate.classList.add('hidden'); gate.innerHTML = '';
     renderTopNav(pageKey, CONFIG.apiBase, { email: session.user.email || '' });
     renderDocsLinks(CONFIG.apiBase);
@@ -469,11 +494,13 @@ async function requireConsoleLogin(pageKey, onReady) {
   sb.auth.onAuthStateChange((ev, s) => { if (ev === 'SIGNED_OUT') location.reload(); });
 }
 async function gateLogin() {
-  const email = (document.getElementById('gate-email') || {}).value || '', password = (document.getElementById('gate-pw') || {}).value || '';
+  const email = (document.getElementById('login-email') || {}).value || '', password = (document.getElementById('login-pw') || {}).value || '';
   const msg = document.getElementById('gate-msg'); if (msg) { msg.className = 'muted'; msg.textContent = '로그인 중…'; }
-  const { error } = await mainClient().auth.signInWithPassword({ email: email.trim(), password });
-  if (error) { if (msg) { msg.className = 'bad'; msg.textContent = error.message; } return; }
-  location.reload();   // 세션 저장 뒤 처음부터 — 페이지 boot 가 다시 게이트를 통과한다
+  const { data, error } = await mainClient().auth.signInWithPassword({ email: email.trim(), password });
+  if (error) { if (msg) { msg.className = 'bad'; msg.textContent = error.message; } toast(error.message, 'bad'); return; }
+  toast('로그인 OK', 'good'); log({ login: data.user.email });
+  // 메인 콘솔은 onAuthStateChange 가 대시보드를 연다. 베타·라이브는 boot 가 게이트를 다시 타게 새로고침.
+  if (typeof applySession !== 'function') location.reload();
 }
 async function consoleLogout() {
   await mainClient().auth.signOut({ scope: 'local' });  // 기본 global 은 같은 계정의 앱 세션까지 지운다
