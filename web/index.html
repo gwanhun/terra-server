@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>terra-server · 테스트 콘솔</title>
-<link rel="stylesheet" href="shared.css?v=20261021b">
+<link rel="stylesheet" href="shared.css?v=20261022">
 <style>
 /* index.html 전용 — 공용 규칙(body·button·table·modal·모바일)은 shared.css */
 .banner { padding: 12px 16px; border-radius: 8px; margin-bottom: 12px; cursor: pointer; font-size: 13px; }
@@ -33,7 +33,7 @@
 <nav id="topnav" class="topnav"></nav>
 
 <!-- ===== 설정 ===== -->
-<div class="panel" id="config-panel">
+<div class="panel auth-card" id="config-panel">
   <h2>⚙️ 설정</h2>
   <small>API Base 만 선택. Supabase URL/anon 은 백엔드 <code>/web-config</code> 에서 자동.</small>
   <div class="row">
@@ -50,7 +50,7 @@
 </div>
 
 <!-- ===== 인증 ===== -->
-<div class="panel hidden" id="auth-panel">
+<div class="panel auth-card hidden" id="auth-panel">
   <h2>🔑 인증</h2>
   <div class="tabs">
     <button id="tab-login" class="active" onclick="showAuthTab('login')">로그인</button>
@@ -59,7 +59,7 @@
   <div id="auth-login">
     <div class="row"><label>Email</label><input id="login-email" type="email" placeholder="test@example.com"></div>
     <div class="row"><label>Password</label><input id="login-pw" type="password"></div>
-    <div class="row"><button onclick="login()">로그인</button></div>
+    <div class="row"><button class="primary" onclick="login()">로그인</button></div>
   </div>
   <div id="auth-signup" class="hidden">
     <div class="row"><label>Email</label><input id="signup-email" type="email" placeholder="test@example.com"></div>
@@ -342,7 +342,7 @@
 
 <!-- Supabase JS (CDN) -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="shared.js?v=20261021b"></script>
+<script src="shared.js?v=20261022"></script>
 
 <script>
 // ─────────────────────────────────────────────────────────────────────────

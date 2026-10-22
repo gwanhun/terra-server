@@ -80,6 +80,10 @@ hr { border: none; border-top: 1px solid var(--line); margin: 12px 0; }
 .stats .stat b { font-size: 20px; font-weight: 600; color: var(--text); line-height: 1.1; }
 .stats .stat span { font-size: 11px; color: var(--muted); }
 
+/* 로그인·첫 설정 카드 — 세 페이지 같은 모양(가운데 480px). index 인증 패널, beta/live 게이트·설정 패널 */
+.auth-card { max-width: 480px; margin: 40px auto; }
+.auth-card h2 { margin-top: 0; }
+
 /* 접이식 설정 섹션 */
 details.cfg { border: 1px dashed var(--line); border-radius: 8px; padding: 6px 12px; margin-top: 8px; }
 details.cfg summary { cursor: pointer; color: var(--muted); font-size: 12px; user-select: none; }

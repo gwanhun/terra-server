@@ -449,8 +449,8 @@ async function requireConsoleLogin(pageKey, onReady) {
   const show = (html) => { gate.innerHTML = html; gate.classList.remove('hidden'); const m = document.getElementById('main'); if (m) m.classList.add('hidden'); };
   const check = async (session) => {
     if (!session) {
-      show(`<div class="panel" style="max-width:420px;margin:40px auto">
-        <h2 style="margin-top:0">🔒 로그인 필요</h2>
+      show(`<div class="panel auth-card">
+        <h2>🔒 로그인 필요</h2>
         <small class="muted">메인 콘솔과 같은 계정·세션으로 로그인해야 열린다.</small>
         <div class="row" style="margin-top:10px"><label>Email</label><input id="gate-email" type="email" autocomplete="username"></div>
         <div class="row"><label>Password</label><input id="gate-pw" type="password" autocomplete="current-password"></div>

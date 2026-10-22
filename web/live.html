@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Terra · 라이브 대시보드</title>
-<link rel="stylesheet" href="shared.css?v=20261021b">
+<link rel="stylesheet" href="shared.css?v=20261022">
 <style>
 /* live.html 전용 — 카메라 타일 그리드. 공용은 shared.css */
 .page-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
@@ -55,7 +55,7 @@
 <nav id="topnav" class="topnav"></nav>
 
 <!-- ===== 설정 (API Base 없을 때만) ===== -->
-<div class="panel hidden" id="config-panel">
+<div class="panel auth-card hidden" id="config-panel">
   <h2>⚙️ 설정</h2>
   <small class="muted">API Base 만 입력하면 <code>/web-config</code> 에서 Supabase 정보를 받아온다. 메인 콘솔과 같은 localStorage 를 쓴다.</small>
   <div class="row" style="margin-top:8px"><label>API Base</label><input id="cfg-api-base" type="text" placeholder="https://api.terra-server.uk"></div>
@@ -114,7 +114,7 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="shared.js?v=20261021b"></script>
+<script src="shared.js?v=20261022"></script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────
 // 베타 라이브 대시보드 (2026-10-21)

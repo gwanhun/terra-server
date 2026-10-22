@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Terra · 베타 테스터</title>
-<link rel="stylesheet" href="shared.css?v=20261021b">
+<link rel="stylesheet" href="shared.css?v=20261022">
 <style>
 /* beta.html 전용 — 계정 카드 · 기기 줄 · 일괄 제어 바. 공용은 shared.css */
 .page-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
@@ -59,11 +59,11 @@
 </style>
 </head>
 <body>
-<div class="wrap">
+<div class="wrap wide">
 <nav id="topnav" class="topnav"></nav>
 
 <!-- ===== 설정 (API Base 없을 때만) ===== -->
-<div class="panel hidden" id="config-panel">
+<div class="panel auth-card hidden" id="config-panel">
   <h2>⚙️ 설정</h2>
   <small class="muted">API Base 만 입력하면 <code>/web-config</code> 에서 Supabase 정보를 받아온다. 메인 콘솔과 같은 localStorage 를 쓴다.</small>
   <div class="row" style="margin-top:8px"><label>API Base</label><input id="cfg-api-base" type="text" placeholder="https://api.terra-server.uk"></div>
@@ -193,7 +193,7 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="shared.js?v=20261021b"></script>
+<script src="shared.js?v=20261022"></script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────
 // 베타 테스터 페이지 (2026-10-21 index.html 의 "🎫 베타 기기·카메라 등록" 패널을 분리)
