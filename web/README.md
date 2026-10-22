@@ -10,6 +10,8 @@
 | `shared.js` | esc/toast/OTA 모달/베타 계정 인증(`regSession`, 토큰 1h 캐시, signOut scope local)/상단 네비/테스터 이름(`BETA_NAMES_DEFAULT`, textarea 의 "이메일 이름" 으로 덮어씀) |
 | `shared.css` | 공용 스타일(다크 테마, 네비, 칩, 카드, 모달, 모바일) |
 
+`beta.html`·`live.html` 은 **메인 콘솔 로그인(같은 Supabase 세션) + `GET /console/access` admin** 이어야 열린다(2026-10-22). 서버 `.env` 의 `CONSOLE_ADMIN_EMAILS` 에 운영자 이메일을 쉼표로 — 비어 있으면 로그인한 아무 계정이나 통과하니 운영에선 꼭 채울 것. 테스터 공통 비밀번호는 소스에 없고 ⚙️ 설정에 한 번 입력하면 브라우저(localStorage `terra-beta-pass`)가 기억한다.
+
 세 페이지는 localStorage 를 공유한다: `terra-config`(apiBase), `terra-beta-emails`(베타 계정 목록), `terra-live-viewer-id`(라이브 "한 기기" 판정용 viewer_id).
 
 > sample_project 의 ESP32 펌웨어 웹페이지 패턴 차용 (Vanilla JS, 인라인 CSS, dark theme).

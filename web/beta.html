@@ -70,6 +70,9 @@
   <div class="row"><button class="primary" onclick="saveConfig()">저장 & 시작</button><small class="muted" id="cfg-status"></small></div>
 </div>
 
+<!-- 로그인 게이트 (shared.js requireConsoleLogin 이 채움) -->
+<div id="gate" class="hidden"></div>
+
 <div id="main" class="hidden">
 
   <!-- 헤더 카드 -->
@@ -99,7 +102,7 @@
       <summary>⚙️ 계정 목록 · 비밀번호 · API 대상</summary>
       <div class="row">
         <label title="테스트 계정 공통 비밀번호">비밀번호</label>
-        <input id="reg-pass" type="text" value="123456" style="flex:0 0 120px">
+        <input id="reg-pass" type="password" placeholder="테스터 공통 비밀번호" autocomplete="off" style="flex:0 0 160px" title="소스에 두지 않는다 — 입력하면 이 브라우저에 기억(localStorage)">
         <label title="pair 를 보낼 API. 실제 브로커 등록은 프로덕션이라야 됨" style="flex:0 0 auto">API</label>
         <input id="reg-apibase" type="text" placeholder="(비우면 설정의 API Base)" style="flex:1;min-width:200px">
       </div>
@@ -208,7 +211,7 @@ async function saveConfig() {
     CONFIG = { ...remote, apiBase };
     localStorage.setItem('terra-config', JSON.stringify({ apiBase }));
     renderTopNav('beta', apiBase); renderDocsLinks(apiBase);
-    start();
+    await requireConsoleLogin('beta', start);
   } catch (e) {
     status.innerText = '❌ ' + e.message;
     toast(e.message, 'bad');
@@ -220,6 +223,12 @@ function start() {
   document.getElementById('main').classList.remove('hidden');
   const ta = document.getElementById('reg-emails');
   ta.value = betaEmailsText();
+  if (!restoreRegPassword()) {   // 처음: 비밀번호부터 받는다 (소스에 없음)
+    document.getElementById('cfg-details').setAttribute('open', '');
+    toast('⚙️ 설정에 테스터 공통 비밀번호를 입력하고 [목록 적용]', 'bad');
+    renderRegAccountsSkeleton();
+    return;
+  }
   // 로컬 콘솔에서 띄웠어도 제어·해제는 프로덕션으로 가게 기본값을 채워 둔다 (비우면 CONFIG.apiBase).
   if (CONFIG.apiBase.includes('localhost')) document.getElementById('reg-apibase').value = 'https://api.terra-server.uk';
   setCamStatusAll(CAM_STATUS_ALL);   // 버튼 문구만 맞춤(카드는 아직 없음)
@@ -227,6 +236,9 @@ function start() {
 }
 
 // ── 계정 목록 ─────────────────────────────────────────────────────────────
+function regPasswordOk() {
+  try { regPassword(); return true; } catch (e) { toast(e.message, 'bad'); document.getElementById('cfg-details').setAttribute('open', ''); return false; }
+}
 function applyEmails() {
   const emails = parseEmailsInput();
   if (!emails.length) return toast('계정이 비어 있음', 'bad');
@@ -270,7 +282,17 @@ function updateStats() {
   else { prog.className = 'good'; prog.textContent = '완료'; }
 }
 
+// 비밀번호 없을 때 — 카드만 그려 두고 조회는 안 한다
+function renderRegAccountsSkeleton() {
+  const host = document.getElementById('accounts'); host.innerHTML = '';
+  parseEmailsInput().forEach(email => {
+    const card = document.createElement('div'); card.className = 'acct'; card.dataset.email = email;
+    card.innerHTML = `<div class="acct-head"><span class="acct-email"><b class="tester">${esc(testerName(email) || phoneOf(email) || email)}</b><span class="nick">${esc(testerName(email) ? (phoneOf(email) || email) : email)}</span></span><span class="acct-sum muted">비밀번호 입력 대기</span></div>`;
+    host.appendChild(card);
+  });
+}
 function renderRegAccounts() {
+  if (!regPasswordOk()) { renderRegAccountsSkeleton(); return; }
   const emails = parseEmailsInput();
   const host = document.getElementById('accounts');
   host.innerHTML = '';
@@ -932,7 +954,7 @@ async function otaBulkPoll() {
   try {
     const remote = await fetchRemoteConfig(CONFIG.apiBase);
     CONFIG = { ...CONFIG, ...remote };
-    start();
+    await requireConsoleLogin('beta', start);   // 로그인 + 운영 권한 통과해야 start()
   } catch (e) {
     document.getElementById('config-panel').classList.remove('hidden');
     document.getElementById('cfg-status').innerText = '❌ ' + e.message + ' — API Base 확인';

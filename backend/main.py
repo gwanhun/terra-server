@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,6 +28,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 
+from backend.auth import get_current_user_id, get_jwt_payload
 from backend.health import register_health
 from backend.live_session import LiveSessionReaper
 from backend.r2_client import delete_object, list_objects
@@ -221,6 +222,30 @@ def _web_config() -> dict:
         "supabaseUrl": os.getenv("SUPABASE_URL", ""),
         "supabasePublishableKey": os.getenv("SUPABASE_PUBLISHABLE_KEY", ""),
     }
+
+
+# 운영 콘솔(beta.html·live.html) 접근 판정. 정적 HTML 은 누구나 받지만 페이지가 부팅 때 이걸 물어 로그인·권한 없으면 막는다.
+# CONSOLE_ADMIN_EMAILS(쉼표 목록)가 비어 있으면 로그인한 아무 계정이나 통과(restricted=false) — 운영에선 채울 것.
+# 진짜 보호는 각 API 의 JWT 소유자 검사이고, 이건 "테스터가 자기 계정으로 운영 페이지를 여는 것"을 막는 문.
+def _console_admin_emails() -> set[str]:
+    return {e.strip().lower() for e in os.getenv("CONSOLE_ADMIN_EMAILS", "").split(",") if e.strip()}
+
+
+@app.get("/console/access", include_in_schema=False)
+def _console_access(
+    user_id: str = Depends(get_current_user_id),
+    authorization: str | None = Header(default=None),
+) -> dict:
+    email: str | None = None
+    if authorization and os.getenv("AUTH_MODE", "dev").strip().lower() == "prod":
+        try:
+            email = (get_jwt_payload(authorization=authorization).get("email") or "").strip().lower() or None
+        except Exception:  # noqa: BLE001 — 이미 get_current_user_id 가 검증했으니 email 만 못 읽은 것
+            email = None
+    allowed = _console_admin_emails()
+    if not allowed:
+        return {"admin": True, "restricted": False, "email": email, "user_id": user_id}
+    return {"admin": bool(email and email in allowed), "restricted": True, "email": email, "user_id": user_id}
 
 
 # CORS — 앱(웹/모바일) 도메인 허용

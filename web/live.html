@@ -62,6 +62,9 @@
   <div class="row"><button class="primary" onclick="saveConfig()">저장 & 시작</button><small class="muted" id="cfg-status"></small></div>
 </div>
 
+<!-- 로그인 게이트 (shared.js requireConsoleLogin 이 채움) -->
+<div id="gate" class="hidden"></div>
+
 <div id="main" class="hidden">
   <div class="panel">
     <div class="page-head">
@@ -89,7 +92,7 @@
       <details class="cfg" style="margin:0;padding:2px 10px;flex:1;min-width:240px">
         <summary>⚙️ 계정 목록 · 비밀번호 · API 대상</summary>
         <div class="row">
-          <label>비밀번호</label><input id="reg-pass" type="text" value="123456" style="flex:0 0 120px">
+          <label>비밀번호</label><input id="reg-pass" type="password" placeholder="테스터 공통 비밀번호" autocomplete="off" style="flex:0 0 160px" title="소스에 두지 않는다 — 입력하면 이 브라우저에 기억(localStorage)">
           <label style="flex:0 0 auto">API</label><input id="reg-apibase" type="text" placeholder="(비우면 설정의 API Base)" style="flex:1;min-width:200px">
         </div>
         <div class="row" style="align-items:flex-start"><label>계정</label><textarea id="reg-emails" rows="5" style="flex:1;font-family:ui-monospace,Menlo,monospace;font-size:12px" placeholder="이메일 [이름] 한 줄에 하나"></textarea></div>
@@ -133,7 +136,7 @@ async function saveConfig() {
     CONFIG = { ...remote, apiBase };
     localStorage.setItem('terra-config', JSON.stringify({ apiBase }));
     renderTopNav('live', apiBase); renderDocsLinks(apiBase);
-    start();
+    await requireConsoleLogin('live', start);
   } catch (e) {
     status.innerText = '❌ ' + e.message;
     toast(e.message, 'bad');
@@ -148,11 +151,18 @@ function start() {
   if (CONFIG.apiBase.includes('localhost')) document.getElementById('reg-apibase').value = 'https://api.terra-server.uk';
   const cols = localStorage.getItem('terra-live-cols') || '3';
   document.getElementById('cols').value = cols; setCols(cols);
+  if (!restoreRegPassword()) {
+    document.querySelector('#main details.cfg').setAttribute('open', '');
+    document.getElementById('grid').innerHTML = '<div class="empty-grid">⚙️ 테스터 공통 비밀번호를 입력하고 [목록 적용 · 조회]</div>';
+    toast('테스터 공통 비밀번호 입력 필요', 'bad');
+    return;
+  }
   loadCameras();
 }
 function applyEmails() {
   const emails = parseEmailsInput();
   if (!emails.length) return toast('계정이 비어 있음', 'bad');
+  try { regPassword(); } catch (e) { return toast(e.message, 'bad'); }
   saveBetaEmails(emails);
   loadCameras();
 }
@@ -503,7 +513,7 @@ window.addEventListener('pagehide', () => {
   try {
     const remote = await fetchRemoteConfig(CONFIG.apiBase);
     CONFIG = { ...CONFIG, ...remote };
-    start();
+    await requireConsoleLogin('live', start);   // 로그인 + 운영 권한 통과해야 start()
   } catch (e) {
     document.getElementById('config-panel').classList.remove('hidden');
     document.getElementById('cfg-status').innerText = '❌ ' + e.message + ' — API Base 확인';
