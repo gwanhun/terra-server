@@ -71,9 +71,6 @@
   </div>
 </div>
 
-<!-- 접근 거부 (shared.js accessDeniedHtml) — 베타·라이브와 같은 정책: 로그인 + CONSOLE_ADMIN_EMAILS -->
-<div id="gate" class="hidden"></div>
-
 <!-- ===== 대시보드 ===== -->
 <div class="hidden" id="dashboard">
 
@@ -416,20 +413,10 @@ function initSupabase() {
   sb.auth.onAuthStateChange((_e, s) => applySession(s));
 }
 
-async function applySession(s) {
+function applySession(s) {
   session = s;
-  const gate = document.getElementById('gate');
   if (s) {
     document.getElementById('auth-panel').classList.add('hidden');
-    // 2026-10-22: 베타·라이브 페이지와 같은 정책 — 로그인 + GET /console/access(CONSOLE_ADMIN_EMAILS). 비어 있으면 누구나.
-    const acc = await fetchConsoleAccess(s.access_token);
-    if (!acc || !acc.admin) {
-      unsubscribeRealtime();
-      document.getElementById('dashboard').classList.add('hidden');
-      gate.innerHTML = accessDeniedHtml(s, acc); gate.classList.remove('hidden');
-      return;
-    }
-    gate.classList.add('hidden'); gate.innerHTML = '';
     document.getElementById('dashboard').classList.remove('hidden');
     document.getElementById('user-info').innerText = s.user.email + ' · ' + s.user.id.slice(0, 8);
     renderApiBaseLabel();
@@ -440,7 +427,6 @@ async function applySession(s) {
     subscribeRealtime();
   } else {
     unsubscribeRealtime();
-    gate.classList.add('hidden'); gate.innerHTML = '';
     document.getElementById('dashboard').classList.add('hidden');
     document.getElementById('auth-panel').classList.remove('hidden');
   }

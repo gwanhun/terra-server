@@ -414,7 +414,7 @@ function regApiBase() {
   const el = document.getElementById('reg-apibase');
   return (el && el.value.trim().replace(/\/$/, '')) || CONFIG.apiBase;
 }
-// 테스터 공통 비밀번호 — 기본값 유지(owner 2026-10-22: 페이지가 로그인 + CONSOLE_ADMIN_EMAILS 로 막혔으니 소스에 둬도 됨).
+// 테스터 공통 비밀번호 — 기본값 유지(owner 2026-10-22: 페이지가 로그인으로 막혀 있으니 소스에 둬도 됨).
 // 바꿔 입력하면 localStorage 에 기억.
 const BETA_PASS_DEFAULT = '123456';
 function regPassword() {
@@ -434,29 +434,14 @@ function restoreRegPassword() {
 
 // ─────────────────────────────────────────────────────────────────────────
 // 운영 콘솔 로그인 게이트 — beta.html / live.html 공용
-// 1) 메인 콘솔과 같은 Supabase 세션(같은 origin·storageKey) 이 있어야 하고 2) GET /console/access 가 admin 이어야 연다.
-// 세션 없으면 #gate 에 로그인 폼을 그리고, 권한 없으면 거부 화면 + 로그아웃. 로그아웃은 scope local(앱 세션 보호).
+// 메인 콘솔과 같은 Supabase 세션(같은 origin·storageKey)이 있어야 연다 — 메인 콘솔과 같은 정책(로그인만, 허용 목록 없음: owner 2026-10-22).
+// 세션 없으면 #gate 에 로그인 폼을 그린다. 로그아웃은 scope local(앱 세션 보호).
 // 정적 HTML 자체는 막을 수 없다(브라우저 내비게이션엔 JWT 가 없음) — API 가 전부 JWT 소유자 검사라 데이터는 못 본다.
 // ─────────────────────────────────────────────────────────────────────────
 let sbMain = null;
 function mainClient() {
   if (!sbMain) sbMain = window.supabase.createClient(CONFIG.supabaseUrl, CONFIG.supabasePublishable);
   return sbMain;
-}
-// GET /console/access — {admin, restricted, email}. 실패(네트워크·5xx)는 null → 거부로 취급.
-async function fetchConsoleAccess(token) {
-  try {
-    const res = await fetch(CONFIG.apiBase + '/console/access', { cache: 'no-store', headers: { Authorization: 'Bearer ' + token } });
-    return res.ok ? await res.json() : null;
-  } catch (e) { return null; }
-}
-function accessDeniedHtml(session, acc) {
-  return `<div class="panel" style="max-width:480px;margin:40px auto">
-    <h2 style="margin-top:0">⛔ 접근 권한 없음</h2>
-    <small class="muted">${esc(session.user.email || session.user.id)} 계정은 운영 콘솔 권한이 없다${acc ? '' : ' (또는 /console/access 응답 실패)'}.
-      서버 .env 의 <code>CONSOLE_ADMIN_EMAILS</code> 에 등록된 계정만 열 수 있음. 세 페이지(메인·베타·라이브) 정책 동일.</small>
-    <div class="row" style="margin-top:10px"><button class="ghost" onclick="consoleLogout()">로그아웃</button></div>
-  </div>`;
 }
 async function requireConsoleLogin(pageKey, onReady) {
   const gate = document.getElementById('gate'); if (!gate) return;
@@ -466,7 +451,7 @@ async function requireConsoleLogin(pageKey, onReady) {
     if (!session) {
       show(`<div class="panel" style="max-width:420px;margin:40px auto">
         <h2 style="margin-top:0">🔒 로그인 필요</h2>
-        <small class="muted">운영 콘솔은 메인 콘솔과 같은 계정으로 로그인해야 열린다. 테스터 계정이 아니라 <b>운영자 계정</b>.</small>
+        <small class="muted">메인 콘솔과 같은 계정·세션으로 로그인해야 열린다.</small>
         <div class="row" style="margin-top:10px"><label>Email</label><input id="gate-email" type="email" autocomplete="username"></div>
         <div class="row"><label>Password</label><input id="gate-pw" type="password" autocomplete="current-password"></div>
         <div class="row"><span style="flex:0 0 100px"></span><button class="primary" onclick="gateLogin()">로그인</button><small class="muted" id="gate-msg"></small></div>
@@ -474,8 +459,6 @@ async function requireConsoleLogin(pageKey, onReady) {
       const pw = document.getElementById('gate-pw'); if (pw) pw.onkeydown = e => { if (e.key === 'Enter') gateLogin(); };
       return;
     }
-    const acc = await fetchConsoleAccess(session.access_token);
-    if (!acc || !acc.admin) { show(accessDeniedHtml(session, acc)); return; }
     gate.classList.add('hidden'); gate.innerHTML = '';
     renderTopNav(pageKey, CONFIG.apiBase, { email: session.user.email || '' });
     renderDocsLinks(CONFIG.apiBase);

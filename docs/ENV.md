@@ -123,7 +123,6 @@ petcam-lab 감시 스크립트가 `POST /ops/cameras/{id}/reboot` 를 부를 때
 
 | 변수 | 필수 | 설명 |
 |------|:---:|------|
-| `CONSOLE_ADMIN_EMAILS` | X | 운영 콘솔(beta.html·live.html) 허용 계정 이메일(쉼표). **비어 있으면 로그인한 아무 계정이나 통과** — 테스터도 열 수 있으니 운영에선 채울 것. `GET /console/access` 가 판정 |
 | `OPS_REBOOT_SECRET` | 기능 사용 시 | 🔴 Critical. 비어 있으면 `/ops` 는 전부 401(기능 꺼짐) + API 시작 시 경고 1회 |
 
 - 생성: `python -c "import secrets; print(secrets.token_urlsafe(32))"`
