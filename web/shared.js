@@ -442,6 +442,21 @@ function mainClient() {
   if (!sbMain) sbMain = window.supabase.createClient(CONFIG.supabaseUrl, CONFIG.supabasePublishable);
   return sbMain;
 }
+// GET /console/access — {admin, restricted, email}. 실패(네트워크·5xx)는 null → 거부로 취급.
+async function fetchConsoleAccess(token) {
+  try {
+    const res = await fetch(CONFIG.apiBase + '/console/access', { cache: 'no-store', headers: { Authorization: 'Bearer ' + token } });
+    return res.ok ? await res.json() : null;
+  } catch (e) { return null; }
+}
+function accessDeniedHtml(session, acc) {
+  return `<div class="panel" style="max-width:480px;margin:40px auto">
+    <h2 style="margin-top:0">⛔ 접근 권한 없음</h2>
+    <small class="muted">${esc(session.user.email || session.user.id)} 계정은 운영 콘솔 권한이 없다${acc ? '' : ' (또는 /console/access 응답 실패)'}.
+      서버 .env 의 <code>CONSOLE_ADMIN_EMAILS</code> 에 등록된 계정만 열 수 있음. 세 페이지(메인·베타·라이브) 정책 동일.</small>
+    <div class="row" style="margin-top:10px"><button class="ghost" onclick="consoleLogout()">로그아웃</button></div>
+  </div>`;
+}
 async function requireConsoleLogin(pageKey, onReady) {
   const gate = document.getElementById('gate'); if (!gate) return;
   const sb = mainClient();
@@ -458,20 +473,8 @@ async function requireConsoleLogin(pageKey, onReady) {
       const pw = document.getElementById('gate-pw'); if (pw) pw.onkeydown = e => { if (e.key === 'Enter') gateLogin(); };
       return;
     }
-    let acc = null;
-    try {
-      const res = await fetch(CONFIG.apiBase + '/console/access', { cache: 'no-store', headers: { Authorization: 'Bearer ' + session.access_token } });
-      acc = res.ok ? await res.json() : null;
-    } catch (e) { acc = null; }
-    if (!acc || !acc.admin) {
-      show(`<div class="panel" style="max-width:480px;margin:40px auto">
-        <h2 style="margin-top:0">⛔ 접근 권한 없음</h2>
-        <small class="muted">${esc(session.user.email || session.user.id)} 계정은 운영 콘솔 권한이 없다${acc ? '' : ' (또는 /console/access 응답 실패)'}.
-          서버 .env 의 <code>CONSOLE_ADMIN_EMAILS</code> 에 등록된 계정만 열 수 있음.</small>
-        <div class="row" style="margin-top:10px"><button class="ghost" onclick="consoleLogout()">로그아웃</button><a class="nav" href="index.html" style="color:#9cf;font-size:12px">메인 콘솔로</a></div>
-      </div>`);
-      return;
-    }
+    const acc = await fetchConsoleAccess(session.access_token);
+    if (!acc || !acc.admin) { show(accessDeniedHtml(session, acc)); return; }
     gate.classList.add('hidden'); gate.innerHTML = '';
     renderTopNav(pageKey, CONFIG.apiBase, { email: session.user.email || '' });
     renderDocsLinks(CONFIG.apiBase);
