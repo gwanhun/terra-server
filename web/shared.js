@@ -414,21 +414,22 @@ function regApiBase() {
   const el = document.getElementById('reg-apibase');
   return (el && el.value.trim().replace(/\/$/, '')) || CONFIG.apiBase;
 }
-// 테스터 공통 비밀번호 — 2026-10-22 부터 소스에 안 둔다(페이지만 열면 전 기기 제어가 되던 구멍). 입력하면 localStorage 에 기억.
+// 테스터 공통 비밀번호 — 기본값 유지(owner 2026-10-22: 페이지가 로그인 + CONSOLE_ADMIN_EMAILS 로 막혔으니 소스에 둬도 됨).
+// 바꿔 입력하면 localStorage 에 기억.
+const BETA_PASS_DEFAULT = '123456';
 function regPassword() {
   const el = document.getElementById('reg-pass');
   const v = el ? el.value.trim() : '';
   if (v) { try { localStorage.setItem('terra-beta-pass', v); } catch (e) { /* 무시 */ } return v; }
-  const saved = localStorage.getItem('terra-beta-pass') || '';
-  if (!saved) throw new Error('테스터 공통 비밀번호를 ⚙️ 설정에 입력');
+  const saved = localStorage.getItem('terra-beta-pass') || BETA_PASS_DEFAULT;
   if (el) el.value = saved;
   return saved;
 }
 function restoreRegPassword() {
   const el = document.getElementById('reg-pass');
-  const saved = localStorage.getItem('terra-beta-pass') || '';
-  if (el && !el.value && saved) el.value = saved;
-  return !!saved;
+  const saved = localStorage.getItem('terra-beta-pass') || BETA_PASS_DEFAULT;
+  if (el && !el.value) el.value = saved;
+  return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
