@@ -72,6 +72,22 @@ ESP32-S3(센서/제어) + ESP32-P4(카메라/영상/라이브) → terra-server 
 
 → 모두 같은 Lightsail VPS 에서 systemd 로 가동.
 
+### Supabase HTTP 계층 (2026-10-24)
+
+두 프로세스 모두 `backend/supabase_client.py` 의 싱글톤 클라이언트를 쓴다. 기본 설정 그대로
+두면 안 되는 이유:
+
+- supabase-py 의 httpx 세션은 **http2=True** 라 `terra-bridge` 의 스레드 6개(paho 수신 /
+  디스패처 / 예약 / 오프라인 / OTA / 푸시)가 TCP 연결 **하나**를 공유한다. Supabase 게이트웨이가
+  그 연결을 끊으면 그 순간 날아가던 요청만 `RemoteProtocolError: Server disconnected` 로 죽는다.
+  2026-10-19~24 journal 에 3만 건(분당 1.7회) → 예약 명령 3건, telemetry/ack/alert 44건 유실.
+- 그래서 postgrest 세션의 transport 를 **http2=False + 읽기(GET/HEAD) 재시도** 로 교체하고,
+  타임아웃을 기본 120초에서 줄인다(한 번 멈추면 1초 폴링 루프가 2분 정지).
+- 쓰기는 전송 계층에서 재시도하지 않는다(중복 발행). 멱등이 보장된 자리만
+  `retry_idempotent()` 로 감싼다 — ack UPDATE, telemetry INSERT(PK 중복 방어 있음).
+- **DB 실패는 비즈니스 결정이 되면 안 된다**: 조회 실패는 `DeviceLookupError` 로 올리고,
+  "미페어링"·`unknown_device` 로 굳히지 않는다 (`backend/mqtt/handlers.py`).
+
 ## 도메인 모델 — `enclosure` 가 최상위
 
 ```

@@ -126,7 +126,7 @@ def _record_skipped(sb: Any, row: dict[str, Any], skip: dict[str, Any]) -> None:
         device_uuid = row["device_id"]
         push_events.enqueue_skipped_event(
             inserted,
-            handlers._cached_device_text(device_uuid) or "",
+            handlers._cached_device_text(device_uuid),
             handlers.device_meta(device_uuid),
             skip,
         )
@@ -188,7 +188,7 @@ def _record_offline_skipped(sb: Any, row: dict[str, Any]) -> None:
         device_uuid = row["device_id"]
         push_events.enqueue_command_failure(
             inserted,
-            handlers._cached_device_text(device_uuid) or "",
+            handlers._cached_device_text(device_uuid),
             handlers.device_meta(device_uuid),
             OFFLINE_SKIPPED_RESULT,
         )

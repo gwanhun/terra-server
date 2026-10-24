@@ -50,7 +50,7 @@ from supabase import Client
 from backend import ota_service
 from backend.db_helpers import parse_uuid
 from backend.mqtt.camera_commands import ACTION_OTA_APPLY, ACTION_OTA_PREPARE, rotation_command
-from backend.supabase_client import get_supabase_client
+from backend.supabase_client import get_supabase_client, retry_idempotent
 
 logger = logging.getLogger(__name__)
 
@@ -146,47 +146,74 @@ def _lookup_active_uuid(table: str, key_col: str, key: str) -> str | None:
     return rows[0]["id"]
 
 
-def _cached_device_uuid(device_id_text: str) -> str | None:
-    """devices.device_id (TEXT) → devices.id (UUID). 미존재·해제됨이면 None."""
+class DeviceLookupError(RuntimeError):
+    """devices/cameras 조회 자체가 실패(DB·네트워크). '미존재'(None)와 반드시 구분한다.
+
+    발신(디스패처)에서 None 으로 뭉개면 명령을 unknown_device 로 영구 거절하고,
+    수신(telemetry/ack/alert)에서 뭉개면 "미페어링" 으로 보고 메시지를 버린다.
+    2026-10-19~24 운영 로그: 전송 실패 3만 건, 그중 수신 경로 유실 44건, 명령 유실 3건.
+    ack 유실은 특히 기기가 정상 실행한 명령을 no_ack 실패 푸시로 뒤집는다.
+    """
+
+
+def resolve_device_uuid(device_id_text: str) -> str | None:
+    """devices.device_id (TEXT) → devices.id (UUID).
+
+    미존재·해제됨이면 None, 조회 자체가 실패하면 DeviceLookupError.
+    """
     hit, val = _cache_get("device_uuid", device_id_text)
     if hit:
         return val
     try:
         val = _lookup_active_uuid("devices", "device_id", device_id_text)
-    except Exception:  # noqa: BLE001 — DB 장애를 "미페어링" 으로 굳히지 않는다
-        logger.exception("devices 조회 실패 (device_id=%s)", device_id_text)
-        return None
+    except Exception as exc:  # noqa: BLE001 — supabase-py 예외 타입 넓음
+        raise DeviceLookupError(device_id_text) from exc
     _cache_put("device_uuid", device_id_text, val)
     return val
 
 
-def _cached_device_text(device_uuid: str) -> str | None:
-    """devices.id (UUID) → devices.device_id (TEXT). 미존재면 None.
+def resolve_device_text(device_uuid: str) -> str | None:
+    """devices.id (UUID) → devices.device_id (TEXT). 미존재면 None, 조회 실패면 DeviceLookupError.
 
     dispatcher 가 commands.device_id (UUID) → MQTT 토픽의 device_id (TEXT) 매핑할 때 사용.
+    일시 장애를 None 으로 돌려주면 dispatcher 가 unknown_device 로 영구 거절한다
+    (2026-10-24 예약 fan_off 유실 → 팬 7시간 켜짐).
     """
     hit, val = _cache_get("device_text", device_uuid)
     if hit:
         return val
     try:
         val = _lookup_one("devices", "device_id", "id", device_uuid)
-    except Exception:  # noqa: BLE001
-        logger.exception("devices 조회 실패 (uuid=%s)", device_uuid)
-        return None
-    _cache_put("device_text", device_uuid, val)
+    except Exception as exc:  # noqa: BLE001 — supabase-py 예외 타입 넓음
+        raise DeviceLookupError(device_uuid) from exc
+    # 빈 결과는 캐시하지 않는다 — dispatcher 가 매 폴링 다시 조회해 일시 이상과 진짜 미존재를 가른다.
+    # (텔레메트리처럼 초당 몰리는 경로가 아니라 명령당 몇 번뿐이다.)
+    if val is not None:
+        _cache_put("device_text", device_uuid, val)
     return val
 
 
-def _cached_camera_uuid(camera_id_text: str) -> str | None:
-    """cameras.camera_id (TEXT, "p4cam-..." 등) → cameras.id (UUID). 미존재면 None."""
+def _cached_device_text(device_uuid: str) -> str | None:
+    """resolve_device_text 의 관대한 버전 — 조회 실패도 None. 푸시 라벨처럼 없어도 되는 곳용."""
+    try:
+        return resolve_device_text(device_uuid)
+    except DeviceLookupError:
+        logger.exception("devices 조회 실패 (uuid=%s)", device_uuid)
+        return None
+
+
+def resolve_camera_uuid(camera_id_text: str) -> str | None:
+    """cameras.camera_id (TEXT, "p4cam-..." 등) → cameras.id (UUID).
+
+    미존재·해제됨이면 None, 조회 자체가 실패하면 DeviceLookupError (device 쪽과 같은 이유).
+    """
     hit, val = _cache_get("camera_uuid", camera_id_text)
     if hit:
         return val
     try:
         val = _lookup_active_uuid("cameras", "camera_id", camera_id_text)
-    except Exception:  # noqa: BLE001
-        logger.exception("cameras 조회 실패 (camera_id=%s)", camera_id_text)
-        return None
+    except Exception as exc:  # noqa: BLE001
+        raise DeviceLookupError(camera_id_text) from exc
     _cache_put("camera_uuid", camera_id_text, val)
     return val
 
@@ -229,19 +256,24 @@ def _resolve_both(device_id_text: str) -> tuple[str | None, str | None]:
 
     Terra Hub 는 둘 다 채워진다(한 보드 = devices 행 + cameras 행). 순수 기기는 (uuid, None),
     순수 카메라는 (None, uuid), 미페어링은 (None, None).
+
+    조회 자체가 실패하면 DeviceLookupError 를 올린다 — None 으로 돌려주면 호출부가 "미페어링"
+    으로 보고 메시지를 버리고, 허브(devices+cameras)에서는 devices 조회만 실패했을 때
+    카메라 전용으로 오분류돼 센서 telemetry 가 통째로 사라진다.
     """
     if device_id_text.startswith(_CAMERA_ONLY_PREFIXES):
-        return (None, _cached_camera_uuid(device_id_text))
-    dev = _cached_device_uuid(device_id_text)
+        return (None, resolve_camera_uuid(device_id_text))
+    dev = resolve_device_uuid(device_id_text)
     if device_id_text.startswith(_DEVICE_ONLY_PREFIXES):
         return (dev, None)
-    return (dev, _cached_camera_uuid(device_id_text))
+    return (dev, resolve_camera_uuid(device_id_text))
 
 
 def _resolve_entity(device_id_text: str) -> tuple[str | None, str | None]:
     """device_id (TEXT) → (entity_type, uuid). 호환 래퍼 — 허브는 "device" 로 분류된다.
 
     entity_type ∈ {"device", "camera", None}. 미페어링이면 (None, None).
+    조회 실패는 _resolve_both 와 같이 DeviceLookupError.
     telemetry/ack 처럼 허브를 양쪽으로 다뤄야 하는 곳은 _resolve_both 를 직접 쓴다.
     """
     dev, cam = _resolve_both(device_id_text)
@@ -805,8 +837,14 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
     - 허브(p4hub-, devices+cameras 둘 다): payload 에 dht22_a/dht22_b 가 있으면 device 경로
       (3초 센서 telemetry), 없으면 camera 경로(15초 heartbeat). 두 행의 last_seen 이 각자 갱신된다.
     - 미페어링: 경고 후 무시.
+    - DB 조회 실패: 미페어링과 구분해 ERROR 후 무시 (다음 메시지에 재조회된다).
     """
-    device_uuid, camera_uuid = _resolve_both(device_id_text)
+    try:
+        device_uuid, camera_uuid = _resolve_both(device_id_text)
+    except DeviceLookupError:
+        # DB 조회 실패 — 미페어링이 아니다. 캐시에도 안 남으니 다음 메시지(3초 뒤)에 재조회된다.
+        logger.exception("telemetry: DB 조회 실패로 처리 못 함 (device_id=%s)", device_id_text)
+        return
     if device_uuid is None and camera_uuid is None:
         logger.warning("telemetry: 미페어링 device_id=%s 무시", device_id_text)
         return
@@ -923,7 +961,12 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
     }
 
     try:
-        sb.table("telemetry").insert(row).execute()
+        # 전송 실패 재시도: (device_id, ts) PK 가 있어 중복 INSERT 가 행을 늘리지 않고,
+        # 1회차가 실제로 들어갔는데 응답만 끊긴 경우는 아래 duplicate 분기로 흘러간다.
+        retry_idempotent(
+            lambda: sb.table("telemetry").insert(row).execute(),
+            label=f"telemetry INSERT (device={device_id_text})",
+        )
     except Exception as exc:  # noqa: BLE001 — supabase-py 예외 타입 넓음
         # 동일 (device_id, ts) PK 충돌은 정상 (3초 주기 중복 전송). 그 외는 경고.
         if "duplicate" in str(exc).lower() or "23505" in str(exc):
@@ -1002,8 +1045,15 @@ def handle_ack(device_id_text: str, payload: dict[str, Any]) -> None:
     - 허브(devices+cameras): msg_id 가 commands 에 있으면 device ack, 없으면 카메라 명령
       (reboot/set_rotation/webrtc_*)의 ack 로 보고 camera 경로. "매칭 없음" 경고는 허브에선 내지 않는다.
     - 미페어링: 경고 후 무시.
+    - DB 조회 실패: 미페어링과 구분해 ERROR 후 무시 (이 ack 는 복구 불가 — 아래 주석 참고).
     """
-    device_uuid, camera_uuid = _resolve_both(device_id_text)
+    try:
+        device_uuid, camera_uuid = _resolve_both(device_id_text)
+    except DeviceLookupError:
+        # DB 조회 실패 — 미페어링이 아니다. 이 ack 는 되살릴 수 없고 commands 행은 'sent' 로
+        # 남아 30초 뒤 no_ack 가 되므로(기기는 실제로 실행했는데 실패 알림) ERROR 로 남긴다.
+        logger.exception("ack: DB 조회 실패로 처리 못 함 (device_id=%s)", device_id_text)
+        return
     if device_uuid is None and camera_uuid is None:
         logger.warning("ack: 미페어링 device_id=%s 무시", device_id_text)
         return
@@ -1045,16 +1095,22 @@ def _ack_device_command(
         _route_ota_ack(sb, payload)
     else:
         try:
-            res = (
-                sb.table("commands")
-                .update({
-                    "status": "acked",
-                    "result": result,
-                    "acked_at": _now_iso(),
-                })
-                .eq("id", msg_id)
-                .eq("device_id", device_uuid)
-                .execute()
+            # 전송 실패 재시도: 같은 값으로 덮어쓰는 UPDATE 라 멱등하다. 이 ack 를 놓치면
+            # commands 행이 'sent' 로 남아 30초 뒤 no_ack + 실패 푸시가 된다 — 기기는 실제로
+            # 실행했는데 앱에는 실패로 보인다 (2026-10-24 HTTP/2 끊김 때 실제 발생).
+            res = retry_idempotent(
+                lambda: (
+                    sb.table("commands")
+                    .update({
+                        "status": "acked",
+                        "result": result,
+                        "acked_at": _now_iso(),
+                    })
+                    .eq("id", msg_id)
+                    .eq("device_id", device_uuid)
+                    .execute()
+                ),
+                label=f"ack UPDATE (msg_id={msg_id})",
             )
         except Exception:  # noqa: BLE001
             logger.exception("commands UPDATE 실패 (msg_id=%s)", msg_id)
@@ -1213,7 +1269,11 @@ def handle_alert(device_id_text: str, payload: dict[str, Any]) -> None:
 
     동작: alerts INSERT.
     """
-    device_uuid = _cached_device_uuid(device_id_text)
+    try:
+        device_uuid = resolve_device_uuid(device_id_text)
+    except DeviceLookupError:
+        logger.exception("alert: DB 조회 실패로 처리 못 함 (device_id=%s)", device_id_text)
+        return
     if device_uuid is None:
         logger.warning("alert: 미페어링 device_id=%s 무시", device_id_text)
         return
@@ -1239,7 +1299,7 @@ def handle_alert(device_id_text: str, payload: dict[str, Any]) -> None:
 
 
 __all__ = [
-    "_cached_camera_uuid",
+    "DeviceLookupError",
     "_cached_device_text",
     "_resolve_both",
     "_resolve_entity",
@@ -1247,4 +1307,7 @@ __all__ = [
     "handle_alert",
     "handle_telemetry",
     "reset_device_cache",
+    "resolve_camera_uuid",
+    "resolve_device_text",
+    "resolve_device_uuid",
 ]
