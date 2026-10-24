@@ -178,7 +178,10 @@ def resolve_device_text(device_uuid: str) -> str | None:
         val = _lookup_one("devices", "device_id", "id", device_uuid)
     except Exception as exc:  # noqa: BLE001 — supabase-py 예외 타입 넓음
         raise DeviceLookupError(device_uuid) from exc
-    _cache_put("device_text", device_uuid, val)
+    # 빈 결과는 캐시하지 않는다 — dispatcher 가 매 폴링 다시 조회해 일시 이상과 진짜 미존재를 가른다.
+    # (텔레메트리처럼 초당 몰리는 경로가 아니라 명령당 몇 번뿐이다.)
+    if val is not None:
+        _cache_put("device_text", device_uuid, val)
     return val
 
 

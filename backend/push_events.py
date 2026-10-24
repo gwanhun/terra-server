@@ -165,7 +165,7 @@ def _resolve_phase(action: str | None, source_id: str | None, succeeded: bool) -
 
 
 def _drop_empty_device_key(payload: dict[str, Any]) -> dict[str, Any]:
-    """device_key 를 모르면(조회 실패·미등록) 키 자체를 뺀다.
+    """device_key 를 모르면(None — 조회 실패·미등록) 키 자체를 뺀다.
 
     앱 수신부는 device_key 가 있으면 비어 있지 않은 텍스트여야 해서 "" 를 400 으로 거절한다
     (2026-10-24 unknown_device 실패 푸시 유실). device_id(UUID)는 항상 실린다.
@@ -183,7 +183,7 @@ _PHASE_EVENT = {
 
 
 def build_command_event(
-    command_row: dict[str, Any], device_key: str, device_meta: dict[str, Any] | None
+    command_row: dict[str, Any], device_key: str | None, device_meta: dict[str, Any] | None
 ) -> dict[str, Any] | None:
     """acked 된 commands 행 → 앱 계약 이벤트 본문. 발행 대상이 아니면 None.
 
@@ -254,7 +254,7 @@ def enqueue(event: dict[str, Any]) -> bool:
 
 def build_skipped_event(
     command_row: dict[str, Any],
-    device_key: str,
+    device_key: str | None,
     device_meta: dict[str, Any] | None,
     guard: dict[str, Any],
 ) -> dict[str, Any] | None:
@@ -302,7 +302,7 @@ def build_skipped_event(
 
 def enqueue_skipped_event(
     command_row: dict[str, Any],
-    device_key: str,
+    device_key: str | None,
     device_meta: dict[str, Any] | None,
     guard: dict[str, Any],
 ) -> bool:
@@ -317,7 +317,7 @@ def enqueue_skipped_event(
 
 def enqueue_command_failure(
     command_row: dict[str, Any],
-    device_key: str,
+    device_key: str | None,
     device_meta: dict[str, Any] | None,
     result: str,
 ) -> bool:

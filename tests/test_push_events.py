@@ -220,12 +220,15 @@ def test_enqueue_command_failure(result: str, monkeypatch: pytest.MonkeyPatch) -
     assert inserts[0]["event_id"].endswith(":failed")
 
 
-def test_enqueue_command_failure_omits_empty_device_key(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("key", [None, ""])
+def test_enqueue_command_failure_omits_unknown_device_key(
+    key: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """device_key 를 모르면 키를 뺀다 — 앱 수신부가 빈 문자열을 400 으로 거절 (2026-10-24)."""
     inserts: list[dict] = []
     monkeypatch.setattr(push_events, "get_supabase_client", lambda: _sb_with_insert(inserts))
 
-    assert push_events.enqueue_command_failure(_cmd(result=None), "", META, "unknown_device") is True
+    assert push_events.enqueue_command_failure(_cmd(result=None), key, META, "unknown_device") is True
     assert "device_key" not in inserts[0]["body"]["payload"]
 
 
@@ -432,6 +435,13 @@ def test_build_skipped_event_matches_app_contract() -> None:
     assert p["guard"] == GUARD
     assert p["device_key"] == "terra-a1"
     assert p["device_name"] == "크레이 사육장"
+
+
+@pytest.mark.parametrize("key", [None, ""])
+def test_build_skipped_event_omits_unknown_device_key(key: str | None) -> None:
+    ev = push_events.build_skipped_event(_skipped_row(), key, META, GUARD)
+    assert ev is not None
+    assert "device_key" not in ev["payload"]
 
 
 def test_skipped_enabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -76,6 +76,55 @@ DEFAULT_TTL_SEC = 10  # commands.ttl_sec 가 NULL/0 일 때 fallback
 # 폴링 1초 + MQTT 왕복을 덮는다. 너무 짧으면 후속이 `busy` 로 버려져 물이 덜 나간다.
 MIST_SPLIT_GAP_SEC = 1.5
 
+# ---------- 일시 장애 대응 (2026-10-24) ----------
+# 예약 fan_off 가 devices 조회 순간 실패로 unknown_device 거절 → 팬이 7시간 켜져 있었다.
+# 디스패처는 단일 스레드라 잠금 없이 모듈 상태로 둔다.
+
+# devices 조회가 '없음'으로 연속 이만큼 나와야 unknown_device. commands.device_id 는
+# FK(ON DELETE CASCADE)라 pending 명령의 기기 행은 사실상 항상 있다 — 한 번의 빈 결과는 믿지 않는다.
+DEVICE_MISS_LIMIT = 3
+# 발행은 했는데 'sent' 기록이 실패한 명령을 기억하는 시간. 그동안 재발행 없이 기록만 재시도한다.
+PUBLISHED_MEMO_SEC = 300.0
+
+_lookup_attempts: dict[str, int] = {}        # cmd_id → 연속 조회 실패·없음 횟수
+_published_unmarked: dict[str, float] = {}   # cmd_id → 발행 시각(monotonic)
+
+
+def reset_state() -> None:
+    """테스트용."""
+    _lookup_attempts.clear()
+    _published_unmarked.clear()
+
+
+def _prune_state(pending_ids: set[str]) -> None:
+    """더 이상 pending 이 아닌 명령의 조회 횟수, 오래된 발행 기억을 버린다.
+
+    발행 기억은 pending 목록(batch 상한)으로 거르지 않는다 — batch 밖으로 밀린 명령을 지우면
+    다음에 재발행될 수 있어서 시간으로만 만료시킨다.
+    """
+    for cmd_id in [k for k in _lookup_attempts if k not in pending_ids]:
+        del _lookup_attempts[cmd_id]
+    cutoff = time.monotonic() - PUBLISHED_MEMO_SEC
+    for cmd_id in [k for k, t in _published_unmarked.items() if t < cutoff]:
+        del _published_unmarked[cmd_id]
+
+
+def _mark_sent(sb: Any, cmd_id: str) -> bool:
+    """status='sent' UPDATE. 실패해도 예외를 올리지 않고 False.
+
+    pending 일 때만 바꾼다. 디바이스가 publish 직후(수백 ms) ack 하면 handle_ack 의 'acked' 가
+    먼저 들어올 수 있는데, 무조건 덮어쓰면 'sent' 로 되돌아가 sweep_unacked 가 no_ack 로 오판한다
+    (acked_at 은 찍혀 있는데 status=no_ack 인 행).
+    """
+    try:
+        sb.table("commands").update({"status": "sent"}).eq("id", cmd_id).eq(
+            "status", "pending"
+        ).execute()
+    except Exception:  # noqa: BLE001 — supabase-py 예외 타입 넓음
+        logger.warning("command %s: 'sent' 기록 실패 — 재발행 없이 기록만 재시도", cmd_id, exc_info=True)
+        return False
+    return True
+
 
 def _parse_iso(ts: str) -> datetime:
     """Supabase 가 반환하는 timestamp string → datetime (UTC).
@@ -93,7 +142,7 @@ def _enqueue_failure(row: dict[str, Any], device_uuid: str, result: str) -> None
     try:
         from backend import push_events
 
-        device_key = handlers._cached_device_text(device_uuid) or ""
+        device_key = handlers._cached_device_text(device_uuid)
         push_events.enqueue_command_failure(
             row, device_key, handlers.device_meta(device_uuid), result
         )
@@ -161,6 +210,7 @@ def poll_and_dispatch(bridge: "MqttBridge", batch: int = DEFAULT_BATCH) -> int:
         .execute()
     )
     rows = res.data or []
+    _prune_state({r["id"] for r in rows})
     if not rows:
         return 0
 
@@ -189,6 +239,13 @@ def _dispatch_one(bridge: "MqttBridge", row: dict[str, Any]) -> None:
 
     sb = get_supabase_client()
 
+    # 0) 이미 발행했는데 'sent' 기록만 실패한 명령 — 재발행하지 않고 기록만 다시 시도한다.
+    #    TTL 검사보다 먼저: 기기는 이미 받았으니 expired 로 덮으면 안 된다.
+    if cmd_id in _published_unmarked:
+        if _mark_sent(sb, cmd_id):
+            del _published_unmarked[cmd_id]
+        return
+
     # 1) TTL 만료 검증
     issued_at = _parse_iso(row["issued_at"])
     age = (datetime.now(timezone.utc) - issued_at).total_seconds()
@@ -210,15 +267,28 @@ def _dispatch_one(bridge: "MqttBridge", row: dict[str, Any]) -> None:
         return
 
     # 2) device UUID → device_id (TEXT) 캐시 해상
-    #    조회 실패는 '미등록'이 아니다 — pending 그대로 두면 다음 폴링이 다시 시도하고,
-    #    장애가 TTL 을 넘기면 1) 에서 expired 로 끝난다 (실패 푸시도 그쪽에서 나감).
+    #    조회 실패(예외)도, 한 번의 빈 결과도 '미등록'으로 굳히지 않는다. pending 그대로 두면
+    #    다음 폴링이 다시 조회한다. 예외가 TTL 을 넘기면 1) 에서 expired(실패 푸시 포함),
+    #    빈 결과가 DEVICE_MISS_LIMIT 연속이면 아래에서 unknown_device.
+    #    traceback 은 명령당 첫 실패만 — 장애 중 매초 쌓이면 원인 한 줄이 묻힌다.
+    attempt = _lookup_attempts.get(cmd_id, 0) + 1
     try:
         device_text = handlers.resolve_device_text(device_uuid)
     except handlers.DeviceLookupError:
+        _lookup_attempts[cmd_id] = attempt
         logger.warning(
-            "command %s: devices 조회 실패 → pending 유지(다음 폴링 재시도)", cmd_id, exc_info=True
+            "command %s: devices 조회 실패(%d회째) → pending 유지", cmd_id, attempt,
+            exc_info=attempt == 1,
         )
         return
+    if not device_text and attempt < DEVICE_MISS_LIMIT:
+        _lookup_attempts[cmd_id] = attempt
+        logger.warning(
+            "command %s: devices 조회 결과 없음(%d/%d) → 다음 폴링 재확인",
+            cmd_id, attempt, DEVICE_MISS_LIMIT,
+        )
+        return
+    _lookup_attempts.pop(cmd_id, None)
     if not device_text:
         sb.table("commands").update(
             {"status": "rejected", "result": "unknown_device"}
@@ -274,12 +344,10 @@ def _dispatch_one(bridge: "MqttBridge", row: dict[str, Any]) -> None:
         logger.warning("command %s publish 실패 — 다음 poll 재시도", cmd_id)
         return
 
-    # 5) status='sent' UPDATE — pending 일 때만. 디바이스가 publish 직후(수백 ms) ack 하면
-    #    handle_ack 의 'acked' 가 먼저 들어올 수 있는데, 무조건 덮어쓰면 'sent' 로 되돌아가
-    #    sweep_unacked 가 no_ack 로 오판한다 (acked_at 은 찍혀 있는데 status=no_ack 인 행).
-    sb.table("commands").update({"status": "sent"}).eq("id", cmd_id).eq(
-        "status", "pending"
-    ).execute()
+    # 5) status='sent' 기록. 실패해도 예외를 올리지 않는다 — 올리면 pending 으로 남아 다음 폴링이
+    #    같은 명령을 또 발행한다(토글이 되돌아가고 분무가 두 번 나감). 기억해두고 0) 에서 기록만 재시도.
+    if not _mark_sent(sb, cmd_id):
+        _published_unmarked[cmd_id] = time.monotonic()
     logger.info("command %s → %s (%s)", cmd_id, device_text, action)
 
     # 6) mist 분할 나머지 — 첫 분사가 **실제로 발행된 뒤**에만 예약한다 (publish 실패 시 후속만

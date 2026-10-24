@@ -22,10 +22,12 @@ DEVICE_TEXT = "terra-aabbccdd"
 def _reset_caches(monkeypatch: pytest.MonkeyPatch, fake_sb: MagicMock):
     """캐시 비우고 supabase mock 주입 (dispatcher + handlers 둘 다)."""
     handlers.reset_device_cache()
+    dispatcher.reset_state()
     monkeypatch.setattr(handlers, "get_supabase_client", lambda: fake_sb)
     monkeypatch.setattr(dispatcher, "get_supabase_client", lambda: fake_sb)
     yield
     handlers.reset_device_cache()
+    dispatcher.reset_state()
 
 
 @pytest.fixture
@@ -290,67 +292,27 @@ def test_expired_command_marked_expired_not_published(
     assert {"status": "expired", "result": "expired"} in updates
 
 
-# ---------- 미존재 디바이스 ----------
+# ---------- 미존재 디바이스 · 일시 장애 (2026-10-24) ----------
+#
+# 2026-10-24 예약 fan_off 가 devices 조회 순간 실패로 unknown_device 거절 → 팬이 7시간 켜져 있었다.
 
 
-def test_unknown_device_marked_rejected(
-    fake_sb: MagicMock, fake_bridge: MagicMock
+def _wire_flaky(
+    fake_sb: MagicMock,
+    cmd: dict,
+    device_results: list,
+    updates: list[dict],
+    sent_update_errors: int = 0,
 ) -> None:
-    cmd = {
-        "id": "cmd-unknown",
-        "device_id": "00000000-0000-0000-0000-000000000000",
-        "action": "relay_toggle",
-        "payload": None,
-        "issued_at": _now_iso(),
-        "ttl_sec": 30,
-    }
-    updates: list[dict] = []
+    """commands 1건 + devices 조회 결과 순서(list=data, Exception=raise) + UPDATE 캡처.
 
-    def _table(name: str) -> MagicMock:
-        t = MagicMock()
-        if name == "commands":
-            t.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = [cmd]
-
-            def _capture(payload: dict) -> MagicMock:
-                updates.append(payload)
-                chain = MagicMock()
-                chain.eq.return_value.execute.return_value.data = [{"id": "cmd-unknown"}]
-                return chain
-            t.update.side_effect = _capture
-        elif name == "devices":
-            # 빈 결과
-            t.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
-        return t
-
-    fake_sb.table.side_effect = _table
-
-    n = dispatcher.poll_and_dispatch(fake_bridge)
-    assert n == 1
-
-    fake_bridge.publish_command.assert_not_called()
-    assert {"status": "rejected", "result": "unknown_device"} in updates
-
-
-def test_device_lookup_error_leaves_pending_then_retries(
-    fake_sb: MagicMock, fake_bridge: MagicMock
-) -> None:
-    """devices 조회 예외는 '미등록'이 아니다 — 거절하지 않고 다음 폴링에서 다시 시도.
-
-    2026-10-24 예약 fan_off 가 일시 조회 실패로 unknown_device 거절 → 팬이 7시간 켜져 있었다.
+    sent_update_errors: status='sent' UPDATE 가 앞에서부터 이 횟수만큼 예외를 낸다.
     """
-    cmd = {
-        "id": "cmd-flaky",
-        "device_id": DEVICE_UUID,
-        "action": "fan_off",
-        "payload": None,
-        "issued_at": _now_iso(),
-        "ttl_sec": 10,
-    }
-    updates: list[dict] = []
-    devices_results = iter([RuntimeError("Server disconnected"), [{"device_id": DEVICE_TEXT}]])
+    results = iter(device_results)
+    sent_failures = [sent_update_errors]
 
     def _devices_execute() -> MagicMock:
-        r = next(devices_results)
+        r = next(results)
         if isinstance(r, Exception):
             raise r
         return MagicMock(data=r)
@@ -361,9 +323,14 @@ def test_device_lookup_error_leaves_pending_then_retries(
             t.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = [cmd]
 
             def _capture(payload: dict) -> MagicMock:
-                updates.append(payload)
                 chain = MagicMock()
-                chain.eq.return_value.execute.return_value.data = [{"id": "cmd-flaky"}]
+                if payload == {"status": "sent"} and sent_failures[0] > 0:
+                    sent_failures[0] -= 1
+                    chain.eq.return_value.eq.return_value.execute.side_effect = RuntimeError("Server disconnected")
+                    return chain
+                updates.append(payload)
+                chain.eq.return_value.execute.return_value.data = [{"id": cmd["id"]}]
+                chain.eq.return_value.eq.return_value.execute.return_value.data = [{"id": cmd["id"]}]
                 return chain
             t.update.side_effect = _capture
         elif name == "devices":
@@ -371,6 +338,62 @@ def test_device_lookup_error_leaves_pending_then_retries(
         return t
 
     fake_sb.table.side_effect = _table
+
+
+def _flaky_cmd(cmd_id: str = "cmd-flaky", action: str = "fan_off", ttl_sec: int = 10) -> dict:
+    return {
+        "id": cmd_id,
+        "device_id": DEVICE_UUID,
+        "action": action,
+        "payload": None,
+        "issued_at": _now_iso(),
+        "ttl_sec": ttl_sec,
+    }
+
+
+UNKNOWN = {"status": "rejected", "result": "unknown_device"}
+FOUND = [{"device_id": DEVICE_TEXT}]
+
+
+def test_unknown_device_rejected_after_consecutive_misses(
+    fake_sb: MagicMock, fake_bridge: MagicMock
+) -> None:
+    """빈 결과는 DEVICE_MISS_LIMIT 번 연속일 때만 unknown_device — 한 번은 일시 이상일 수 있다."""
+    cmd = _flaky_cmd("cmd-unknown", action="relay_toggle", ttl_sec=30)
+    updates: list[dict] = []
+    _wire_flaky(fake_sb, cmd, [[]] * dispatcher.DEVICE_MISS_LIMIT, updates)
+
+    for _ in range(dispatcher.DEVICE_MISS_LIMIT - 1):
+        dispatcher.poll_and_dispatch(fake_bridge)
+        assert UNKNOWN not in updates
+    dispatcher.poll_and_dispatch(fake_bridge)
+
+    fake_bridge.publish_command.assert_not_called()
+    assert updates == [UNKNOWN]
+
+
+def test_single_empty_lookup_retried_then_published(
+    fake_sb: MagicMock, fake_bridge: MagicMock
+) -> None:
+    """빈 결과 1회 뒤 정상 조회 → 거절 없이 발행. 빈 결과를 캐시해 두면 재조회가 안 된다."""
+    updates: list[dict] = []
+    _wire_flaky(fake_sb, _flaky_cmd(), [[], FOUND], updates)
+
+    dispatcher.poll_and_dispatch(fake_bridge)
+    fake_bridge.publish_command.assert_not_called()
+    dispatcher.poll_and_dispatch(fake_bridge)
+
+    fake_bridge.publish_command.assert_called_once()
+    assert fake_bridge.publish_command.call_args.args[0] == DEVICE_TEXT
+    assert UNKNOWN not in updates
+
+
+def test_device_lookup_error_leaves_pending_then_retries(
+    fake_sb: MagicMock, fake_bridge: MagicMock
+) -> None:
+    """devices 조회 예외는 '미등록'이 아니다 — 거절하지 않고 다음 폴링에서 다시 시도."""
+    updates: list[dict] = []
+    _wire_flaky(fake_sb, _flaky_cmd(), [RuntimeError("Server disconnected"), FOUND], updates)
 
     # 1회차: 조회 예외 → 발행·거절 둘 다 없이 pending 유지
     dispatcher.poll_and_dispatch(fake_bridge)
@@ -381,7 +404,108 @@ def test_device_lookup_error_leaves_pending_then_retries(
     dispatcher.poll_and_dispatch(fake_bridge)
     fake_bridge.publish_command.assert_called_once()
     assert fake_bridge.publish_command.call_args.args[0] == DEVICE_TEXT
-    assert {"status": "rejected", "result": "unknown_device"} not in updates
+    assert UNKNOWN not in updates
+
+
+def test_persistent_lookup_error_ends_expired_with_failure_push(
+    fake_sb: MagicMock, fake_bridge: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """조회가 TTL 넘게 계속 실패하면 unknown_device 가 아니라 expired 로 끝나고 실패 푸시가 나간다.
+
+    device_key 를 모르면 None 으로 넘긴다 — 빈 문자열은 앱 수신부가 400 으로 거절했다.
+    """
+    from backend import push_events
+
+    pushed: list[tuple] = []
+    monkeypatch.setattr(
+        push_events, "enqueue_command_failure",
+        lambda row, key, meta, result: pushed.append((key, result)) or True,
+    )
+    cmd = _flaky_cmd()
+    updates: list[dict] = []
+    err = RuntimeError("Server disconnected")
+    _wire_flaky(fake_sb, cmd, [err, err, err], updates)   # 마지막 err 는 실패 푸시의 device_key 조회
+
+    dispatcher.poll_and_dispatch(fake_bridge)
+    assert updates == []
+
+    cmd["issued_at"] = _now_iso(-11)                     # TTL(10초) 경과
+    dispatcher.poll_and_dispatch(fake_bridge)
+
+    fake_bridge.publish_command.assert_not_called()
+    assert updates == [{"status": "expired", "result": "expired"}]
+    assert pushed == [(None, "expired")]
+
+
+def test_lookup_error_traceback_logged_only_first_time(
+    fake_sb: MagicMock, fake_bridge: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """장애 중 매초 traceback 이 쌓이면 원인 한 줄이 묻힌다 — 명령당 첫 실패만 traceback."""
+    err = RuntimeError("Server disconnected")
+    _wire_flaky(fake_sb, _flaky_cmd(), [err, err, err], [])
+
+    with caplog.at_level("WARNING", logger=dispatcher.logger.name):
+        for _ in range(3):
+            dispatcher.poll_and_dispatch(fake_bridge)
+
+    recs = [r for r in caplog.records if "devices 조회 실패" in r.getMessage()]
+    assert len(recs) == 3
+    assert [bool(r.exc_info) for r in recs] == [True, False, False]
+
+
+def test_sent_update_failure_does_not_republish(
+    fake_sb: MagicMock, fake_bridge: MagicMock
+) -> None:
+    """발행 성공 뒤 'sent' 기록만 실패하면 다음 폴링은 재발행하지 않고 기록만 다시 시도한다.
+
+    재발행하면 토글이 되돌아가고 분무가 두 번 나간다.
+    """
+    updates: list[dict] = []
+    _wire_flaky(fake_sb, _flaky_cmd(action="fan_toggle"), [FOUND], updates, sent_update_errors=1)
+
+    dispatcher.poll_and_dispatch(fake_bridge)          # 발행 O, sent 기록 실패
+    fake_bridge.publish_command.assert_called_once()
+    assert updates == []
+
+    dispatcher.poll_and_dispatch(fake_bridge)          # 재발행 X, sent 기록 재시도 성공
+    fake_bridge.publish_command.assert_called_once()
+    assert updates == [{"status": "sent"}]
+
+
+def test_sent_update_failure_survives_ttl(
+    fake_sb: MagicMock, fake_bridge: MagicMock
+) -> None:
+    """이미 발행한 명령은 TTL 이 지나도 expired 로 덮지 않는다 — 기기는 이미 받았다."""
+    cmd = _flaky_cmd()
+    updates: list[dict] = []
+    _wire_flaky(fake_sb, cmd, [FOUND], updates, sent_update_errors=1)
+
+    dispatcher.poll_and_dispatch(fake_bridge)
+    cmd["issued_at"] = _now_iso(-11)
+    dispatcher.poll_and_dispatch(fake_bridge)
+
+    fake_bridge.publish_command.assert_called_once()
+    assert updates == [{"status": "sent"}]
+
+
+def test_mist_remainder_enqueued_even_if_sent_update_fails(
+    fake_sb: MagicMock, fake_bridge: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """첫 분사는 실제로 나갔으니 'sent' 기록 실패와 무관하게 나머지 분사를 예약한다."""
+    remainders: list[int] = []
+    monkeypatch.setattr(
+        dispatcher, "_enqueue_mist_remainder",
+        lambda sb, row, burst, rest: remainders.append(rest),
+    )
+    monkeypatch.setattr(handlers, "device_mist_max_ms", lambda _u: 5000)
+    cmd = _flaky_cmd(action="mist")
+    cmd["payload"] = {"duration_ms": 10000}
+    _wire_flaky(fake_sb, cmd, [FOUND], [], sent_update_errors=1)
+
+    dispatcher.poll_and_dispatch(fake_bridge)
+
+    fake_bridge.publish_command.assert_called_once()
+    assert remainders == [5000]
 
 
 # ---------- publish 실패 시 status 유지 ----------
