@@ -508,6 +508,104 @@ def test_mist_remainder_enqueued_even_if_sent_update_fails(
     assert remainders == [5000]
 
 
+def test_lookup_errors_do_not_count_as_misses(
+    fake_sb: MagicMock, fake_bridge: MagicMock
+) -> None:
+    """예외 2번 뒤 빈 결과 1번은 거절 사유가 아니다 — 빈 결과만 DEVICE_MISS_LIMIT 번 세야 한다."""
+    err = RuntimeError("Server disconnected")
+    updates: list[dict] = []
+    _wire_flaky(fake_sb, _flaky_cmd(), [err, err, [], FOUND], updates)
+
+    for _ in range(3):
+        dispatcher.poll_and_dispatch(fake_bridge)
+    assert UNKNOWN not in updates
+    fake_bridge.publish_command.assert_not_called()
+
+    dispatcher.poll_and_dispatch(fake_bridge)
+    fake_bridge.publish_command.assert_called_once()
+
+
+def test_unknown_device_needs_limit_empty_results_despite_errors(
+    fake_sb: MagicMock, fake_bridge: MagicMock
+) -> None:
+    """사이에 예외가 끼어도 빈 결과가 DEVICE_MISS_LIMIT 번 쌓여야 unknown_device."""
+    err = RuntimeError("Server disconnected")
+    updates: list[dict] = []
+    _wire_flaky(fake_sb, _flaky_cmd(ttl_sec=30), [[], err, [], err, []], updates)
+
+    for _ in range(4):
+        dispatcher.poll_and_dispatch(fake_bridge)
+    assert UNKNOWN not in updates
+    dispatcher.poll_and_dispatch(fake_bridge)
+    assert updates == [UNKNOWN]
+
+
+def test_sent_retry_traceback_logged_only_first_time(
+    fake_sb: MagicMock, fake_bridge: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """'sent' 기록 재시도도 명령당 첫 실패만 traceback — 장애 중 매초 쌓이지 않게."""
+    _wire_flaky(fake_sb, _flaky_cmd(), [FOUND], [], sent_update_errors=3)
+
+    with caplog.at_level("WARNING", logger=dispatcher.logger.name):
+        for _ in range(3):
+            dispatcher.poll_and_dispatch(fake_bridge)
+
+    recs = [r for r in caplog.records if "'sent' 기록 실패" in r.getMessage()]
+    assert [bool(r.exc_info) for r in recs] == [True, False, False]
+
+
+def test_unmarked_published_command_becomes_no_ack_after_threshold(
+    fake_sb: MagicMock, fake_bridge: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """발행했는데 'sent' 기록도 ACK 도 NO_ACK_THRESHOLD_SEC 동안 없으면 no_ack + 실패 푸시.
+
+    pending 인 채라 sweep_unacked('sent' 행만 봄)가 못 잡는다. TTL 경로로 가면 '발행 안 됨'(expired)
+    으로 잘못 표시된다.
+    """
+    from backend import push_events
+
+    pushed: list[str] = []
+    monkeypatch.setattr(
+        push_events, "enqueue_command_failure",
+        lambda row, key, meta, result: pushed.append(result) or True,
+    )
+    cmd = _flaky_cmd()
+    updates: list[dict] = []
+    _wire_flaky(fake_sb, cmd, [FOUND, FOUND], updates, sent_update_errors=99)
+
+    dispatcher.poll_and_dispatch(fake_bridge)          # 발행 O, sent 기록 실패
+    dispatcher._published_unmarked[cmd["id"]] -= dispatcher.NO_ACK_THRESHOLD_SEC + 1
+    cmd["issued_at"] = _now_iso(-31)
+    dispatcher.poll_and_dispatch(fake_bridge)
+
+    fake_bridge.publish_command.assert_called_once()
+    assert updates == [{"status": "no_ack", "result": dispatcher.NO_ACK_RESULT}]
+    assert pushed == [dispatcher.NO_ACK_RESULT]
+    assert cmd["id"] not in dispatcher._published_unmarked
+
+
+def test_prune_drops_state_of_commands_no_longer_pending(
+    fake_sb: MagicMock, fake_bridge: MagicMock
+) -> None:
+    """pending 을 벗어난 명령의 조회 횟수는 버리고, 발행 기억은 PUBLISHED_MEMO_SEC 로만 만료."""
+    import time as _time
+
+    dispatcher._lookup_errors["gone"] = 1
+    dispatcher._lookup_misses["gone"] = 2
+    dispatcher._published_unmarked["recent"] = _time.monotonic()
+    dispatcher._published_unmarked["stale"] = _time.monotonic() - dispatcher.PUBLISHED_MEMO_SEC - 1
+    (
+        fake_sb.table.return_value.select.return_value.eq.return_value
+        .order.return_value.limit.return_value.execute.return_value.data
+    ) = []
+
+    dispatcher.poll_and_dispatch(fake_bridge)
+
+    assert dispatcher._lookup_errors == {}
+    assert dispatcher._lookup_misses == {}
+    assert set(dispatcher._published_unmarked) == {"recent"}   # batch 밖으로 밀린 명령 재발행 방지
+
+
 # ---------- publish 실패 시 status 유지 ----------
 
 
