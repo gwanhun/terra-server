@@ -331,6 +331,59 @@ def test_unknown_device_marked_rejected(
     assert {"status": "rejected", "result": "unknown_device"} in updates
 
 
+def test_device_lookup_error_leaves_pending_then_retries(
+    fake_sb: MagicMock, fake_bridge: MagicMock
+) -> None:
+    """devices 조회 예외는 '미등록'이 아니다 — 거절하지 않고 다음 폴링에서 다시 시도.
+
+    2026-10-24 예약 fan_off 가 일시 조회 실패로 unknown_device 거절 → 팬이 7시간 켜져 있었다.
+    """
+    cmd = {
+        "id": "cmd-flaky",
+        "device_id": DEVICE_UUID,
+        "action": "fan_off",
+        "payload": None,
+        "issued_at": _now_iso(),
+        "ttl_sec": 10,
+    }
+    updates: list[dict] = []
+    devices_results = iter([RuntimeError("Server disconnected"), [{"device_id": DEVICE_TEXT}]])
+
+    def _devices_execute() -> MagicMock:
+        r = next(devices_results)
+        if isinstance(r, Exception):
+            raise r
+        return MagicMock(data=r)
+
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        if name == "commands":
+            t.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = [cmd]
+
+            def _capture(payload: dict) -> MagicMock:
+                updates.append(payload)
+                chain = MagicMock()
+                chain.eq.return_value.execute.return_value.data = [{"id": "cmd-flaky"}]
+                return chain
+            t.update.side_effect = _capture
+        elif name == "devices":
+            t.select.return_value.eq.return_value.limit.return_value.execute.side_effect = _devices_execute
+        return t
+
+    fake_sb.table.side_effect = _table
+
+    # 1회차: 조회 예외 → 발행·거절 둘 다 없이 pending 유지
+    dispatcher.poll_and_dispatch(fake_bridge)
+    fake_bridge.publish_command.assert_not_called()
+    assert updates == []
+
+    # 2회차: 조회 성공 → 정상 발행
+    dispatcher.poll_and_dispatch(fake_bridge)
+    fake_bridge.publish_command.assert_called_once()
+    assert fake_bridge.publish_command.call_args.args[0] == DEVICE_TEXT
+    assert {"status": "rejected", "result": "unknown_device"} not in updates
+
+
 # ---------- publish 실패 시 status 유지 ----------
 
 

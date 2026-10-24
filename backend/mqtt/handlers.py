@@ -160,21 +160,35 @@ def _cached_device_uuid(device_id_text: str) -> str | None:
     return val
 
 
-def _cached_device_text(device_uuid: str) -> str | None:
-    """devices.id (UUID) → devices.device_id (TEXT). 미존재면 None.
+class DeviceLookupError(RuntimeError):
+    """devices 조회 자체가 실패(DB·네트워크). '미존재'(None)와 구분해야 명령을 버리지 않는다."""
+
+
+def resolve_device_text(device_uuid: str) -> str | None:
+    """devices.id (UUID) → devices.device_id (TEXT). 미존재면 None, 조회 실패면 DeviceLookupError.
 
     dispatcher 가 commands.device_id (UUID) → MQTT 토픽의 device_id (TEXT) 매핑할 때 사용.
+    일시 장애를 None 으로 돌려주면 dispatcher 가 unknown_device 로 영구 거절한다
+    (2026-10-24 예약 fan_off 유실 → 팬 7시간 켜짐).
     """
     hit, val = _cache_get("device_text", device_uuid)
     if hit:
         return val
     try:
         val = _lookup_one("devices", "device_id", "id", device_uuid)
-    except Exception:  # noqa: BLE001
-        logger.exception("devices 조회 실패 (uuid=%s)", device_uuid)
-        return None
+    except Exception as exc:  # noqa: BLE001 — supabase-py 예외 타입 넓음
+        raise DeviceLookupError(device_uuid) from exc
     _cache_put("device_text", device_uuid, val)
     return val
+
+
+def _cached_device_text(device_uuid: str) -> str | None:
+    """resolve_device_text 의 관대한 버전 — 조회 실패도 None. 푸시 라벨처럼 없어도 되는 곳용."""
+    try:
+        return resolve_device_text(device_uuid)
+    except DeviceLookupError:
+        logger.exception("devices 조회 실패 (uuid=%s)", device_uuid)
+        return None
 
 
 def _cached_camera_uuid(camera_id_text: str) -> str | None:
@@ -1239,6 +1253,7 @@ def handle_alert(device_id_text: str, payload: dict[str, Any]) -> None:
 
 
 __all__ = [
+    "DeviceLookupError",
     "_cached_camera_uuid",
     "_cached_device_text",
     "_resolve_both",
@@ -1247,4 +1262,5 @@ __all__ = [
     "handle_alert",
     "handle_telemetry",
     "reset_device_cache",
+    "resolve_device_text",
 ]

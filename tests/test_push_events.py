@@ -220,6 +220,15 @@ def test_enqueue_command_failure(result: str, monkeypatch: pytest.MonkeyPatch) -
     assert inserts[0]["event_id"].endswith(":failed")
 
 
+def test_enqueue_command_failure_omits_empty_device_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """device_key 를 모르면 키를 뺀다 — 앱 수신부가 빈 문자열을 400 으로 거절 (2026-10-24)."""
+    inserts: list[dict] = []
+    monkeypatch.setattr(push_events, "get_supabase_client", lambda: _sb_with_insert(inserts))
+
+    assert push_events.enqueue_command_failure(_cmd(result=None), "", META, "unknown_device") is True
+    assert "device_key" not in inserts[0]["body"]["payload"]
+
+
 def test_enqueue_command_failure_skips_manual(monkeypatch: pytest.MonkeyPatch) -> None:
     called = MagicMock()
     monkeypatch.setattr(push_events, "get_supabase_client", called)

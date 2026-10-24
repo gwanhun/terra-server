@@ -357,6 +357,7 @@ INSERT (pending)
    │
    ├─→ TTL 만료 (issued_at + ttl_sec < NOW) → status='expired'
    ├─→ device_id 미존재 → status='rejected', result='unknown_device'
+   ├─→ devices 조회 실패(일시 장애) → pending 유지, 다음 폴링 재시도 (TTL 넘기면 expired)
    └─→ MQTT publish 성공 → status='sent'
                             ▼
                           ESP32 처리 + ack publish

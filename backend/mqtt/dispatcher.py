@@ -210,7 +210,15 @@ def _dispatch_one(bridge: "MqttBridge", row: dict[str, Any]) -> None:
         return
 
     # 2) device UUID → device_id (TEXT) 캐시 해상
-    device_text = handlers._cached_device_text(device_uuid)
+    #    조회 실패는 '미등록'이 아니다 — pending 그대로 두면 다음 폴링이 다시 시도하고,
+    #    장애가 TTL 을 넘기면 1) 에서 expired 로 끝난다 (실패 푸시도 그쪽에서 나감).
+    try:
+        device_text = handlers.resolve_device_text(device_uuid)
+    except handlers.DeviceLookupError:
+        logger.warning(
+            "command %s: devices 조회 실패 → pending 유지(다음 폴링 재시도)", cmd_id, exc_info=True
+        )
+        return
     if not device_text:
         sb.table("commands").update(
             {"status": "rejected", "result": "unknown_device"}
