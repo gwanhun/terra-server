@@ -356,7 +356,9 @@ INSERT (pending)
    │ ▼  terra-bridge dispatcher 가 1초 안에 SELECT
    │
    ├─→ TTL 만료 (issued_at + ttl_sec < NOW) → status='expired'
-   ├─→ device_id 미존재 → status='rejected', result='unknown_device'
+   ├─→ device_id 미존재 (조회 결과 없음 3회, 조회 예외는 안 셈) → status='rejected', result='unknown_device'
+   ├─→ devices 조회 실패(일시 장애) → pending 유지, 다음 폴링 재시도 (TTL 넘기면 expired)
+   ├─→ publish 성공했는데 'sent' 기록 실패 → 재발행 없이 기록만 재시도 (30초 안에 기록·ACK 없으면 no_ack)
    └─→ MQTT publish 성공 → status='sent'
                             ▼
                           ESP32 처리 + ack publish

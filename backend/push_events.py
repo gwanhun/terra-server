@@ -164,6 +164,17 @@ def _resolve_phase(action: str | None, source_id: str | None, succeeded: bool) -
     return "started"
 
 
+def _drop_empty_device_key(payload: dict[str, Any]) -> dict[str, Any]:
+    """device_key 를 모르면(None — 조회 실패·미등록) 키 자체를 뺀다.
+
+    앱 수신부는 device_key 가 있으면 비어 있지 않은 텍스트여야 해서 "" 를 400 으로 거절한다
+    (2026-10-24 unknown_device 실패 푸시 유실). device_id(UUID)는 항상 실린다.
+    """
+    if not payload.get("device_key"):
+        payload.pop("device_key", None)
+    return payload
+
+
 _PHASE_EVENT = {
     "started": EVENT_STARTED,
     "ended": EVENT_ENDED,
@@ -172,7 +183,7 @@ _PHASE_EVENT = {
 
 
 def build_command_event(
-    command_row: dict[str, Any], device_key: str, device_meta: dict[str, Any] | None
+    command_row: dict[str, Any], device_key: str | None, device_meta: dict[str, Any] | None
 ) -> dict[str, Any] | None:
     """acked 된 commands 행 → 앱 계약 이벤트 본문. 발행 대상이 아니면 None.
 
@@ -205,7 +216,7 @@ def build_command_event(
         "type": event_type,
         "occurred_at": _now().isoformat(),
         "user_id": user_id,
-        "payload": {
+        "payload": _drop_empty_device_key({
             "command_id": command_id,
             "device_id": command_row.get("device_id"),   # UUID
             "device_key": device_key,                     # terra-xxxxxxxx (MQTT client_id)
@@ -217,7 +228,7 @@ def build_command_event(
             "outcome": "succeeded" if succeeded else "failed",
             "result": result,                             # 펌웨어 원문 (ok/busy/…)
             "device_name": meta.get("name"),
-        },
+        }),
     }
 
 
@@ -243,7 +254,7 @@ def enqueue(event: dict[str, Any]) -> bool:
 
 def build_skipped_event(
     command_row: dict[str, Any],
-    device_key: str,
+    device_key: str | None,
     device_meta: dict[str, Any] | None,
     guard: dict[str, Any],
 ) -> dict[str, Any] | None:
@@ -267,7 +278,7 @@ def build_skipped_event(
         "type": EVENT_SKIPPED,
         "occurred_at": _now().isoformat(),
         "user_id": user_id,
-        "payload": {
+        "payload": _drop_empty_device_key({
             "command_id": command_id,
             "device_id": command_row.get("device_id"),
             "device_key": device_key,
@@ -285,13 +296,13 @@ def build_skipped_event(
                 "metric": guard.get("metric"),
             },
             "device_name": meta.get("name"),
-        },
+        }),
     }
 
 
 def enqueue_skipped_event(
     command_row: dict[str, Any],
-    device_key: str,
+    device_key: str | None,
     device_meta: dict[str, Any] | None,
     guard: dict[str, Any],
 ) -> bool:
@@ -306,7 +317,7 @@ def enqueue_skipped_event(
 
 def enqueue_command_failure(
     command_row: dict[str, Any],
-    device_key: str,
+    device_key: str | None,
     device_meta: dict[str, Any] | None,
     result: str,
 ) -> bool:
