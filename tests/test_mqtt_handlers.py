@@ -8,9 +8,11 @@ from __future__ import annotations
 import logging
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 from postgrest.exceptions import APIError
 
+from backend import supabase_client
 from backend.mqtt import handlers
 from tests.fake_sb import FakeSB
 
@@ -73,16 +75,16 @@ def test_normalize_ts_none_falls_back_to_now() -> None:
 
 def test_device_cache_hit_after_first_lookup(fake_sb: MagicMock) -> None:
     _setup_device_lookup(fake_sb)
-    assert handlers._cached_device_uuid(DEVICE_TEXT) == DEVICE_UUID
+    assert handlers.resolve_device_uuid(DEVICE_TEXT) == DEVICE_UUID
     # 두 번째 호출은 DB 안 감 (캐시)
-    assert handlers._cached_device_uuid(DEVICE_TEXT) == DEVICE_UUID
+    assert handlers.resolve_device_uuid(DEVICE_TEXT) == DEVICE_UUID
     # devices select 는 1번만 호출됐어야 함
     assert fake_sb.table.call_count == 1
 
 
 def test_device_cache_miss_returns_none(fake_sb: MagicMock) -> None:
     _setup_device_lookup(fake_sb, uuid=None)
-    assert handlers._cached_device_uuid("unknown-xyz") is None
+    assert handlers.resolve_device_uuid("unknown-xyz") is None
 
 
 def test_device_cache_expires_after_ttl(
@@ -93,15 +95,15 @@ def test_device_cache_expires_after_ttl(
     clock = {"t": 1000.0}
     monkeypatch.setattr(handlers.time, "monotonic", lambda: clock["t"])
 
-    assert handlers._cached_device_uuid(DEVICE_TEXT) == DEVICE_UUID
+    assert handlers.resolve_device_uuid(DEVICE_TEXT) == DEVICE_UUID
     assert fake_sb.table.call_count == 1
 
     clock["t"] += handlers.ENTITY_TTL_SEC - 1       # 아직 유효
-    assert handlers._cached_device_uuid(DEVICE_TEXT) == DEVICE_UUID
+    assert handlers.resolve_device_uuid(DEVICE_TEXT) == DEVICE_UUID
     assert fake_sb.table.call_count == 1
 
     clock["t"] += 2                                  # 만료
-    assert handlers._cached_device_uuid(DEVICE_TEXT) == DEVICE_UUID
+    assert handlers.resolve_device_uuid(DEVICE_TEXT) == DEVICE_UUID
     assert fake_sb.table.call_count == 2
 
 
@@ -113,24 +115,23 @@ def test_device_cache_negative_uses_short_ttl(
     clock = {"t": 500.0}
     monkeypatch.setattr(handlers.time, "monotonic", lambda: clock["t"])
 
-    assert handlers._cached_device_uuid("terra-new") is None
+    assert handlers.resolve_device_uuid("terra-new") is None
     assert fake_sb.table.call_count == 1
 
     clock["t"] += handlers.ENTITY_NEG_TTL_SEC + 1
     _setup_device_lookup(fake_sb)                    # 그 사이 페어링됨
-    assert handlers._cached_device_uuid("terra-new") == DEVICE_UUID
+    assert handlers.resolve_device_uuid("terra-new") == DEVICE_UUID
 
 
-def test_device_lookup_failure_not_cached(
-    fake_sb: MagicMock, caplog: pytest.LogCaptureFixture
-) -> None:
-    """DB 장애를 '미페어링' 으로 굳히면 안 된다 — 복구 후 바로 다시 조회돼야."""
+def test_device_lookup_failure_not_cached(fake_sb: MagicMock) -> None:
+    """DB 장애는 '미페어링'(None) 이 아니라 예외 — 캐시도 안 남아 복구 후 바로 다시 조회된다."""
     fake_sb.table.side_effect = RuntimeError("supabase down")
-    assert handlers._cached_device_uuid(DEVICE_TEXT) is None
+    with pytest.raises(handlers.DeviceLookupError):
+        handlers.resolve_device_uuid(DEVICE_TEXT)
 
     fake_sb.table.side_effect = None
     _setup_device_lookup(fake_sb)
-    assert handlers._cached_device_uuid(DEVICE_TEXT) == DEVICE_UUID
+    assert handlers.resolve_device_uuid(DEVICE_TEXT) == DEVICE_UUID
 
 
 def test_device_meta_returns_owner_name_enclosure(fake_sb: MagicMock) -> None:
@@ -1556,3 +1557,176 @@ def test_camera_ack_reboot_action_recorded(monkeypatch: pytest.MonkeyPatch) -> N
     sb = _ops_sb(monkeypatch)
     handlers.handle_ack(CAMERA_TEXT, {"action": "reboot", "msg_id": OPS_MSG, "result": "ok", "state": "REBOOT"})
     assert sb.one("camera_ops_reboots", msg_id=OPS_MSG)["ack_result"] == "ok"
+
+
+# ---------- DB 전송 실패를 "미페어링" 으로 오판하지 않는다 (2026-10-24) ----------
+#
+# httpx.RemoteProtocolError(HTTP/2 "Server disconnected")가 6일간 3만 건 나는 동안 수신
+# 경로가 조회 실패를 None 으로 뭉개 telemetry/ack/alert 44건을 "미페어링" 으로 버렸다.
+# ack 유실은 기기가 정상 실행한 명령을 30초 뒤 no_ack + 실패 푸시로 뒤집는다.
+
+HUB_TEXT = "p4hub-aabbccdd"
+HUB_CAM_UUID = "55555555-5555-5555-5555-eeeeeeeeeeee"
+
+
+def _disconnected() -> httpx.RemoteProtocolError:
+    return httpx.RemoteProtocolError("Server disconnected without sending a response.")
+
+
+def _lookup_raises(
+    fake_sb: MagicMock, *, failing: tuple[str, ...] = ("devices",),
+    camera_uuid: str | None = None,
+) -> None:
+    """failing 에 든 테이블의 조회만 전송 실패로 만든다 (나머지는 정상 조회)."""
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        chain = t.select.return_value.eq.return_value.limit.return_value
+        if name in failing:
+            chain.execute.side_effect = _disconnected()
+        elif name == "cameras":
+            chain.execute.return_value.data = [{"id": camera_uuid}] if camera_uuid else []
+        else:
+            chain.execute.return_value.data = [{"id": DEVICE_UUID}]
+        return t
+    fake_sb.table.side_effect = _table
+
+
+def _tables_touched(fake_sb: MagicMock) -> list[str]:
+    return [c.args[0] for c in fake_sb.table.call_args_list]
+
+
+def test_resolve_device_uuid_raises_on_transport_failure(fake_sb: MagicMock) -> None:
+    _lookup_raises(fake_sb)
+    with pytest.raises(handlers.DeviceLookupError):
+        handlers.resolve_device_uuid(DEVICE_TEXT)
+
+
+def test_telemetry_db_failure_not_treated_as_unpaired(
+    fake_sb: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    _lookup_raises(fake_sb)
+    with caplog.at_level(logging.WARNING, logger="backend.mqtt.handlers"):
+        handlers.handle_telemetry(
+            DEVICE_TEXT, {"ts": 1_748_000_000, "dht22_a": {"t": 25.0, "h": 50.0, "ok": True}}
+        )
+    assert "미페어링" not in caplog.text
+    assert "DB 조회 실패" in caplog.text
+    assert "telemetry" not in _tables_touched(fake_sb)
+
+
+def test_ack_db_failure_not_treated_as_unpaired(
+    fake_sb: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """ack 를 "미페어링" 으로 버리면 기기가 실행한 명령이 실패로 뒤집힌다."""
+    _lookup_raises(fake_sb)
+    with caplog.at_level(logging.WARNING, logger="backend.mqtt.handlers"):
+        handlers.handle_ack(DEVICE_TEXT, {"msg_id": "cmd-1", "result": "ok"})
+    assert "미페어링" not in caplog.text
+    assert "DB 조회 실패" in caplog.text
+    assert "commands" not in _tables_touched(fake_sb)
+
+
+def test_alert_db_failure_not_treated_as_unpaired(
+    fake_sb: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    _lookup_raises(fake_sb)
+    with caplog.at_level(logging.WARNING, logger="backend.mqtt.handlers"):
+        handlers.handle_alert(DEVICE_TEXT, {"kind": "temp_high"})
+    assert "미페어링" not in caplog.text
+    assert "DB 조회 실패" in caplog.text
+    assert "alerts" not in _tables_touched(fake_sb)
+
+
+def test_hub_device_lookup_failure_does_not_fall_back_to_camera(fake_sb: MagicMock) -> None:
+    """허브는 devices + cameras 두 행이다.
+
+    devices 조회만 실패했을 때 (None, cam_uuid) 로 돌려주면 카메라 전용 보드로 오분류돼
+    센서 telemetry 가 통째로 사라진다 — 그래서 해상 자체를 실패로 올린다.
+    """
+    _lookup_raises(fake_sb, failing=("devices",), camera_uuid=HUB_CAM_UUID)
+    with pytest.raises(handlers.DeviceLookupError):
+        handlers._resolve_both(HUB_TEXT)
+
+
+def test_camera_lookup_failure_also_raises(fake_sb: MagicMock) -> None:
+    _lookup_raises(fake_sb, failing=("cameras",))
+    with pytest.raises(handlers.DeviceLookupError):
+        handlers.resolve_camera_uuid(CAMERA_TEXT)
+
+
+# ---------- 멱등 쓰기는 전송 실패에서 재시도 ----------
+
+
+@pytest.fixture
+def _no_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(supabase_client.time, "sleep", lambda _s: None)
+
+
+def test_ack_update_retried_on_transport_failure(
+    fake_sb: MagicMock, _no_retry_sleep: None
+) -> None:
+    """ack UPDATE 는 고정값 덮어쓰기라 멱등 — 끊기면 다시 보낸다."""
+    attempts: list[int] = []
+
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        if name == "devices":
+            t.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+                {"id": DEVICE_UUID}
+            ]
+            t._upd = MagicMock()
+            t._upd.eq.return_value.execute.return_value.data = [{"id": DEVICE_UUID}]
+            t.update.return_value = t._upd
+        elif name == "commands":
+            def _exec() -> MagicMock:
+                attempts.append(1)
+                if len(attempts) == 1:
+                    raise _disconnected()
+                res = MagicMock()
+                res.data = [{"id": "cmd-1"}]
+                return res
+            chain = MagicMock()
+            chain.eq.return_value.eq.return_value.execute.side_effect = _exec
+            t.update.return_value = chain
+        return t
+
+    fake_sb.table.side_effect = _table
+
+    handlers.handle_ack(DEVICE_TEXT, {"msg_id": "cmd-1", "result": "ok"})
+
+    assert len(attempts) == 2
+
+
+def test_telemetry_insert_retried_on_transport_failure(
+    fake_sb: MagicMock, _no_retry_sleep: None
+) -> None:
+    """(device_id, ts) PK 가 중복을 막아 주므로 INSERT 재시도가 안전하다."""
+    attempts: list[int] = []
+
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        if name == "devices":
+            t.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+                {"id": DEVICE_UUID}
+            ]
+            t._upd = MagicMock()
+            t._upd.eq.return_value.execute.return_value.data = [{"id": DEVICE_UUID}]
+            t.update.return_value = t._upd
+        elif name == "telemetry":
+            def _exec() -> MagicMock:
+                attempts.append(1)
+                if len(attempts) == 1:
+                    raise _disconnected()
+                res = MagicMock()
+                res.data = [{"device_id": DEVICE_UUID}]
+                return res
+            t.insert.return_value.execute.side_effect = _exec
+        return t
+
+    fake_sb.table.side_effect = _table
+
+    handlers.handle_telemetry(
+        DEVICE_TEXT, {"ts": 1_748_000_000, "dht22_a": {"t": 25.0, "h": 50.0, "ok": True}}
+    )
+
+    assert len(attempts) == 2
