@@ -105,6 +105,23 @@ cat migrations/2026-XX-XX_xxxxx.sql
 
 ---
 
+## 1-1. 클립 mp4 faststart 백필 (2026-10-26, 1회 + 필요 시 재실행)
+
+카메라 0.4.14 이하가 올린 mp4 는 moov(목차)가 파일 끝이라 iOS/Safari 재생 시작이 느리다(10Mbps 11초).
+새 업로드는 메타 등록 응답 뒤 서버가 자동으로 옮기고(`backend/clip_faststart.py`), 이미 올라간 파일은
+아래로 한 번 옮긴다. 같은 key 덮어쓰기·크기 동일·DB 무변경·멱등(여러 번 돌려도 됨).
+
+```bash
+cd ~/terra-server
+uv run python scripts/faststart_backfill.py --dry-run     # 옮길 개수 확인
+uv run python scripts/faststart_backfill.py               # 전체 (클립당 15~20MB 받고 올림)
+uv run python scripts/faststart_backfill.py --camera p4cam-2d854b2f --limit 20
+```
+
+결과 로그 `완료 Ns: {'already': A, 'converted': C, ...}`. `error` 가 있으면 다시 돌리면 그것만 재시도된다.
+
+---
+
 ## 2. 로그 확인
 
 ### 실시간 (pm2 logs 대체)

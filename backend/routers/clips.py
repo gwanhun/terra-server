@@ -33,12 +33,13 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from postgrest.exceptions import APIError
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.auth import get_current_user_id
 from backend.auth_camera import get_authed_camera
+from backend.clip_faststart import ensure_faststart_safe
 from backend.db_helpers import first_row, parse_uuid_or_404
 from backend.r2_client import (
     DEFAULT_GET_URL_TTL,
@@ -352,6 +353,7 @@ def issue_upload_url(
 )
 def create_clip_meta(
     body: ClipMetaCreate,
+    background: BackgroundTasks,
     camera: dict[str, Any] = Depends(get_authed_camera),
 ) -> ClipMetaCreated:
     """
@@ -360,8 +362,12 @@ def create_clip_meta(
     서버는 key 의 camera prefix 가 본인 카메라와 일치하는지 검증 → 불일치는 400.
     `thumbnail_key` 가 있으면 같은 검증 + clip_id 일치까지 확인.
     INSERT 성공 시 앱이 Realtime publication 으로 즉시 신규 클립 알림 수신.
+
+    [2026-10-26] 응답 뒤 BackgroundTasks 로 mp4 faststart(moov 를 앞으로) — 구 빌드 카메라
+    파일의 폰 재생 지연 해소. 응답 안에서 하지 않는 이유는 backend/clip_faststart.py.
     """
     clip_id = _parse_key(body.key, camera["camera_id"], "mp4")
+    background.add_task(ensure_faststart_safe, body.key)
 
     if body.thumbnail_key:
         thumb_clip_id = _parse_key(body.thumbnail_key, camera["camera_id"], "jpg")

@@ -168,6 +168,24 @@ def head_object_size(key: str) -> int | None:
     return int(res["ContentLength"])
 
 
+def get_object_bytes(key: str, byte_range: tuple[int, int] | None = None) -> bytes:
+    """객체 전체(또는 byte_range=(first, last) 포함 구간)를 메모리로. 클립 faststart 변환용 —
+    15~20MB 라 스트리밍 없이 읽는다. 없는 key 는 ClientError(NoSuchKey) 그대로."""
+    client = get_r2_client()
+    bucket = get_r2_bucket()
+    kwargs: dict[str, str] = {"Bucket": bucket, "Key": key}
+    if byte_range is not None:
+        kwargs["Range"] = f"bytes={byte_range[0]}-{byte_range[1]}"
+    return client.get_object(**kwargs)["Body"].read()
+
+
+def put_object_bytes(key: str, data: bytes, content_type: str = "video/mp4") -> None:
+    """같은 key 에 덮어쓰기(S3 PUT 은 객체 단위 원자적 — 읽는 쪽은 옛 파일 아니면 새 파일)."""
+    client = get_r2_client()
+    bucket = get_r2_bucket()
+    client.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
+
+
 def list_objects(prefix: str) -> Iterator[tuple[str, datetime]]:
     """prefix 아래 (key, LastModified). 페이지네이션은 boto3 paginator 가 처리."""
     client = get_r2_client()

@@ -153,6 +153,28 @@ def test_create_clip_meta_ok(
     assert insert_payload["clip_purpose"] == "production"
 
 
+def test_create_clip_meta_schedules_faststart(
+    app_client: TestClient, fake_sb: MagicMock, authed_camera_row: dict,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """응답 뒤 BackgroundTasks 로 같은 key 의 faststart 변환이 예약된다(TestClient 는 응답 후 바로 실행)."""
+    from backend.routers import clips as clips_router
+
+    _setup_camera_lookup(fake_sb, authed_camera_row)
+    called: list[str] = []
+    monkeypatch.setattr(clips_router, "ensure_faststart_safe", called.append)
+    clip_id = "abcdef12-3456-7890-abcd-ef1234567890"
+    key = f"terra-clips/clips/{CAMERA_ID_TEXT}/2026-05-27/120000_{clip_id}.mp4"
+    fake_sb.table.return_value.insert.return_value.execute.return_value.data = [{"id": clip_id}]
+    res = app_client.post(
+        f"/cameras/{CAMERA_UUID}/clips",
+        json={"key": key, "started_at": "2026-05-27T12:00:00Z", "duration_sec": 10.0},
+        headers={"Authorization": f"Bearer {CAMERA_TOKEN}"},
+    )
+    assert res.status_code == 201, res.text
+    assert called == [key]
+
+
 def test_create_clip_meta_duplicate_is_idempotent(
     app_client: TestClient, fake_sb: MagicMock, authed_camera_row: dict
 ) -> None:
