@@ -276,7 +276,8 @@ function clipCellHtml(r) {
   const age = c.last_rec_s >= 0 ? (c.last_rec_s < 3600 ? Math.round(c.last_rec_s/60)+'m' : Math.round(c.last_rec_s/3600)+'h') : '없음';
   const tok = (cls, title, txt) => `<span class="${cls}" title="${esc(title)}">${txt}</span>`;
   const parts = [
-    tok('', '녹화 완료 건수(부팅 후)', `rec ${c.rec}`),
+    tok('', '녹화 완료 건수(부팅 후). 업로드 성공 여부와 무관', `rec ${c.rec}`),
+    tok('', `업로드 성공 건수(부팅 후) = 즉시 ${c.up_ok || 0} + SD 재업로드 ${c.sd_ok || 0}. rec 보다 작으면 나머지는 fail(유실)·sd(대기) 에 있음`, `upl ${(c.up_ok || 0) + (c.sd_ok || 0)}`),
     tok(skipBad ? 'bad' : skips ? 'warn' : '', '스킵 = 녹화 못 한 모션(슬롯 없음 + H.264 락 실패). 녹화의 20% 이상이면 빨강', `skip ${skips}`),
     tok(lostLv, `즉시 업로드 실패 ${upFail}(SD 로 재시도됨) / SD 재업로드 실패 ${lost}(클립 유실). 주황까지만 — 마지막 실패가 24시간 안이면 주황, 지났으면 회색` + (errAge >= 0 ? ` · 마지막 실패 ${Math.round(errAge/3600)}시간 전` : ''), `fail ${upFail + lost}`),
     tok(backlogLv, 'SD 에 쌓인 업로드 대기 건수 — 나중에 다시 올라가므로 조치 대상 아님. 1~2 정상(부팅 직후·연속 모션), 3+ 주황(주의). 며칠째 계속 늘면 R2 접속 확인', `sd ${backlog}`),
