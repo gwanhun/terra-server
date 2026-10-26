@@ -354,9 +354,15 @@ async function connect(id, takeover) {
     const pc = new RTCPeerConnection({ iceServers: ICE_CFG.iceServers || [] });
     t.pc = pc;
     pc.addTransceiver('video', { direction: 'recvonly' });
+    // ontrack 은 setRemoteDescription(answer) 처리 중에 먼저 뜨므로(프레임 수신 전) 여기서 'live' 로 바꾸면
+    // 바로 아래 'answer 적용…' setState 가 덮어써서 오버레이가 영상 위에 남았다. 실제 첫 프레임이 재생되는
+    // <video> 'playing' 시점에만 'live' 로 전환 → 오버레이 숨김.
     pc.ontrack = (ev) => {
       const v = t.el.querySelector('video');
-      if (v.srcObject !== ev.streams[0]) { v.srcObject = ev.streams[0]; setState(id, 'live', '영상 수신 중', 'good'); }
+      if (v.srcObject !== ev.streams[0]) {
+        v.srcObject = ev.streams[0];
+        v.addEventListener('playing', () => { if (alive() && t.pc === pc) setState(id, 'live', '영상 수신 중', 'good'); }, { once: true });
+      }
     };
     pc.onconnectionstatechange = () => {
       if (t.pc !== pc) return;
@@ -396,7 +402,8 @@ async function connect(id, takeover) {
     t.sessionId = r.body.session_id;
     t.liveUntil = r.body.live_until ? new Date(r.body.live_until) : null;
     await pc.setRemoteDescription({ type: 'answer', sdp: r.body.sdp });
-    setState(id, 'connecting', 'answer 적용 — ICE 연결 시도 중', 'warn');
+    if (!alive()) return;
+    if (t.state !== 'live') setState(id, 'connecting', 'answer 적용 — ICE 연결 시도 중', 'warn');
     startTimer(id);
     pollCandidates(id, pc, t.sessionId);
   } catch (e) {
