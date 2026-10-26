@@ -166,11 +166,26 @@ def test_ops_reboot_409_not_beta(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_ops_reboot_409_offline(monkeypatch: pytest.MonkeyPatch) -> None:
-    env = _env(monkeypatch, cameras=[_camera(is_online=False)])
+    """offline 이고 last_seen 이 없거나 방금(10분 미만) 끊김 → 재연결·재부팅 중일 수 있어 건너뜀."""
+    recent = (datetime.now(timezone.utc) - timedelta(minutes=3)).isoformat()
+    for cam in (_camera(is_online=False), _camera(is_online=False, last_seen_at=recent)):
+        env = _env(monkeypatch, cameras=[cam])
+        res = env.post()
+        assert res.status_code == 409
+        assert res.json() == {"detail": "skipped", "reason": "offline"}
+        assert env.calls == [] and env.logs == []
+
+
+def test_ops_reboot_offline_but_silent_long_publishes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """2026-10-26 d141abfb: 하트비트 63분 끊긴 offline 카메라가 reboot 명령으로 복구됨(MQTT 수신
+    태스크만 생존). 조용해진 지 OFFLINE_SILENT_SEC 이상이면 offline 이어도 발행한다."""
+    silent = (datetime.now(timezone.utc) - timedelta(minutes=11)).isoformat()
+    env = _env(monkeypatch, cameras=[_camera(is_online=False, last_seen_at=silent)])
     res = env.post()
-    assert res.status_code == 409
-    assert res.json() == {"detail": "skipped", "reason": "offline"}
-    assert env.calls == [] and env.logs == []
+    assert res.status_code == 200, res.json()
+    assert res.json()["published"] is True
+    assert len(env.calls) == 1 and env.calls[0][1]["action"] == "reboot"
+    assert len(env.logs) == 1 and env.logs[0]["published"] is True
 
 
 def test_ops_reboot_409_live_session(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -12,7 +12,7 @@ petcam-lab 감시 스크립트가 밤 녹화가 2시간 멈춘 베타 카메라�
 나누면 권한이 너무 넓다 → 이 경로 하나만 여는 서버 시크릿. 비교는 상수 시간(hmac.compare_digest).
 
 ## 안전장치 (검사 순서)
-401 시크릿 → (카메라 락) 404 카메라 없음/해제 → 409 not_beta → offline → live_active → ota_active
+401 시크릿 → (카메라 락) 404 카메라 없음/해제 → 409 not_beta → offline(조용해진 지 10분 미만일 때만) → live_active → ota_active
 → 429 쿨다운 → 기록 INSERT → 발행 → 결과 UPDATE.
 
 카메라 락은 live_session.claim 과 **같은 락**이다. 라이브 판정~발행 사이에 시청이 시작되는 창을
@@ -52,9 +52,10 @@ from backend.webrtc_signaling import MqttWebRTCSignaling
 logger = logging.getLogger(__name__)
 
 OPS_REBOOT_COOLDOWN_SEC = 2 * 60 * 60
+OFFLINE_SILENT_SEC = 10 * 60      # offline 이어도 이만큼 조용했으면 reboot 발행(살아 있는 수신 태스크 겨냥)
 BETA_GROUP = "beta"
 _LOG_TABLE = "camera_ops_reboots"
-_CAMERA_COLUMNS = "id, camera_id, labeling_group, unlinked_at, is_online, live_session_id, stream_until"
+_CAMERA_COLUMNS = "id, camera_id, labeling_group, unlinked_at, is_online, last_seen_at, live_session_id, stream_until"
 
 
 def require_ops_secret(x_ops_secret: str | None = Header(None, alias="X-Ops-Secret")) -> None:
@@ -84,7 +85,14 @@ def _skip_reason(sb: Any, cam: dict[str, Any], now: datetime) -> str | None:
     if cam.get("labeling_group") != BETA_GROUP:
         return "not_beta"
     if not cam.get("is_online"):
-        return "offline"
+        # 2026-10-26 p4cam-d141abfb: 하트비트가 63분 끊겨 offline 인데 esp-mqtt 수신 태스크는 살아
+        # 있어 reboot 명령 한 번에 복구됐다(펌웨어 소프트 워치독이 전부 멈춘 태스크 안이라 자가
+        # 복구 불가, 10/19 5h14m 도 동일). 그래서 "조용해진 지 OFFLINE_SILENT_SEC 이상" 이면
+        # 발행한다 — 진짜 죽은 보드엔 명령이 버려질 뿐이고 2시간 쿨다운이 과발행을 막는다.
+        # 그보다 짧으면 WiFi 재연결·재부팅 중일 수 있어 기존대로 건너뛴다.
+        last_seen = parse_ts(cam.get("last_seen_at"))
+        if last_seen is None or (now - last_seen).total_seconds() < OFFLINE_SILENT_SEC:
+            return "offline"
     stream_until = parse_ts(cam.get("stream_until"))
     if cam.get("live_session_id") or (stream_until is not None and stream_until > now):
         return "live_active"
