@@ -335,12 +335,17 @@ function formatCameraLogs(rows) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// 베타 테스터 계정 — 계정 목록(localStorage 공유) + 배치 인증
+// 베타 테스터 계정 — 테스터 이름 + 서버 계정 목록(아래 관리자 대행 절)
 // ─────────────────────────────────────────────────────────────────────────
 // 계정 목록은 서버가 준다 (2026-10-27): GET /admin/accounts — 가입 계정 전부 + 각 계정의 기기·카메라.
 // 전엔 운영 베타 10계정을 소스에 박아 두고 공통 비밀번호로 계정마다 로그인했지만, 사용자가 직접 가입하면서
 // 비밀번호를 모르게 됐다. 지금은 관리자(.env ADMIN_EMAILS / ADMIN_USER_IDS) 로 한 번 로그인 → 아래 대행(X-Act-As-User).
 // 테스터 이름(2026-10-21 owner 전달). localStorage 'terra-beta-names' ({email: 이름}) 가 있으면 우선.
+const BETA_NAMES_DEFAULT = {
+  '01046590180@test.com': '김태훈', '01053911601@test.com': '손휘윤', '01026448891@test.com': '우지인', '01024896379@test.com': '김창열',
+  '01043576098@test.com': '김대중', '01021120001@test.com': '원인식', '01093115816@test.com': '임영아', '01023636275@test.com': '조세영',
+  '01048533907@test.com': '전영준', '01037689511@test.com': '김희원',
+};
 function loadBetaNames() {
   try {
     const v = JSON.parse(localStorage.getItem('terra-beta-names') || 'null');
