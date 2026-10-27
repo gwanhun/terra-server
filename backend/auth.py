@@ -15,7 +15,8 @@ Supabase Auth 비대칭 서명. 공개키는 JWKS 엔드포인트:
 
 ## 관리자 + 대행(act-as) (2026-10-27)
 사용자가 직접 가입·기기 등록을 하게 되면서 운영자가 테스터 비밀번호를 모른다. 그래서
-- `.env ADMIN_USER_IDS` (쉼표 구분 auth.users.id) 에 든 계정만 관리자.
+- `.env ADMIN_USER_IDS` (쉼표 구분 auth.users.id) **또는** `ADMIN_EMAILS` (쉼표 구분 이메일) 에 든 계정만 관리자.
+  이메일은 JWT 의 `email` 클레임(서명됨)으로 본다. dev 모드는 이메일이 없어 uid 로만 판정.
 - 관리자가 `X-Act-As-User: <uuid>` 헤더를 붙이면 `get_current_user_id` 가 **그 사용자 id 를 돌려준다**
   → 기존 소유자 검사 라우터(/devices, /cameras, OTA, 해제…)가 코드 변경 없이 그 사용자 자격으로 동작.
 - 관리자가 아닌데 헤더를 붙이면 403. 대행 호출은 INFO 로그로 남긴다(누가 누구 것을 만졌는지).
@@ -168,37 +169,58 @@ def get_jwt_payload(
     return verify_jwt(token)
 
 
-def _caller_user_id(authorization: str | None) -> str:
-    """헤더(또는 dev 모드)로 확인한 **실제 호출자** user_id. 대행 헤더는 보지 않는다."""
+def _caller(authorization: str | None) -> tuple[str, str | None]:
+    """헤더(또는 dev 모드)로 확인한 **실제 호출자** (user_id, email). 대행 헤더는 보지 않는다.
+
+    dev 모드는 JWT 가 없어 email 이 None.
+    """
     mode = _auth_mode()
     if mode == "dev":
-        return _dev_user_id()
+        return _dev_user_id(), None
     if mode == "prod":
         payload = get_jwt_payload(authorization=authorization)
         sub = payload.get("sub")
         if not sub or not isinstance(sub, str):
             raise AuthError("JWT payload 에 sub claim (user_id) 이 없음.")
-        return sub
+        email = payload.get("email")
+        return sub, (email if isinstance(email, str) and email else None)
     raise AuthError(f"AUTH_MODE 값이 이상함: '{mode}'. 'dev' 또는 'prod' 만 허용.")
 
 
-def admin_user_ids() -> frozenset[str]:
-    """`.env ADMIN_USER_IDS` — 쉼표 구분 auth.users.id. 비어 있으면 관리자 없음(기능 꺼짐)."""
+def _caller_user_id(authorization: str | None) -> str:
+    return _caller(authorization)[0]
+
+
+def _env_set(name: str) -> frozenset[str]:
     load_dotenv(REPO_ROOT / ".env")
-    raw = os.getenv("ADMIN_USER_IDS", "")
+    raw = os.getenv(name, "")
     return frozenset(v.strip().lower() for v in raw.split(",") if v.strip())
 
 
-def is_admin(user_id: str) -> bool:
-    return user_id.lower() in admin_user_ids()
+def admin_user_ids() -> frozenset[str]:
+    """`.env ADMIN_USER_IDS` — 쉼표 구분 auth.users.id."""
+    return _env_set("ADMIN_USER_IDS")
 
 
-def _not_admin(user_id: str) -> HTTPException:
-    # 호출자 uid 를 그대로 알려 준다 — 운영자가 .env ADMIN_USER_IDS 에 넣을 값을 바로 알 수 있게.
-    # 자기 uid 는 JWT 에 이미 있는 값이라 비노출 대상이 아니다.
+def admin_emails() -> frozenset[str]:
+    """`.env ADMIN_EMAILS` — 쉼표 구분 이메일(대소문자 무시). JWT email 클레임과 비교."""
+    return _env_set("ADMIN_EMAILS")
+
+
+def is_admin(user_id: str, email: str | None = None) -> bool:
+    """둘 중 하나라도 맞으면 관리자. 둘 다 비어 있으면 아무도 아님(기능 꺼짐)."""
+    if user_id.lower() in admin_user_ids():
+        return True
+    return bool(email) and email.lower() in admin_emails()
+
+
+def _not_admin(user_id: str, email: str | None) -> HTTPException:
+    # 호출자 uid·이메일을 그대로 알려 준다 — 운영자가 .env 에 넣을 값을 바로 알 수 있게.
+    # 자기 uid·이메일은 JWT 에 이미 있는 값이라 비노출 대상이 아니다.
+    who = f"user_id={user_id}" + (f", email={email}" if email else "")
     return HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
-        detail=f"not admin (user_id={user_id}) — 서버 .env ADMIN_USER_IDS 에 추가하면 허용",
+        detail=f"not admin ({who}) — 서버 .env ADMIN_EMAILS 또는 ADMIN_USER_IDS 에 추가하면 허용",
     )
 
 
@@ -208,15 +230,15 @@ def get_current_user_id(
 ) -> str:
     """FastAPI Depends: 현재 요청의 user_id (UUID str).
 
-    관리자(ADMIN_USER_IDS)가 `X-Act-As-User` 를 붙이면 그 사용자 id 를 돌려준다(대행).
+    관리자(ADMIN_USER_IDS / ADMIN_EMAILS)가 `X-Act-As-User` 를 붙이면 그 사용자 id 를 돌려준다(대행).
     헤더가 비어 있거나 공백이면 없는 것으로 본다. 관리자가 아니면 403, UUID 아니면 400.
     """
-    caller = _caller_user_id(authorization)
+    caller, email = _caller(authorization)
     target = (x_act_as_user or "").strip()
     if not target:
         return caller
-    if not is_admin(caller):
-        raise _not_admin(caller)
+    if not is_admin(caller, email):
+        raise _not_admin(caller, email)
     if parse_uuid(target) is None:
         raise HTTPException(status_code=400, detail=f"{ACT_AS_HEADER} 는 UUID 여야 함")
     target = target.lower()
@@ -229,7 +251,7 @@ def require_admin(
     authorization: str | None = Header(default=None),
 ) -> str:
     """FastAPI Depends: 관리자만 통과. 관리자 본인의 user_id 반환(대행 헤더 무시)."""
-    caller = _caller_user_id(authorization)
-    if not is_admin(caller):
-        raise _not_admin(caller)
+    caller, email = _caller(authorization)
+    if not is_admin(caller, email):
+        raise _not_admin(caller, email)
     return caller

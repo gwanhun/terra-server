@@ -119,7 +119,7 @@ tags_metadata = [
     {
         "name": "admin",
         "description": (
-            "관리자 전용(.env ADMIN_USER_IDS 의 계정 JWT). 운영 콘솔이 전체 계정·기기·카메라를 본다. "
+            "관리자 전용(.env ADMIN_EMAILS / ADMIN_USER_IDS 의 계정 JWT). 운영 콘솔이 전체 계정·기기·카메라를 본다. "
             "관리자는 다른 엔드포인트에 `X-Act-As-User: <uuid>` 를 붙여 그 사용자 자격으로 호출할 수 있다(대행)."
         ),
     },
@@ -142,9 +142,9 @@ async def _lifespan(_app: FastAPI):
     # 운영 재부팅(2026-10-20): 시크릿 미설정이면 /ops 는 전부 401. 값은 로그 금지.
     if not os.getenv("OPS_REBOOT_SECRET", "").strip():
         logging.getLogger(__name__).warning("OPS_REBOOT_SECRET 미설정 — /ops 운영 재부팅 비활성(401)")
-    # 관리자(2026-10-27): 비어 있으면 /admin 과 X-Act-As-User 대행이 전부 403. 운영 콘솔 베타·라이브 페이지가 못 뜬다.
-    if not os.getenv("ADMIN_USER_IDS", "").strip():
-        logging.getLogger(__name__).warning("ADMIN_USER_IDS 미설정 — /admin·대행(X-Act-As-User) 비활성(403)")
+    # 관리자(2026-10-27): 둘 다 비어 있으면 /admin 과 X-Act-As-User 대행이 전부 403. 운영 콘솔 베타·라이브 페이지가 못 뜬다.
+    if not (os.getenv("ADMIN_USER_IDS", "").strip() or os.getenv("ADMIN_EMAILS", "").strip()):
+        logging.getLogger(__name__).warning("ADMIN_USER_IDS/ADMIN_EMAILS 미설정 — /admin·대행(X-Act-As-User) 비활성(403)")
     relay = get_relay()
     loop = asyncio.get_running_loop()
     relay.start(loop)

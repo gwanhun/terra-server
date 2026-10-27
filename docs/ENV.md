@@ -7,7 +7,7 @@
 | 등급 | 변수 | 취급 |
 |------|------|------|
 | 🔴 Critical | `SUPABASE_SERVICE_ROLE_KEY`, `MQTT_BRIDGE_PASSWORD`, `R2_SECRET_ACCESS_KEY`, `DOCS_BASIC_PASS`, `OPS_REBOOT_SECRET` | 절대 커밋 금지, 유출 시 즉시 로테이션 |
-| 🟠 Sensitive | `DEV_USER_ID`, `ADMIN_USER_IDS`, `SUPABASE_URL`, `R2_ACCESS_KEY_ID`, `R2_ACCOUNT_ID`, `DOCS_BASIC_USER` | .env / Lightsail 내부에만 |
+| 🟠 Sensitive | `DEV_USER_ID`, `ADMIN_EMAILS`, `ADMIN_USER_IDS`, `SUPABASE_URL`, `R2_ACCESS_KEY_ID`, `R2_ACCOUNT_ID`, `DOCS_BASIC_USER` | .env / Lightsail 내부에만 |
 | 🟢 Non-secret | `MQTT_BROKER_HOST`, `AUTH_MODE`, `APP_ORIGINS`, `R2_BUCKET`, `R2_PUBLIC_BASE_URL` | .env.example 에 기본값 공개 |
 
 ## 섹션별 설명
@@ -34,10 +34,11 @@
 
 ### 관리자 (2026-10-27)
 
-- `ADMIN_USER_IDS` — 쉼표 구분 `auth.users.id`. 운영 콘솔(`web/beta.html`·`live.html`)이 **사용자 비밀번호 없이** 전체 계정을 보려면 필요.
-  - 여기 든 계정의 JWT 는 `GET /admin/accounts`(가입 계정 전부 + 기기·카메라)를 부를 수 있고,
+- `ADMIN_EMAILS` — 쉼표 구분 이메일(대소문자 무시, JWT `email` 클레임과 비교). 운영 콘솔(`web/beta.html`·`live.html`)이 **사용자 비밀번호 없이** 전체 계정을 보려면 이것 또는 아래 중 하나 필요. 보통은 이게 편하다.
+- `ADMIN_USER_IDS` — 쉼표 구분 `auth.users.id`. 이메일 대신/함께. dev 모드(JWT 없음)는 이것으로만 판정.
+  - 어느 쪽이든 여기 든 계정의 JWT 는 `GET /admin/accounts`(가입 계정 전부 + 기기·카메라)를 부를 수 있고,
     다른 엔드포인트에 `X-Act-As-User: <uuid>` 를 붙여 **그 사용자 자격으로** 호출(대행)할 수 있다 — [API.md §4.13](API.md).
-  - 비어 있으면 둘 다 403 (기능 꺼짐) + API 시작 시 경고 1회. 콘솔은 403 detail 에 실린 내 uid 를 그대로 보여 준다 → 그 값을 넣고 `sudo systemctl restart terra-api`.
+  - 둘 다 비어 있으면 403 (기능 꺼짐) + API 시작 시 경고 1회. 콘솔은 403 detail 에 실린 내 uid·이메일을 그대로 보여 준다 → 그 값을 넣고 `sudo systemctl restart terra-api`.
   - 대행 호출은 `act-as admin=… target=…` INFO 로그로 남는다(`journalctl -u terra-api`).
   - 테스터 공통 비밀번호(`123456`) 방식은 2026-10-27 폐지 — 사용자가 직접 가입하므로 운영자가 비밀번호를 모른다.
 

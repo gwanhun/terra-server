@@ -15,7 +15,7 @@
 | **Pair Token (1회용, RPi 전용)** | `Authorization: Bearer <pair_token>` | `POST /cameras/prepare-pair` 응답 (TTL 5분) | RPi 카메라 QR 페어링 (BLE 미사용 시) |
 | **Camera Token** | `Authorization: Bearer <camera_token>` | `POST /cameras/pair` 응답 (1회) | 카메라 자체 호출 (영상 업로드) |
 | **Device Token** | `Authorization: Bearer <device_token>` | `POST /devices/pair` 응답 (1회) | 디바이스 자체 호출 (펌웨어 업데이트 등, 추후) |
-| **관리자 JWT + 대행** | `Authorization: Bearer <admin jwt>` + `X-Act-As-User: <uuid>` | `.env ADMIN_USER_IDS` 의 계정 | 운영 콘솔. 대행 헤더가 붙으면 모든 JWT 엔드포인트가 **그 사용자가 부른 것으로** 동작 (§4.13, 2026-10-27) |
+| **관리자 JWT + 대행** | `Authorization: Bearer <admin jwt>` + `X-Act-As-User: <uuid>` | `.env ADMIN_EMAILS` / `ADMIN_USER_IDS` 의 계정 | 운영 콘솔. 대행 헤더가 붙으면 모든 JWT 엔드포인트가 **그 사용자가 부른 것으로** 동작 (§4.13, 2026-10-27) |
 
 ### Dev 모드 (`AUTH_MODE=dev`)
 
@@ -941,7 +941,7 @@ X-Ops-Secret: <.env OPS_REBOOT_SECRET>
 **왜**: 베타 테스터가 직접 가입·기기 등록을 하게 되면서 운영 콘솔(`web/beta.html`·`live.html`)이 테스터 공통 비밀번호로
 계정마다 로그인하던 방식이 막혔다. 관리자 계정 한 번 로그인으로 전체를 보고 다루게 했다. 라우터 `backend/routers/admin.py`, 판정 `backend/auth.py`.
 
-**관리자 판정**: `.env ADMIN_USER_IDS`(쉼표 구분 `auth.users.id`) 에 든 JWT `sub`. 아니면 **403** `{"detail": "not admin (user_id=<호출자 uid>) — 서버 .env ADMIN_USER_IDS 에 추가하면 허용"}` — 콘솔이 이 uid 를 그대로 보여 주므로 운영자가 바로 .env 에 넣을 수 있다. 비어 있으면 전부 403(기능 꺼짐).
+**관리자 판정**: JWT `email` 클레임이 `.env ADMIN_EMAILS`(쉼표 구분, 대소문자 무시)에 있거나 `sub` 가 `ADMIN_USER_IDS` 에 있으면 관리자. 아니면 **403** `{"detail": "not admin (user_id=<uid>, email=<이메일>) — 서버 .env ADMIN_EMAILS 또는 ADMIN_USER_IDS 에 추가하면 허용"}` — 콘솔이 이 값을 그대로 보여 주므로 운영자가 바로 .env 에 넣을 수 있다. 둘 다 비어 있으면 전부 403(기능 꺼짐).
 
 ```
 GET /admin/accounts
@@ -1086,7 +1086,7 @@ supabase
 | 2026-05-27 | 0.2.0 | 카메라 페어링 흐름 RPi/QR 기반으로 변경 (prepare-pair + pair_token) |
 | 2026-05-27 | 0.3.0 | 메인 카메라 워커 ESP32-P4 로 변경 (BLE 페어링), Stage G(라이브 스트리밍) 엔드포인트 추가 |
 | 2026-05-27 | 0.4.0 | **Stage F 구현 완료** — enclosures/cameras/clips 라우터 + R2 presigned URL + Camera Token Bearer 인증 (44 tests passing). Swagger UI 메타데이터 보강 (`/docs` 즉시 사용 가능) |
-| 2026-10-27 | 0.12.0 | **관리자** — `GET /admin/accounts`(전체 계정·기기·카메라), `X-Act-As-User` 대행(`.env ADMIN_USER_IDS`), `POST /devices/{id}/commands` + `GET …/commands/{id}`(토글·보정 명령·ack 조회). 운영 콘솔이 테스터 비밀번호 없이 동작 (§4.13) |
+| 2026-10-27 | 0.12.0 | **관리자** — `GET /admin/accounts`(전체 계정·기기·카메라), `X-Act-As-User` 대행(`.env ADMIN_EMAILS`/`ADMIN_USER_IDS`), `POST /devices/{id}/commands` + `GET …/commands/{id}`(토글·보정 명령·ack 조회). 운영 콘솔이 테스터 비밀번호 없이 동작 (§4.13) |
 | 2026-10-20 | 0.11.0 | **운영 카메라 재부팅** — `POST /ops/cameras/{id}/reboot`(서버 시크릿 `X-Ops-Secret`, 베타 한정, 라이브·OTA 보호, 2시간 쿨다운), `camera_ops_reboots` 테이블, 카메라 ack 기록 (§4.12) |
 | 2026-10-20 | 0.10.0 | **Stage L 라이브 직접 녹화** — `POST /recordings`·`/complete`, `GET …/url`·`…/thumbnail/url`, `DELETE /recordings/{id}`, `live_recordings` 테이블, pending 24h 정리 스레드 (§4.11) |
 | 2026-10-08 | 0.9.1 | OTA 릴리스 퇴역 — `firmware_releases.retired_at/retired_reason`, `GET /firmware/releases?include_retired`, 퇴역 릴리스 `POST …/ota` 409 · `/bin` 410, `upload_firmware.py --delete` (§4.10) |

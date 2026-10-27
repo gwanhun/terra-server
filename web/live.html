@@ -179,7 +179,7 @@ async function loadCameras() {
   } catch (e) {
     prog.className = 'bad'; prog.textContent = '실패';
     document.getElementById('grid').innerHTML = `<div class="empty-grid">❌ ${esc(e.message || e)}${e.notAdmin
-      ? '<br><small class="muted">서버 .env ADMIN_USER_IDS 에 위 user_id 를 추가하고 terra-api 재시작. 로그인 계정을 바꾸려면 상단 로그아웃.</small>' : ''}</div>`;
+      ? '<br><small class="muted">서버 .env ADMIN_EMAILS(또는 ADMIN_USER_IDS) 에 위 이메일(또는 user_id)을 추가하고 terra-api 재시작. 로그인 계정을 바꾸려면 상단 로그아웃.</small>' : ''}</div>`;
     toast(e.message || String(e), 'bad');
     return;
   }

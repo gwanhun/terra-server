@@ -18,7 +18,7 @@
 - **웹 콘솔은 프로덕션에서 열 것**: `https://api.terra-server.uk/`
   - 로컬(`AUTH_MODE=dev`)은 로그인 JWT 를 무시하고 고정 dev 유저로 등록하므로 계정별 등록이 안 된다.
   - 브로커(mosquitto) 계정 등록도 프로덕션 서버에서만 된다.
-- **콘솔 로그인은 관리자 계정으로**(2026-10-27~): 서버 `.env ADMIN_USER_IDS` 에 든 계정. 테스터 비밀번호는 몰라도 된다 — 베타·라이브 페이지가 `GET /admin/accounts` 로 가입 계정 전부를 받고, 개별 동작은 `X-Act-As-User` 대행으로 부른다([API.md §4.13](API.md)). 관리자가 아니면 403 과 내 uid 가 뜬다 → .env 에 넣고 `terra-api` 재시작.
+- **콘솔 로그인은 관리자 계정으로**(2026-10-27~): 서버 `.env ADMIN_EMAILS`(또는 `ADMIN_USER_IDS`) 에 든 계정. 테스터 비밀번호는 몰라도 된다 — 베타·라이브 페이지가 `GET /admin/accounts` 로 가입 계정 전부를 받고, 개별 동작은 `X-Act-As-User` 대행으로 부른다([API.md §4.13](API.md)). 관리자가 아니면 403 과 내 이메일·uid 가 뜬다 → .env 에 넣고 `terra-api` 재시작.
 - 초기 테스트 계정(`<전화번호>@test.com` / `123456`, `storage/phone_accounts_*.csv`)은 여전히 로그인되지만 콘솔이 더는 그 비밀번호를 쓰지 않는다. 사용자는 앱에서 직접 가입한다.
 
 ## 2. 단계 A — 웹에서 등록
@@ -127,7 +127,7 @@ uv run python scripts/list_registered.py                  # 계정별 등록 기
 | 증상 | 원인 / 조치 |
 |------|-------------|
 | 등록 시 500 | 로컬(AUTH_MODE=dev)에서 호출함. **프로덕션**에서 열 것 |
-| 베타·라이브 페이지에 "관리자 계정이 아님 (user_id=…)" | 로그인 계정이 서버 `.env ADMIN_USER_IDS` 에 없음. 그 uid 를 넣고 `sudo systemctl restart terra-api` |
+| 베타·라이브 페이지에 "관리자 계정이 아님 (user_id=…)" | 로그인 계정이 서버 `.env ADMIN_EMAILS`/`ADMIN_USER_IDS` 에 없음. 그 이메일(또는 uid)을 넣고 `sudo systemctl restart terra-api` |
 | CORS 오류 | API Base 가 페이지 주소와 다른 오리진. 주소창과 동일하게 맞출 것 |
 | 기기가 온라인 안 됨 | WiFi 값/토큰 확인, mosquitto 등록(=프로덕션 등록) 여부 확인 |
 | 카메라가 개발 계정으로 뜸 | 구 펌웨어. 카메라 BLE/JWT 등록은 2026-09-17 펌웨어부터 |

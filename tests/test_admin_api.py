@@ -99,6 +99,22 @@ def test_accounts_requires_admin(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "ADMIN_USER_IDS" in res.json()["detail"]
 
 
+def test_accounts_admin_by_email(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ADMIN_EMAILS — prod 모드에서 JWT email 클레임으로 판정(대소문자 무시). 403 detail 에 이메일도 실린다."""
+    from backend import auth
+
+    monkeypatch.setenv("AUTH_MODE", "prod")
+    monkeypatch.setattr(auth, "verify_jwt", lambda token: {"sub": TEST_USER_ID, "email": "Owner@Test.com"})
+    client = _client(monkeypatch, _sb(), admins="")
+    hdr = {"Authorization": "Bearer x"}
+    res = client.get("/admin/accounts", headers=hdr)
+    assert res.status_code == 403 and "Owner@Test.com" in res.json()["detail"]
+
+    monkeypatch.setenv("ADMIN_EMAILS", "someone@test.com, owner@test.com")
+    assert client.get("/admin/accounts", headers=hdr).status_code == 200
+    assert client.get("/devices", headers={**hdr, "X-Act-As-User": OTHER_USER_ID}).status_code == 200
+
+
 def test_accounts_unset_admin_list_is_403(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _client(monkeypatch, _sb(), admins="")
     assert client.get("/admin/accounts").status_code == 403

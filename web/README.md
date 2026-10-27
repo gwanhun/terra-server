@@ -12,7 +12,7 @@
 
 **세 페이지 모두 같은 정책**(2026-10-22): Supabase 로그인(같은 origin·세션)이 있어야 열린다. `beta.html`·`live.html` 은 세션이 없으면 그 자리에 로그인 폼을 띄운다.
 
-**베타·라이브는 관리자 계정이어야 내용이 뜬다**(2026-10-27): 사용자가 직접 가입·기기 등록을 하게 되면서 테스터 공통 비밀번호(`123456`)로 계정마다 로그인하던 방식을 버렸다. 로그인한 계정이 서버 `.env ADMIN_USER_IDS` 에 있으면 `GET /admin/accounts` 로 **가입 계정 전부 + 기기·카메라**를 한 번에 받고, 개별 동작(조회·명령·OTA·해제·라이브)은 기존 API 에 `X-Act-As-User: <uid>` 를 붙여 그 사용자 자격으로 부른다([docs/API.md §4.13](../docs/API.md)). 관리자가 아니면 403 과 함께 내 uid 를 보여 주니 그 값을 .env 에 넣고 `terra-api` 재시작. 토글·보정 명령은 PostgREST 직접 INSERT 대신 `POST /devices/{id}/commands` 를 쓴다(대행 헤더를 PostgREST 는 모름).
+**베타·라이브는 관리자 계정이어야 내용이 뜬다**(2026-10-27): 사용자가 직접 가입·기기 등록을 하게 되면서 테스터 공통 비밀번호(`123456`)로 계정마다 로그인하던 방식을 버렸다. 로그인한 계정이 서버 `.env ADMIN_EMAILS`(또는 `ADMIN_USER_IDS`) 에 있으면 `GET /admin/accounts` 로 **가입 계정 전부 + 기기·카메라**를 한 번에 받고, 개별 동작(조회·명령·OTA·해제·라이브)은 기존 API 에 `X-Act-As-User: <uid>` 를 붙여 그 사용자 자격으로 부른다([docs/API.md §4.13](../docs/API.md)). 관리자가 아니면 403 과 함께 내 이메일·uid 를 보여 주니 그 값을 .env 에 넣고 `terra-api` 재시작. 토글·보정 명령은 PostgREST 직접 INSERT 대신 `POST /devices/{id}/commands` 를 쓴다(대행 헤더를 PostgREST 는 모름).
 
 세 페이지는 localStorage 를 공유한다: `terra-config`(apiBase), `terra-beta-names`(테스터 이름 덮어쓰기), `terra-beta-hide-empty`(베타: 등록 없는 계정 숨김), `terra-live-viewer-id`(라이브 "한 기기" 판정용 viewer_id).
 

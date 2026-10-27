@@ -339,7 +339,7 @@ function formatCameraLogs(rows) {
 // ─────────────────────────────────────────────────────────────────────────
 // 계정 목록은 서버가 준다 (2026-10-27): GET /admin/accounts — 가입 계정 전부 + 각 계정의 기기·카메라.
 // 전엔 운영 베타 10계정을 소스에 박아 두고 공통 비밀번호로 계정마다 로그인했지만, 사용자가 직접 가입하면서
-// 비밀번호를 모르게 됐다. 지금은 관리자(.env ADMIN_USER_IDS) 로 한 번 로그인 → 아래 대행(X-Act-As-User).
+// 비밀번호를 모르게 됐다. 지금은 관리자(.env ADMIN_EMAILS / ADMIN_USER_IDS) 로 한 번 로그인 → 아래 대행(X-Act-As-User).
 // 테스터 이름(2026-10-21 owner 전달). localStorage 'terra-beta-names' ({email: 이름}) 가 있으면 우선.
 function loadBetaNames() {
   try {
@@ -441,7 +441,7 @@ async function consoleLogout() {
 
 // ─────────────────────────────────────────────────────────────────────────
 // 관리자 대행 (2026-10-27) — beta.html / live.html 공용
-// 메인 세션(관리자 JWT) 하나로 모든 계정을 다룬다. 서버는 .env ADMIN_USER_IDS 에 든 계정만 통과시키고,
+// 메인 세션(관리자 JWT) 하나로 모든 계정을 다룬다. 서버는 .env ADMIN_EMAILS / ADMIN_USER_IDS 에 든 계정만 통과시키고,
 // `X-Act-As-User: <uid>` 가 붙은 요청은 그 사용자가 부른 것으로 처리한다(backend/auth.py).
 // 그래서 /devices, /cameras, OTA, 해제, 라이브 시그널링 등 기존 API 가 그대로 그 계정 것으로 동작한다.
 // 함수 이름(regSession/regFetch)은 비밀번호 로그인 시절 그대로 둬서 두 페이지의 호출부를 안 바꿨다.
@@ -470,7 +470,7 @@ async function loadAdminAccounts() {
   let body = text; try { body = JSON.parse(text); } catch (e) { /* 텍스트 */ }
   log({ GET: '/admin/accounts', status: res.status, accounts: Array.isArray(body) ? body.length : body });
   if (res.status === 403) {
-    const err = new Error('관리자 계정이 아님 — ' + (body && body.detail ? body.detail : '서버 .env ADMIN_USER_IDS 확인'));
+    const err = new Error('관리자 계정이 아님 — ' + (body && body.detail ? body.detail : '서버 .env ADMIN_EMAILS 확인'));
     err.notAdmin = true; throw err;
   }
   if (!res.ok) throw new Error('/admin/accounts ' + res.status + ': ' + (typeof body === 'string' ? body : (body.detail || JSON.stringify(body))).slice(0, 120));

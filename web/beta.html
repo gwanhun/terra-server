@@ -97,7 +97,7 @@
       <div class="stat"><b id="st-prog" class="muted" style="font-size:14px">대기</b><span>조회 상태</span></div>
     </div>
     <div class="notice">⚠️ 해제·삭제·명령은 <b>프로덕션 API</b>(api.terra-server.uk)로 호출해야 mosquitto 계정 정리와 실제 전달이 된다.
-      신규 등록(pair)·가입은 앱에서 한다. 이 페이지는 서버 <code>.env ADMIN_USER_IDS</code> 에 든 계정으로 로그인해야 목록이 뜬다(아니면 403 + 내 uid 안내).</div>
+      신규 등록(pair)·가입은 앱에서 한다. 이 페이지는 서버 <code>.env ADMIN_EMAILS</code>(또는 <code>ADMIN_USER_IDS</code>) 에 든 계정으로 로그인해야 목록이 뜬다(아니면 403 + 내 이메일·uid 안내).</div>
     <details class="cfg" id="cfg-details">
       <summary>⚙️ 필터 · API 대상</summary>
       <div class="row">
@@ -377,7 +377,7 @@ async function checkAllAccounts() {
     prog.className = 'bad'; prog.textContent = '실패';
     const host = document.getElementById('accounts');
     host.innerHTML = `<div class="panel"><b class="bad">❌ ${esc(e.message || e)}</b>${e.notAdmin
-      ? '<div class="muted" style="margin-top:6px">서버 <code>.env ADMIN_USER_IDS</code> 에 위 user_id 를 추가하고 <code>sudo systemctl restart terra-api</code> 하면 이 계정으로 열린다. 로그인 계정을 바꾸려면 상단 로그아웃.</div>'
+      ? '<div class="muted" style="margin-top:6px">서버 <code>.env ADMIN_EMAILS</code>(또는 <code>ADMIN_USER_IDS</code>) 에 위 이메일(또는 user_id)을 추가하고 <code>sudo systemctl restart terra-api</code> 하면 이 계정으로 열린다. 로그인 계정을 바꾸려면 상단 로그아웃.</div>'
       : ''}</div>`;
     toast(e.message || String(e), 'bad');
   }
