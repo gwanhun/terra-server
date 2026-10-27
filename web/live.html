@@ -87,6 +87,7 @@
     <div class="controls">
       <label>열 <select id="cols" onchange="setCols(this.value)"><option value="2">2</option><option value="3" selected>3</option><option value="4">4</option></select></label>
       <label><input type="checkbox" id="hide-off" onchange="renderGrid()"> 오프라인 숨기기</label>
+      <label title="베타 페이지에서 [베타] 로 표시한 계정의 카메라만 (서버 app_metadata.group=beta)"><input type="checkbox" id="beta-only" onchange="localStorage.setItem('terra-live-beta-only', this.checked ? '1' : '0'); renderGrid()"> 🎫 베타 테스터만</label>
       <span class="muted" title="영상 클릭 = 크게 보기, 더블클릭 = 전체화면">영상 클릭 = 크게 · 더블클릭 = 전체화면</span>
       <span class="sep"></span>
       <details class="cfg" style="margin:0;padding:2px 10px;flex:1;min-width:240px">
@@ -111,7 +112,7 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="shared.js?v=20261027b"></script>
+<script src="shared.js?v=20261027c"></script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────
 // 베타 라이브 대시보드 (2026-10-21)
@@ -147,6 +148,7 @@ function start() {
   if (CONFIG.apiBase.includes('localhost')) document.getElementById('reg-apibase').value = 'https://api.terra-server.uk';
   const cols = localStorage.getItem('terra-live-cols') || '3';
   document.getElementById('cols').value = cols; setCols(cols);
+  document.getElementById('beta-only').checked = localStorage.getItem('terra-live-beta-only') === '1';
   loadCameras();
 }
 function setCols(n) {
@@ -175,7 +177,7 @@ async function loadCameras() {
   let accounts = [];
   try {
     accounts = await loadAdminAccounts();     // 전체 계정 + 카메라를 한 번에 (shared.js)
-    accounts.forEach(a => (a.cameras || []).forEach(c => { found[c.id] = { cam: c, email: accountKey(a) }; }));
+    accounts.forEach(a => (a.cameras || []).forEach(c => { found[c.id] = { cam: c, email: accountKey(a), beta: a.group === 'beta' }; }));
   } catch (e) {
     prog.className = 'bad'; prog.textContent = '실패';
     document.getElementById('grid').innerHTML = `<div class="empty-grid">❌ ${esc(e.message || e)}${e.notAdmin
@@ -186,9 +188,9 @@ async function loadCameras() {
   const emails = accounts.map(accountKey);   // 서버 정렬(등록 있는 계정 먼저) 을 타일 순서에 반영
   // 사라진 카메라(해제·삭제)는 연결 끊고 타일 제거, 남은 건 cam 정보만 갱신(연결 유지)
   Object.keys(TILES).forEach(id => { if (!found[id]) { disconnect(id); delete TILES[id]; } });
-  Object.entries(found).forEach(([id, { cam, email }]) => {
-    if (TILES[id]) { TILES[id].cam = cam; TILES[id].email = email; }
-    else TILES[id] = { cam, email, el: null, pc: null, sessionId: null, poller: null, liveUntil: null, timer: null, state: 'idle' };
+  Object.entries(found).forEach(([id, { cam, email, beta }]) => {
+    if (TILES[id]) { TILES[id].cam = cam; TILES[id].email = email; TILES[id].beta = beta; }
+    else TILES[id] = { cam, email, beta, el: null, pc: null, sessionId: null, poller: null, liveUntil: null, timer: null, state: 'idle' };
   });
   ORDER = Object.keys(TILES).sort((a, b) => {
     const A = TILES[a], B = TILES[b];
@@ -216,17 +218,19 @@ function updateStats() {
 function renderGrid() {
   const grid = document.getElementById('grid');
   const hideOff = document.getElementById('hide-off').checked;
+  const betaOnly = document.getElementById('beta-only').checked;
   grid.innerHTML = '';
   let shown = 0;
   ORDER.forEach(id => {
     const t = TILES[id];
     if (hideOff && !t.cam.is_online && t.state === 'idle') return;
+    if (betaOnly && !t.beta && t.state === 'idle') return;   // 연결 중인 타일은 숨기지 않음
     if (!t.el) t.el = buildTile(id);
     refreshTileHead(id);
     grid.appendChild(t.el);
     shown++;
   });
-  if (!shown) grid.innerHTML = `<div class="empty-grid">${ORDER.length ? '표시할 카메라 없음 (오프라인 숨김 해제)' : '등록된 카메라가 없음'}</div>`;
+  if (!shown) grid.innerHTML = `<div class="empty-grid">${ORDER.length ? '표시할 카메라 없음 (오프라인 숨김·베타만 보기 해제)' : '등록된 카메라가 없음'}</div>`;
   updateStats();
 }
 

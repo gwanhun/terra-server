@@ -22,8 +22,9 @@ T0 = datetime(2026, 10, 1, tzinfo=timezone.utc)
 T1 = datetime(2026, 10, 20, tzinfo=timezone.utc)
 
 
-def _user(uid: str, email: str, created: datetime, deleted: datetime | None = None) -> Any:
-    return SimpleNamespace(id=uid, email=email, created_at=created, last_sign_in_at=None, deleted_at=deleted)
+def _user(uid: str, email: str, created: datetime, deleted: datetime | None = None, group: str | None = None) -> Any:
+    return SimpleNamespace(id=uid, email=email, created_at=created, last_sign_in_at=None, deleted_at=deleted,
+                           app_metadata=({"group": group, "provider": "email"} if group else {"provider": "email"}))
 
 
 def _device(owner: str, device_id: str, **over: Any) -> dict[str, Any]:
@@ -57,6 +58,18 @@ class _AdminSB(FakeSB):
                 sb.pages.append(page)
                 return sb._users[(page - 1) * per_page: page * per_page]
 
+            def get_user_by_id(self, uid: str) -> Any:
+                u = next((x for x in sb._users if x.id == uid), None)
+                if u is None:
+                    raise RuntimeError("User not found")
+                return SimpleNamespace(user=u)
+
+            def update_user_by_id(self, uid: str, attributes: dict[str, Any]) -> Any:
+                u = next(x for x in sb._users if x.id == uid)
+                if "app_metadata" in attributes:
+                    u.app_metadata = dict(attributes["app_metadata"])
+                return SimpleNamespace(user=u)
+
         self.auth = SimpleNamespace(admin=_Admin())
 
 
@@ -75,7 +88,7 @@ def _client(monkeypatch: pytest.MonkeyPatch, sb: Any, *, admins: str = TEST_USER
 def _sb() -> _AdminSB:
     users = [
         _user(TEST_USER_ID, "admin@test.com", T0),
-        _user(OTHER_USER_ID, "tester@test.com", T1),
+        _user(OTHER_USER_ID, "tester@test.com", T1, group="beta"),
         _user(THIRD_USER_ID, "nodevice@test.com", T1),
         _user("55555555-5555-5555-5555-555555555555", "old@test.com", T0, deleted=T1),
     ]
@@ -131,6 +144,7 @@ def test_accounts_groups_devices_and_cameras_by_owner(monkeypatch: pytest.Monkey
     assert [d["device_id"] for d in tester["devices"]] == ["terra-aaaa"]      # 해제된 기기 제외
     assert [c["camera_id"] for c in tester["cameras"]] == ["p4cam-aaaa"]
     assert "owner_id" not in tester["devices"][0] and "token_hash" not in tester["cameras"][0]
+    assert tester["group"] == "beta" and by[THIRD_USER_ID]["group"] is None
 
     assert by[THIRD_USER_ID]["devices"] == [] and by[THIRD_USER_ID]["cameras"] == []   # 가입만 한 계정도 보임
     assert by["55555555-5555-5555-5555-555555555555"]["deleted_at"] is not None
@@ -158,6 +172,29 @@ def test_accounts_paginates_list_users(monkeypatch: pytest.MonkeyPatch) -> None:
     assert res.status_code == 200
     assert sb.pages == [1, 2, 3]     # 2명씩 두 페이지가 꽉 차서 빈 3페이지까지 확인
     assert len(res.json()) == 5      # 4 계정 + 고아 소유자 1
+
+
+def test_set_account_group_merges_app_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    """beta 표시 → app_metadata.group 만 바뀌고 provider 같은 다른 키는 유지. null 로 해제."""
+    sb = _sb()
+    client = _client(monkeypatch, sb)
+    res = client.patch(f"/admin/accounts/{THIRD_USER_ID}", json={"group": "beta"})
+    assert res.status_code == 200, res.text
+    u = next(x for x in sb._users if x.id == THIRD_USER_ID)
+    assert u.app_metadata == {"provider": "email", "group": "beta"}
+    assert next(a for a in client.get("/admin/accounts").json() if a["user_id"] == THIRD_USER_ID)["group"] == "beta"
+
+    assert client.patch(f"/admin/accounts/{THIRD_USER_ID}", json={"group": None}).status_code == 200
+    assert u.app_metadata == {"provider": "email"}
+
+
+def test_set_account_group_validation(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch, _sb())
+    assert client.patch(f"/admin/accounts/{THIRD_USER_ID}", json={"group": "vip"}).status_code == 400
+    assert client.patch(f"/admin/accounts/{GONE_OWNER_ID}", json={"group": "beta"}).status_code == 404
+    assert client.patch("/admin/accounts/not-uuid", json={"group": "beta"}).status_code == 404
+    non_admin = _client(monkeypatch, _sb(), admins=OTHER_USER_ID)
+    assert non_admin.patch(f"/admin/accounts/{THIRD_USER_ID}", json={"group": "beta"}).status_code == 403
 
 
 # ── X-Act-As-User 대행 ────────────────────────────────────────────────────

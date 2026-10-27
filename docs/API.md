@@ -60,6 +60,7 @@ Content-Type: application/json
 | `POST` | `/cameras/{id}/reboot` | JWT | **카메라 원격 재부팅** (MQTT `reboot` 명령 1회 발행, 2026-09-28) |
 | `POST` | `/ops/cameras/{id}/reboot` | `X-Ops-Secret` | **운영 카메라 재부팅** (petcam 감시 스크립트 전용, 베타 카메라·2시간 쿨다운, §4.12, 2026-10-20) |
 | `GET` | `/admin/accounts` | **관리자 JWT** | **전체 계정 + 등록 기기·카메라** (운영 콘솔, §4.13, 2026-10-27) |
+| `PATCH` | `/admin/accounts/{user_id}` | **관리자 JWT** | 계정 그룹 표시 `{"group": "beta" \| null}` → auth `app_metadata.group` (§4.13) |
 | `POST` | `/cameras/{id}/ota` | JWT | **OTA 1단계** `ota_prepare` 발행 (Stage J, 2026-10-07, §4.10) |
 | `POST` | `/cameras/{id}/ota/{job_id}/apply` | JWT | **OTA 2단계** `ota_apply` 발행 — `ready` 작업만 (§4.10) |
 | `POST` | `/devices/{id}/ota` · `/devices/{id}/ota/{job_id}/apply` | JWT | 기기(nano) OTA — 같은 계약, `commands` 큐잉 (§4.10) |
@@ -948,11 +949,20 @@ GET /admin/accounts
 Authorization: Bearer <관리자 JWT>
 
 → 200 [ { "user_id", "email", "created_at", "last_sign_in_at", "deleted_at",
+          "group",                           // "beta" | null — 관리자가 PATCH 로 붙인 표시 (auth app_metadata.group)
           "devices": [DeviceOut…],          // 활성(unlinked_at IS NULL) 만, GET /devices 와 같은 모양
           "cameras": [CameraOut…] }, … ]    // GET /cameras 와 같은 모양 (clip_stats·live_* 포함)
 ```
 - 가입 계정 **전부**(기기 없는 계정 포함). 정렬: 등록 있는 계정(최신 가입 먼저) → 등록 없는 계정 → 계정 행이 지워졌는데 기기가 남은 소유자(`email: null`, 맨 뒤).
 - `deleted_at` 이 있으면 소프트 삭제된 계정(로그인 불가). 서버는 `auth.admin.list_users` + `devices`/`cameras` 를 `owner_id` 로 묶는다(service_role, 관리자만 통과하므로 명시 필터 없음).
+
+```
+PATCH /admin/accounts/{user_id}        { "group": "beta" }   // 베타 테스터로 표시
+                                       { "group": null }     // 해제
+→ 200 { "user_id", "group" }   → 400 허용 목록("beta") 밖   → 404 계정 없음
+```
+- `auth.users.app_metadata.group` 에 저장(다른 app_metadata 키는 병합 유지). 새 테이블·마이그레이션 없음, service_role 만 쓸 수 있어 사용자가 못 바꾼다, 관리자 모두가 같은 구분을 본다.
+- 앱 JWT 에도 `app_metadata.group` 으로 실리지만 앱은 읽지 않는다. 콘솔(`beta.html`)의 전체/베타/그 외 필터와 `live.html` "베타 테스터만" 이 이 값을 쓴다.
 
 **대행 `X-Act-As-User: <uuid>`**: 관리자 JWT 요청에 이 헤더가 있으면 `get_current_user_id` 가 **그 uuid 를 돌려준다** → `/devices`, `/cameras`, `/firmware/jobs`, OTA, 해제·삭제, 라이브 시그널링 등 모든 JWT 엔드포인트가 그 사용자가 부른 것과 똑같이 동작한다(소유자 검사 포함 — 과한 권한 없음).
 관리자가 아닌데 붙이면 403, UUID 가 아니면 400, 빈 값은 무시. 대행 요청은 서버 INFO 로그 `act-as admin=… target=…`.

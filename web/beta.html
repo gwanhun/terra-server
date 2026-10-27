@@ -30,6 +30,11 @@
 .acct-email { font-family: ui-monospace, Menlo, monospace; font-size: 13px; color: var(--text); }
 .acct-email .tester { font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 14px; font-weight: 600; color: var(--accent); }
 .acct-title { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; font-size: 12px; padding: 4px 10px; background: var(--panel-2); color: var(--muted); }
+.seg button.on { background: var(--accent); color: #fff; }
+.acct.beta .acct-head { border-left: 3px solid var(--accent); }
+.acct-head .grp { font-size: 11px; padding: 2px 8px; }
 .acct-email .nick { font-family: -apple-system, BlinkMacSystemFont, sans-serif; color: var(--muted); font-size: 11px; margin-left: 6px; }
 .acct-sum { font-size: 11px; color: var(--muted); }
 .acct-head .spacer { flex: 1; }
@@ -80,7 +85,7 @@
     <div class="page-head">
       <div>
         <h2>🎫 베타 테스터</h2>
-        <small class="muted">가입한 모든 계정의 기기·카메라를 <b>관리자 계정 한 번 로그인</b>으로 조회·제어·해제한다(사용자 비밀번호 불필요 — 서버 <code>/admin/accounts</code> + 대행 헤더).</small>
+        <small class="muted">가입한 모든 계정의 기기·카메라를 <b>관리자 계정 한 번 로그인</b>으로 조회·제어·해제한다(사용자 비밀번호 불필요 — 서버 <code>/admin/accounts</code> + 대행 헤더). 기본은 <b>베타 테스터</b>만, 위 세그먼트로 전체/그 외 전환.</small>
       </div>
       <div class="actions">
         <button class="ghost" onclick="checkAllAccounts()" title="서버 /admin/accounts 를 다시 받아 모든 계정 카드를 다시 그린다 (요청 1번)">🔄 전체 새로고침</button>
@@ -90,6 +95,7 @@
     </div>
     <div class="stats" id="stats" style="margin-top:12px">
       <div class="stat" title="가입 계정 전부 · 그중 기기나 카메라를 등록한 계정"><b id="st-acct">–</b><span>계정 <span id="st-acct-reg" class="good"></span></span></div>
+      <div class="stat" title="[베타] 로 표시한 계정 수 (서버 app_metadata.group=beta)"><b id="st-beta" style="color:var(--accent)">–</b><span>🎫 베타</span></div>
       <div class="stat"><b id="st-dev">–</b><span>기기 <span id="st-dev-on" class="good"></span></span></div>
       <div class="stat"><b id="st-cam">–</b><span>카메라 <span id="st-cam-on" class="good"></span></span></div>
       <div class="stat" title="온라인 카메라 중 지금 조치(🔴)·관찰(🟠) 등급 수. 기준은 메인 콘솔 카메라 표 아래 범례와 같음"><b id="st-cam-lv">–</b><span>카메라 상태</span></div>
@@ -98,6 +104,14 @@
     </div>
     <div class="notice">⚠️ 해제·삭제·명령은 <b>프로덕션 API</b>(api.terra-server.uk)로 호출해야 mosquitto 계정 정리와 실제 전달이 된다.
       신규 등록(pair)·가입은 앱에서 한다. 이 페이지는 서버 <code>.env ADMIN_EMAILS</code>(또는 <code>ADMIN_USER_IDS</code>) 에 든 계정으로 로그인해야 목록이 뜬다(아니면 403 + 내 이메일·uid 안내).</div>
+    <div class="row" style="margin-top:10px;align-items:center;gap:10px;flex-wrap:wrap">
+      <span class="seg" id="grp-seg" title="계정 그룹 — 카드의 [베타] 버튼으로 표시한다. 표시는 서버(auth app_metadata.group)에 저장돼 관리자 모두가 같은 걸 본다">
+        <button type="button" data-grp="all" onclick="setGroupFilter('all')">전체</button>
+        <button type="button" data-grp="beta" onclick="setGroupFilter('beta')">🎫 베타 테스터</button>
+        <button type="button" data-grp="other" onclick="setGroupFilter('other')">그 외 유저</button>
+      </span>
+      <small class="muted" id="grp-hint"></small>
+    </div>
     <details class="cfg" id="cfg-details">
       <summary>⚙️ 필터 · API 대상</summary>
       <div class="row">
@@ -110,7 +124,8 @@
         <input id="reg-apibase" type="text" placeholder="(비우면 설정의 API Base)" style="flex:1;min-width:200px">
         <small class="muted" id="reg-count"></small>
       </div>
-      <small class="muted">테스터 이름은 <code>shared.js BETA_NAMES_DEFAULT</code>(또는 localStorage <code>terra-beta-names</code> {이메일: 이름}) 기준으로 카드에 붙는다.</small>
+      <small class="muted">테스터 이름은 <code>shared.js BETA_NAMES_DEFAULT</code>(또는 localStorage <code>terra-beta-names</code> {이메일: 이름}) 기준으로 카드에 붙는다.
+        베타/그 외 구분은 카드의 <b>[베타]</b> 토글 → 서버 <code>PATCH /admin/accounts/{id}</code> (관리자 공통).</small>
     </details>
   </div>
 
@@ -188,7 +203,7 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="shared.js?v=20261027b"></script>
+<script src="shared.js?v=20261027c"></script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────
 // 베타 테스터 페이지 (2026-10-21 index.html 의 "🎫 베타 기기·카메라 등록" 패널을 분리)
@@ -220,29 +235,71 @@ function start() {
   // 로컬 콘솔에서 띄웠어도 제어·해제는 프로덕션으로 가게 기본값을 채워 둔다 (비우면 CONFIG.apiBase).
   if (CONFIG.apiBase.includes('localhost')) document.getElementById('reg-apibase').value = 'https://api.terra-server.uk';
   const hide = localStorage.getItem('terra-beta-hide-empty');
-  document.getElementById('reg-hide-empty').checked = hide === null ? true : hide === '1';   // 기본: 가입만 한 계정은 숨김
+  document.getElementById('reg-hide-empty').checked = hide === '1';   // 기본 끔 — 베타 필터가 있으니 가입만 한 테스터도 보이게
+  setGroupFilter(localStorage.getItem('terra-beta-group') || 'beta', true);   // 기본: 베타 테스터만 (owner 2026-10-27)
   setCamStatusAll(CAM_STATUS_ALL);   // 버튼 문구만 맞춤(카드는 아직 없음)
   checkAllAccounts();
 }
 
 // ── 필터 ───────────────────────────────────────────────────────────────────
 // 서버 목록은 가입 계정 전부라 많아질 수 있다. 카드는 전부 그려 두고 CSS 로만 숨긴다(상태·선택 유지).
+// 그룹: 'all' | 'beta'(app_metadata.group === 'beta') | 'other'(그 외). 서버 값이라 관리자 모두 같은 구분.
+let GROUP_FILTER = 'all';
+function setGroupFilter(g, silent) {
+  GROUP_FILTER = ['all', 'beta', 'other'].includes(g) ? g : 'all';
+  localStorage.setItem('terra-beta-group', GROUP_FILTER);
+  document.querySelectorAll('#grp-seg button').forEach(b => b.classList.toggle('on', b.dataset.grp === GROUP_FILTER));
+  if (!silent) applyFilter();
+}
+const isBeta = a => !!(a && a.acct && a.acct.group === 'beta');
 function applyFilter() {
   const q = (document.getElementById('reg-filter').value || '').trim().toLowerCase();
   const hideEmpty = document.getElementById('reg-hide-empty').checked;
   localStorage.setItem('terra-beta-hide-empty', hideEmpty ? '1' : '0');
-  let shown = 0;
+  let shown = 0, betaTotal = 0;
   document.querySelectorAll('#accounts .acct').forEach(card => {
     const email = card.dataset.email, a = ACCT[email] || {};
+    if (isBeta(a)) betaTotal++;
+    const grpHide = GROUP_FILTER === 'beta' ? !isBeta(a) : GROUP_FILTER === 'other' ? isBeta(a) : false;
     const empty = !(a.devs || []).length && !(a.cams || []).length;
     const hay = (email + ' ' + testerName(email) + ' ' + (a.devs || []).map(d => d.device_id + ' ' + (d.name || '')).join(' ')
                  + ' ' + (a.cams || []).map(c => c.camera_id + ' ' + (c.name || '')).join(' ')).toLowerCase();
-    const hide = (hideEmpty && empty && a.done) || (q && !hay.includes(q));
+    const hide = grpHide || (hideEmpty && empty && a.done) || (q && !hay.includes(q));
     card.classList.toggle('hidden', !!hide);
     if (!hide) shown++;
   });
   const total = Object.keys(ACCT).length;
   document.getElementById('reg-count').textContent = total ? `${shown}/${total} 계정 표시` : '';
+  const hint = document.getElementById('grp-hint');
+  hint.textContent = GROUP_FILTER === 'beta' && !betaTotal ? '베타로 표시한 계정이 아직 없음 — [전체] 에서 카드의 [베타] 를 눌러 표시'
+    : GROUP_FILTER === 'all' ? `베타 ${betaTotal} · 그 외 ${total - betaTotal}` : `${shown}개 표시`;
+}
+
+// 카드의 [베타] 토글 → PATCH /admin/accounts/{uid}. 성공하면 그 카드만 갱신(목록 재조회 없음).
+async function toggleGroup(email, btn) {
+  const a = ACCT[email]; if (!a || !a.acct) return;
+  const next = isBeta(a) ? null : 'beta';
+  btn.disabled = true;
+  try {
+    const res = await fetch(regApiBase() + '/admin/accounts/' + a.acct.user_id, {
+      method: 'PATCH', cache: 'no-store',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + await mainAccessToken() },
+      body: JSON.stringify({ group: next }),
+    });
+    const body = await res.json().catch(() => ({}));
+    log({ PATCH: '/admin/accounts/' + a.acct.user_id, group: next, status: res.status, body });
+    if (!res.ok) throw new Error(res.status + ' ' + (body.detail || ''));
+    a.acct.group = next;
+    const srv = ADMIN_ACCOUNTS[email]; if (srv) srv.group = next;
+    const card = cardOf(email);
+    if (card) { card.classList.toggle('beta', next === 'beta'); card.querySelector('.acct-title').innerHTML = acctHeadHtml(email, a.acct); }
+    toast(`${testerLabel(email)} → ${next === 'beta' ? '베타 테스터로 표시' : '베타 해제'}`, 'good');
+  } catch (e) {
+    toast('그룹 변경 실패: ' + (e.message || e), 'bad');
+  } finally {
+    btn.disabled = false;
+    updateStats(); applyFilter();
+  }
 }
 
 // 계정별 조회 결과 캐시 — 통계 집계·라이브 페이지와 같은 모양 {devs, cams, error}
@@ -260,6 +317,7 @@ function updateStats() {
   document.getElementById('st-acct').textContent = emails.length;
   const reg = emails.filter(e => (ACCT[e].devs || []).length || (ACCT[e].cams || []).length).length;
   document.getElementById('st-acct-reg').textContent = emails.length ? `· 등록 ${reg}` : '';
+  document.getElementById('st-beta').textContent = emails.length ? emails.filter(e => isBeta(ACCT[e])).length : '–';
   document.getElementById('st-dev').textContent = dev;
   document.getElementById('st-dev-on').textContent = dev ? `· 🟢 ${devOn}` : '';
   document.getElementById('st-cam').textContent = cam;
@@ -285,7 +343,8 @@ function acctHeadHtml(email, acct) {
   const when = acct.created_at ? `가입 ${fmtKst(acct.created_at).slice(0, 10)}` : '';
   const seen = acct.last_sign_in_at ? ` · 로그인 ${fmtKst(acct.last_sign_in_at).slice(0, 16)}` : '';
   const del = acct.deleted_at ? ' <span class="chip bad" title="소프트 삭제된 계정 — 로그인 불가, 기기만 남음">삭제됨</span>' : '';
-  return `<span class="acct-email"><b class="tester">${esc(title)}</b>${sub ? `<span class="nick">${esc(sub)}</span>` : ''}</span>${del}
+  const beta = acct.group === 'beta' ? ' <span class="chip good" title="베타 테스터 (서버 app_metadata.group=beta)">🎫 베타</span>' : '';
+  return `<span class="acct-email"><b class="tester">${esc(title)}</b>${sub ? `<span class="nick">${esc(sub)}</span>` : ''}</span>${beta}${del}
         <small class="muted" title="${esc(acct.user_id || '')}">${esc(when + seen)}</small>`;
 }
 
@@ -298,6 +357,7 @@ function acctCard(email) {
         <span class="acct-title"></span>
         <span class="acct-sum muted">대기…</span>
         <span class="spacer"></span>
+        <button class="sm ghost grp" onclick="toggleGroup('${esc(email)}', this)" title="베타 테스터 표시/해제 — 서버에 저장돼 관리자 모두에게 같이 보임">🎫 베타</button>
         <button class="sm ghost" onclick="checkAccount('${esc(email)}')" title="이 계정만 다시 조회 (대행 GET /devices · /cameras)">새로고침</button>
       </div>
       <div class="acct-body"><div class="empty muted">조회 대기 중…</div></div>`;
@@ -313,6 +373,8 @@ function renderRegAccounts() {
     const email = accountKey(a);
     ACCT[email] = { devs: [], cams: [], done: false, error: null, acct: a };
     const card = acctCard(email);
+    card.classList.toggle('beta', a.group === 'beta');
+    if (!a.email) card.querySelector('.grp').disabled = true;   // 계정 행이 없는 소유자는 표시할 곳이 없다
     card.querySelector('.acct-title').innerHTML = acctHeadHtml(email, a);
     host.appendChild(card);
     fillAccount(email, a.devices || [], a.cameras || []);
