@@ -1,10 +1,10 @@
 // terra-server 웹 콘솔 공용 스크립트 — index.html(메인) · beta.html(베타 테스터) · live.html(라이브 대시보드)
 //
 // 왜 분리했나(2026-10-21): 베타 테스터 패널과 라이브 대시보드를 별도 페이지로 떼면서 esc/toast/OTA 모달/
-// 베타 계정 인증이 세 곳에서 똑같이 필요해졌다. 각 페이지는 자기 `CONFIG`(apiBase·supabase 정보)를
+// 베타 계정 접근(관리자 대행)이 두 페이지에서 똑같이 필요하다. 각 페이지는 자기 `CONFIG`(apiBase·supabase 정보)를
 // 선언하고, 여기 함수들은 호출 시점의 전역 CONFIG 를 읽는다 (classic script 전역 공유).
 //
-// 의존: supabase-js UMD(window.supabase) 가 먼저 로드돼 있어야 getBatchClient 가 동작.
+// 의존: supabase-js UMD(window.supabase) 가 먼저 로드돼 있어야 mainClient 가 동작.
 
 // ─────────────────────────────────────────────────────────────────────────
 // 설정 — localStorage 의 apiBase + 백엔드 /web-config 의 supabase 정보
@@ -337,19 +337,10 @@ function formatCameraLogs(rows) {
 // ─────────────────────────────────────────────────────────────────────────
 // 베타 테스터 계정 — 계정 목록(localStorage 공유) + 배치 인증
 // ─────────────────────────────────────────────────────────────────────────
-// 운영 베타 10계정 (2026-10). beta.html 에서 편집하면 localStorage 'terra-beta-emails' 에 저장되고
-// live.html 도 같은 목록을 쓴다.
-const BETA_EMAILS_DEFAULT = [
-  '01046590180@test.com', '01053911601@test.com', '01026448891@test.com', '01024896379@test.com',
-  '01043576098@test.com', '01021120001@test.com', '01093115816@test.com', '01023636275@test.com',
-  '01048533907@test.com', '01037689511@test.com',
-];
-// 테스터 이름(2026-10-21 owner 전달). 계정 textarea 에 "이메일 이름" 으로 적으면 localStorage 'terra-beta-names' 가 우선.
-const BETA_NAMES_DEFAULT = {
-  '01046590180@test.com': '김태훈', '01053911601@test.com': '손휘윤', '01026448891@test.com': '우지인', '01024896379@test.com': '김창열',
-  '01043576098@test.com': '김대중', '01021120001@test.com': '원인식', '01093115816@test.com': '임영아', '01023636275@test.com': '조세영',
-  '01048533907@test.com': '전영준', '01037689511@test.com': '김희원',
-};
+// 계정 목록은 서버가 준다 (2026-10-27): GET /admin/accounts — 가입 계정 전부 + 각 계정의 기기·카메라.
+// 전엔 운영 베타 10계정을 소스에 박아 두고 공통 비밀번호로 계정마다 로그인했지만, 사용자가 직접 가입하면서
+// 비밀번호를 모르게 됐다. 지금은 관리자(.env ADMIN_USER_IDS) 로 한 번 로그인 → 아래 대행(X-Act-As-User).
+// 테스터 이름(2026-10-21 owner 전달). localStorage 'terra-beta-names' ({email: 이름}) 가 있으면 우선.
 function loadBetaNames() {
   try {
     const v = JSON.parse(localStorage.getItem('terra-beta-names') || 'null');
@@ -368,71 +359,11 @@ function testerLabel(email) {
   const n = testerName(email), p = phoneOf(email);
   return [n, p].filter(Boolean).join(' · ') || email.split('@')[0];
 }
-// textarea 기본 내용 — "이메일 이름" 한 줄씩
-function betaEmailsText() {
-  const names = loadBetaNames();
-  return loadBetaEmails().map(e => names[e] ? `${e} ${names[e]}` : e).join('\n');
-}
-function loadBetaEmails() {
-  try {
-    const v = JSON.parse(localStorage.getItem('terra-beta-emails') || 'null');
-    if (Array.isArray(v) && v.length) return v;
-  } catch (e) { /* 기본값 */ }
-  return BETA_EMAILS_DEFAULT.slice();
-}
-function saveBetaEmails(list) {
-  localStorage.setItem('terra-beta-emails', JSON.stringify(list));
-}
-// textarea(#reg-emails) → 이메일 배열. 한 줄 "이메일 [이름]" — 이름이 있으면 'terra-beta-names' 에 저장.
-function parseEmailsInput() {
-  const ta = document.getElementById('reg-emails');
-  if (!ta) return loadBetaEmails();
-  const names = loadBetaNames(); let changed = false;
-  const emails = ta.value.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
-    const [email, ...rest] = l.split(/\s+/);
-    const name = rest.join(' ').trim();
-    if (name && names[email] !== name) { names[email] = name; changed = true; }
-    return email;
-  });
-  if (changed) localStorage.setItem('terra-beta-names', JSON.stringify(names));
-  return emails;
-}
-
-// 메인 세션(sb)은 안 건드리도록 persistSession:false 별도 클라이언트 사용.
-// 배치 클라이언트의 signOut 은 전부 scope:'local' — 기본값 global 은 그 계정의 모든 기기 세션(테스터 폰 앱 포함)을
-// 지워서 앱이 refresh_token_not_found 로 로그아웃된다 (2026-10-08 테스터 계정 일괄 조회 사고).
-let sbBatch = null;
-function getBatchClient() {
-  if (!CONFIG.supabaseUrl) { toast('먼저 API Base 설정', 'bad'); return null; }
-  if (!sbBatch) {
-    sbBatch = window.supabase.createClient(CONFIG.supabaseUrl, CONFIG.supabasePublishable,
-      { auth: { persistSession: false, autoRefreshToken: false, storageKey: 'terra-batch-reg' } });
-  }
-  return sbBatch;
-}
 // ⚠️ mosquitto 계정 정리·실제 명령 전달은 프로덕션 서버에서만 되므로 'API' 칸(#reg-apibase)이 있으면 그걸 우선.
 function regApiBase() {
   const el = document.getElementById('reg-apibase');
   return (el && el.value.trim().replace(/\/$/, '')) || CONFIG.apiBase;
 }
-// 테스터 공통 비밀번호 — 기본값 유지(owner 2026-10-22: 페이지가 로그인으로 막혀 있으니 소스에 둬도 됨).
-// 바꿔 입력하면 localStorage 에 기억.
-const BETA_PASS_DEFAULT = '123456';
-function regPassword() {
-  const el = document.getElementById('reg-pass');
-  const v = el ? el.value.trim() : '';
-  if (v) { try { localStorage.setItem('terra-beta-pass', v); } catch (e) { /* 무시 */ } return v; }
-  const saved = localStorage.getItem('terra-beta-pass') || BETA_PASS_DEFAULT;
-  if (el) el.value = saved;
-  return saved;
-}
-function restoreRegPassword() {
-  const el = document.getElementById('reg-pass');
-  const saved = localStorage.getItem('terra-beta-pass') || BETA_PASS_DEFAULT;
-  if (el && !el.value) el.value = saved;
-  return true;
-}
-
 // ─────────────────────────────────────────────────────────────────────────
 // 운영 콘솔 로그인 게이트 — beta.html / live.html 공용
 // 메인 콘솔과 같은 Supabase 세션(같은 origin·storageKey)이 있어야 연다 — 메인 콘솔과 같은 정책(로그인만, 허용 목록 없음: owner 2026-10-22).
@@ -508,34 +439,64 @@ async function consoleLogout() {
   location.reload();
 }
 
-// 계정별 access_token 캐시 — 백엔드가 JWKS 로 로컬 검증하므로 signOut 뒤에도 만료(1h) 전엔 유효.
-// 로그인 rate limit(약 30회/5분)을 아끼려고 조회 때 받은 토큰을 재사용한다.
-const REG_TOKENS = {};   // email → { token, uid, exp(초) }
-function cacheRegToken(email, session) {
-  if (session && session.access_token) {
-    REG_TOKENS[email] = { token: session.access_token, uid: session.user && session.user.id, exp: session.expires_at || 0 };
+// ─────────────────────────────────────────────────────────────────────────
+// 관리자 대행 (2026-10-27) — beta.html / live.html 공용
+// 메인 세션(관리자 JWT) 하나로 모든 계정을 다룬다. 서버는 .env ADMIN_USER_IDS 에 든 계정만 통과시키고,
+// `X-Act-As-User: <uid>` 가 붙은 요청은 그 사용자가 부른 것으로 처리한다(backend/auth.py).
+// 그래서 /devices, /cameras, OTA, 해제, 라이브 시그널링 등 기존 API 가 그대로 그 계정 것으로 동작한다.
+// 함수 이름(regSession/regFetch)은 비밀번호 로그인 시절 그대로 둬서 두 페이지의 호출부를 안 바꿨다.
+// ─────────────────────────────────────────────────────────────────────────
+const ACT_AS_HEADER = 'X-Act-As-User';
+let ADMIN_ACCOUNTS = {};      // email(또는 uid) → /admin/accounts 한 항목 {user_id, email, devices, cameras, …}
+let ADMIN_ACCOUNT_LIST = [];  // 서버 정렬 순서 유지(등록 있는 계정 → 없는 계정 → 계정 행 없는 소유자)
+
+// 계정 표시 키 — 이메일. 계정 행이 지워져 이메일이 없으면 uid 를 그대로 쓴다.
+function accountKey(acct) { return acct.email || acct.user_id; }
+
+let MAIN_TOKEN_CACHE = '';   // 마지막으로 읽은 관리자 JWT — pagehide 같이 await 못 하는 자리용
+async function mainAccessToken() {
+  const { data } = await mainClient().auth.getSession();
+  if (!data.session) throw new Error('로그인 세션 없음');
+  MAIN_TOKEN_CACHE = data.session.access_token;
+  return MAIN_TOKEN_CACHE;
+}
+function cachedMainToken() { return MAIN_TOKEN_CACHE; }
+
+// 전체 계정 + 기기·카메라 한 번에. 403 이면 관리자가 아님 — 서버가 detail 에 내 uid 를 적어 준다.
+async function loadAdminAccounts() {
+  const token = await mainAccessToken();
+  const res = await fetch(regApiBase() + '/admin/accounts', { cache: 'no-store', headers: { Authorization: 'Bearer ' + token } });
+  const text = await res.text();
+  let body = text; try { body = JSON.parse(text); } catch (e) { /* 텍스트 */ }
+  log({ GET: '/admin/accounts', status: res.status, accounts: Array.isArray(body) ? body.length : body });
+  if (res.status === 403) {
+    const err = new Error('관리자 계정이 아님 — ' + (body && body.detail ? body.detail : '서버 .env ADMIN_USER_IDS 확인'));
+    err.notAdmin = true; throw err;
   }
+  if (!res.ok) throw new Error('/admin/accounts ' + res.status + ': ' + (typeof body === 'string' ? body : (body.detail || JSON.stringify(body))).slice(0, 120));
+  ADMIN_ACCOUNT_LIST = body;
+  ADMIN_ACCOUNTS = {};
+  body.forEach(a => { ADMIN_ACCOUNTS[accountKey(a)] = a; });
+  return body;
 }
-async function regAccessToken(email) {
-  return (await regSession(email)).token;
+function adminAccountUid(email) {
+  const a = ADMIN_ACCOUNTS[email];
+  if (!a) throw new Error('계정 목록에 없음: ' + email + ' — [전체 새로고침]');
+  return a.user_id;
 }
-// {token, uid} — 캐시 유효하면 로그인 없이 반환. uid 는 commands INSERT(issued_by) 에 필요.
+// {token, uid} — token 은 관리자 JWT, uid 는 대행 대상. 호출부는 전과 같은 모양을 기대한다.
 async function regSession(email) {
-  const c = REG_TOKENS[email];
-  if (c && c.exp - Date.now() / 1000 > 60) return c;
-  const client = getBatchClient(); if (!client) throw new Error('설정 없음');
-  const { data, error } = await client.auth.signInWithPassword({ email, password: regPassword() });
-  if (error) throw new Error(error.message);
-  cacheRegToken(email, data.session);
-  await client.auth.signOut({ scope: 'local' });
-  return REG_TOKENS[email];
+  return { token: await mainAccessToken(), uid: adminAccountUid(email) };
 }
-// 그 계정 JWT 로 API 호출. 응답 {ok, status, body}. 상태코드 분기가 필요한 곳(라이브 409/429)용.
+async function regAccessToken(email) { return (await regSession(email)).token; }
+function actAsHeaders(email) { return { [ACT_AS_HEADER]: adminAccountUid(email) }; }
+
+// 그 계정 자격(대행)으로 API 호출. 응답 {ok, status, body}. 상태코드 분기가 필요한 곳(라이브 409/429)용.
 async function regFetch(email, path, opts = {}) {
-  const token = await regAccessToken(email);
+  const { token, uid } = await regSession(email);
   const res = await fetch(regApiBase() + path, {
     cache: 'no-store', ...opts,
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...(opts.headers || {}) },
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, [ACT_AS_HEADER]: uid, ...(opts.headers || {}) },
   });
   const text = await res.text();
   let body = text; try { body = JSON.parse(text); } catch (e) { /* 텍스트 그대로 */ }
@@ -555,7 +516,7 @@ function otaTargetOf(isCam, row) {
   return row && row.model === 'esp32-p4-hub' ? 'hub_p4' : 'camera_p4';
 }
 
-// auth: 베타 계정에서 열 때 {token, base} — 그 계정 JWT 로 호출(소유자 아니면 404). 없으면 메인 세션 api()(index.html).
+// auth: 베타 페이지에서 열 때 {token, base, actAs} — 관리자 JWT + X-Act-As-User(그 계정 대행). 없으면 메인 세션 api()(index.html).
 const OTA = { kind: null, id: null, label: '', target: null, timer: null, busy: false, auth: null };
 
 async function otaApi(path, opts = {}) {
@@ -566,7 +527,8 @@ async function otaApi(path, opts = {}) {
   try {
     const res = await fetch(OTA.auth.base + path, {
       cache: 'no-store', ...opts,
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + OTA.auth.token, ...(opts.headers || {}) },
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + OTA.auth.token,
+                 ...(OTA.auth.actAs ? { [ACT_AS_HEADER]: OTA.auth.actAs } : {}), ...(opts.headers || {}) },
     });
     const text = await res.text();
     let body; try { body = JSON.parse(text); } catch (e) { body = text; }

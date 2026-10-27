@@ -70,10 +70,10 @@
     <div class="page-head">
       <div>
         <h2>🎥 베타 라이브 대시보드</h2>
-        <small class="muted">베타 테스터 계정의 카메라 라이브를 한 화면에. 각 타일은 그 계정 JWT 로 WebRTC 를 따로 연다.</small>
+        <small class="muted">가입 계정 전체의 카메라 라이브를 한 화면에(관리자 로그인, 비밀번호 불필요). 각 타일은 그 계정 대행(<code>X-Act-As-User</code>)으로 WebRTC 를 따로 연다.</small>
       </div>
       <div class="actions">
-        <button class="ghost" onclick="loadCameras()" title="계정별 카메라 목록 다시 조회 (연결은 유지)">🔄 카메라 새로고침</button>
+        <button class="ghost" onclick="loadCameras()" title="/admin/accounts 로 카메라 목록 다시 조회 (연결은 유지)">🔄 카메라 새로고침</button>
         <button class="primary" id="btn-all" onclick="connectAll()" title="온라인 카메라 전부 순서대로 연결 (2초 간격)">▶ 전체 연결</button>
         <button class="danger" onclick="disconnectAll()">■ 전체 끊기</button>
       </div>
@@ -90,14 +90,11 @@
       <span class="muted" title="영상 클릭 = 크게 보기, 더블클릭 = 전체화면">영상 클릭 = 크게 · 더블클릭 = 전체화면</span>
       <span class="sep"></span>
       <details class="cfg" style="margin:0;padding:2px 10px;flex:1;min-width:240px">
-        <summary>⚙️ 계정 목록 · 비밀번호 · API 대상</summary>
+        <summary>⚙️ API 대상</summary>
         <div class="row">
-          <label>비밀번호</label><input id="reg-pass" type="text" value="123456" autocomplete="off" style="flex:0 0 120px" title="테스터 공통 비밀번호. 바꾸면 이 브라우저에 기억(localStorage)">
           <label style="flex:0 0 auto">API</label><input id="reg-apibase" type="text" placeholder="(비우면 설정의 API Base)" style="flex:1;min-width:200px">
+          <small class="muted">카메라 목록은 서버 <code>/admin/accounts</code>(관리자 계정만). 테스터 이름은 베타 페이지와 같은 <code>terra-beta-names</code>.</small>
         </div>
-        <div class="row" style="align-items:flex-start"><label>계정</label><textarea id="reg-emails" rows="5" style="flex:1;font-family:ui-monospace,Menlo,monospace;font-size:12px" placeholder="이메일 [이름] 한 줄에 하나"></textarea></div>
-        <div class="row"><span style="flex:0 0 100px"></span><button class="primary sm" onclick="applyEmails()">목록 적용 · 조회</button>
-          <small class="muted">목록은 베타 테스터 페이지와 공유(localStorage)</small></div>
       </details>
     </div>
     <div class="rule">서버 규칙(2026-09-30): 카메라마다 <b>한 번에 15분</b>, 끝나면 <b>5분 쉼</b>, <b>한 기기만</b>. 앱이 보고 있으면 "시청 중" 으로 뜨고 [가져오기]로 끊고 볼 수 있다(테스터 앱이 끊김).
@@ -114,11 +111,11 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="shared.js?v=20261022"></script>
+<script src="shared.js?v=20261027"></script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────
 // 베타 라이브 대시보드 (2026-10-21)
-// 흐름(타일마다): 계정 JWT(regSession) → GET /cameras/webrtc/config(1회 캐시) → RTCPeerConnection(recvonly)
+// 흐름(타일마다): 관리자 JWT + 대행 헤더(regFetch) → GET /cameras/webrtc/config(1회 캐시) → RTCPeerConnection(recvonly)
 //   → createOffer → ICE gathering 완료(≤5초, non-trickle) → POST /cameras/{id}/webrtc/offer
 //   → answer setRemoteDescription → 펌웨어→웹 candidate long-poll → ontrack 으로 <video>
 // index.html 의 openLive 와 같은 시그널링인데 PeerConnection 상태를 전역이 아니라 타일 객체에 둔다.
@@ -146,24 +143,10 @@ async function saveConfig() {
 function start() {
   document.getElementById('config-panel').classList.add('hidden');
   document.getElementById('main').classList.remove('hidden');
-  document.getElementById('reg-emails').value = betaEmailsText();
   // 라이브는 실제 브로커(프로덕션)에 붙은 카메라만 응답하므로 로컬에서 띄웠어도 프로덕션으로.
   if (CONFIG.apiBase.includes('localhost')) document.getElementById('reg-apibase').value = 'https://api.terra-server.uk';
   const cols = localStorage.getItem('terra-live-cols') || '3';
   document.getElementById('cols').value = cols; setCols(cols);
-  if (!restoreRegPassword()) {
-    document.querySelector('#main details.cfg').setAttribute('open', '');
-    document.getElementById('grid').innerHTML = '<div class="empty-grid">⚙️ 테스터 공통 비밀번호를 입력하고 [목록 적용 · 조회]</div>';
-    toast('테스터 공통 비밀번호 입력 필요', 'bad');
-    return;
-  }
-  loadCameras();
-}
-function applyEmails() {
-  const emails = parseEmailsInput();
-  if (!emails.length) return toast('계정이 비어 있음', 'bad');
-  try { regPassword(); } catch (e) { return toast(e.message, 'bad'); }
-  saveBetaEmails(emails);
   loadCameras();
 }
 function setCols(n) {
@@ -186,19 +169,21 @@ let ORDER = [];   // 표시 순서 (온라인 먼저, 계정 순)
 let ICE_CFG = null;   // /cameras/webrtc/config 응답(iceServers) — 계정 무관 공통이라 1회만
 
 async function loadCameras() {
-  const emails = parseEmailsInput();
   const prog = document.getElementById('st-prog');
-  prog.className = 'warn'; prog.textContent = `0/${emails.length} 조회 중`;
+  prog.className = 'warn'; prog.textContent = '조회 중';
   const found = {};
-  let done = 0, fail = 0;
-  for (const email of emails) {
-    try {
-      const r = await regFetch(email, '/cameras');
-      if (r.ok && Array.isArray(r.body)) r.body.forEach(c => { found[c.id] = { cam: c, email }; });
-      else fail++;
-    } catch (e) { fail++; }
-    done++; prog.textContent = `${done}/${emails.length} 조회 중`;
+  let accounts = [];
+  try {
+    accounts = await loadAdminAccounts();     // 전체 계정 + 카메라를 한 번에 (shared.js)
+    accounts.forEach(a => (a.cameras || []).forEach(c => { found[c.id] = { cam: c, email: accountKey(a) }; }));
+  } catch (e) {
+    prog.className = 'bad'; prog.textContent = '실패';
+    document.getElementById('grid').innerHTML = `<div class="empty-grid">❌ ${esc(e.message || e)}${e.notAdmin
+      ? '<br><small class="muted">서버 .env ADMIN_USER_IDS 에 위 user_id 를 추가하고 terra-api 재시작. 로그인 계정을 바꾸려면 상단 로그아웃.</small>' : ''}</div>`;
+    toast(e.message || String(e), 'bad');
+    return;
   }
+  const emails = accounts.map(accountKey);   // 서버 정렬(등록 있는 계정 먼저) 을 타일 순서에 반영
   // 사라진 카메라(해제·삭제)는 연결 끊고 타일 제거, 남은 건 cam 정보만 갱신(연결 유지)
   Object.keys(TILES).forEach(id => { if (!found[id]) { disconnect(id); delete TILES[id]; } });
   Object.entries(found).forEach(([id, { cam, email }]) => {
@@ -210,7 +195,7 @@ async function loadCameras() {
     if (!!A.cam.is_online !== !!B.cam.is_online) return A.cam.is_online ? -1 : 1;
     return emails.indexOf(A.email) - emails.indexOf(B.email) || String(A.cam.camera_id).localeCompare(String(B.cam.camera_id));
   });
-  prog.className = fail ? 'bad' : 'good'; prog.textContent = fail ? `${fail}개 계정 실패` : '완료';
+  prog.className = 'good'; prog.textContent = '완료';
   renderGrid();
   // beta.html 의 [▶ 라이브] 로 들어왔으면 그 카메라만 바로 연결
   const want = new URLSearchParams(location.search).get('cam');
@@ -241,7 +226,7 @@ function renderGrid() {
     grid.appendChild(t.el);
     shown++;
   });
-  if (!shown) grid.innerHTML = `<div class="empty-grid">${ORDER.length ? '표시할 카메라 없음 (오프라인 숨김 해제)' : '등록된 카메라가 없음 — ⚙️ 계정 목록 확인'}</div>`;
+  if (!shown) grid.innerHTML = `<div class="empty-grid">${ORDER.length ? '표시할 카메라 없음 (오프라인 숨김 해제)' : '등록된 카메라가 없음'}</div>`;
   updateStats();
 }
 
@@ -496,14 +481,14 @@ function disconnectAll() {
   ORDER.forEach(id => { if (TILES[id].pc || TILES[id].sessionId) disconnect(id, true); });
 }
 
-// 페이지를 떠날 때 열린 세션 닫기 통지 (keepalive 로 fetch 가 살아남게)
+// 페이지를 떠날 때 열린 세션 닫기 통지 (keepalive 로 fetch 가 살아남게). await 못 하는 자리라 캐시된 관리자 JWT 사용.
 window.addEventListener('pagehide', () => {
+  const token = cachedMainToken(); if (!token) return;
   Object.entries(TILES).forEach(([id, t]) => {
     if (!t.sessionId) return;
-    const c = REG_TOKENS[t.email]; if (!c) return;
     try {
       fetch(regApiBase() + `/cameras/${id}/webrtc/close`, { method: 'POST', keepalive: true,
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + c.token }, body: JSON.stringify({ session_id: t.sessionId }) });
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token, ...actAsHeaders(t.email) }, body: JSON.stringify({ session_id: t.sessionId }) });
     } catch (e) { /* 무시 */ }
     try { t.pc && t.pc.close(); } catch (e) { /* 무시 */ }
   });

@@ -5,14 +5,16 @@
 | 파일 | 역할 |
 |------|------|
 | `index.html` | 메인 콘솔 — 로그인한 계정의 사육장·기기·카메라·예약·설정·텔레메트리·알림. 상단 네비와 로그인 패널의 버튼으로 아래 두 페이지로 이동 |
-| `beta.html` | 🎫 베타 테스터 — 테스트 계정별 기기·카메라 조회·제어(테스트/일괄)·재부팅·OTA·해제·삭제. 2026-10-21 index 의 패널에서 분리 |
-| `live.html` | 🎥 라이브 대시보드 — 베타 카메라 라이브를 타일 그리드로 동시 시청(계정별 JWT 로 WebRTC 각각). beta 의 [▶ 라이브]는 `live.html?cam=<uuid>` 로 그 카메라만 바로 연결 |
-| `shared.js` | esc/toast/OTA 모달/베타 계정 인증(`regSession`, 토큰 1h 캐시, signOut scope local)/상단 네비/테스터 이름(`BETA_NAMES_DEFAULT`, textarea 의 "이메일 이름" 으로 덮어씀) |
+| `beta.html` | 🎫 베타 테스터 — **가입 계정 전부**의 기기·카메라 조회·제어(테스트/일괄)·재부팅·OTA·해제·삭제. 2026-10-21 index 의 패널에서 분리, 2026-10-27 관리자 대행으로 전환 |
+| `live.html` | 🎥 라이브 대시보드 — 전 계정 카메라 라이브를 타일 그리드로 동시 시청(계정별 대행으로 WebRTC 각각). beta 의 [▶ 라이브]는 `live.html?cam=<uuid>` 로 그 카메라만 바로 연결 |
+| `shared.js` | esc/toast/OTA 모달/관리자 대행(`loadAdminAccounts`·`regSession`·`regFetch` — 관리자 JWT + `X-Act-As-User`)/상단 네비/테스터 이름(`BETA_NAMES_DEFAULT`, localStorage `terra-beta-names` 가 우선) |
 | `shared.css` | 공용 스타일(다크 테마, 네비, 칩, 카드, 모달, 모바일) |
 
-**세 페이지 모두 같은 정책**(2026-10-22): Supabase 로그인(같은 origin·세션)이 있어야 열린다. `beta.html`·`live.html` 은 세션이 없으면 그 자리에 로그인 폼을 띄운다(허용 목록 없음 — owner 결정). 테스터 공통 비밀번호는 기본값이 채워져 있고(페이지가 로그인+허용 목록으로 막혀 있어 유지 — owner 2026-10-22), 바꾸면 브라우저(localStorage `terra-beta-pass`)가 기억한다.
+**세 페이지 모두 같은 정책**(2026-10-22): Supabase 로그인(같은 origin·세션)이 있어야 열린다. `beta.html`·`live.html` 은 세션이 없으면 그 자리에 로그인 폼을 띄운다.
 
-세 페이지는 localStorage 를 공유한다: `terra-config`(apiBase), `terra-beta-emails`(베타 계정 목록), `terra-live-viewer-id`(라이브 "한 기기" 판정용 viewer_id).
+**베타·라이브는 관리자 계정이어야 내용이 뜬다**(2026-10-27): 사용자가 직접 가입·기기 등록을 하게 되면서 테스터 공통 비밀번호(`123456`)로 계정마다 로그인하던 방식을 버렸다. 로그인한 계정이 서버 `.env ADMIN_USER_IDS` 에 있으면 `GET /admin/accounts` 로 **가입 계정 전부 + 기기·카메라**를 한 번에 받고, 개별 동작(조회·명령·OTA·해제·라이브)은 기존 API 에 `X-Act-As-User: <uid>` 를 붙여 그 사용자 자격으로 부른다([docs/API.md §4.13](../docs/API.md)). 관리자가 아니면 403 과 함께 내 uid 를 보여 주니 그 값을 .env 에 넣고 `terra-api` 재시작. 토글·보정 명령은 PostgREST 직접 INSERT 대신 `POST /devices/{id}/commands` 를 쓴다(대행 헤더를 PostgREST 는 모름).
+
+세 페이지는 localStorage 를 공유한다: `terra-config`(apiBase), `terra-beta-names`(테스터 이름 덮어쓰기), `terra-beta-hide-empty`(베타: 등록 없는 계정 숨김), `terra-live-viewer-id`(라이브 "한 기기" 판정용 viewer_id).
 
 > sample_project 의 ESP32 펌웨어 웹페이지 패턴 차용 (Vanilla JS, 인라인 CSS, dark theme).
 > 빌드 도구 없음, npm 의존성 없음. 그냥 정적 파일.
@@ -97,8 +99,8 @@ sudo systemctl restart terra-api
 - 📟 **디바이스** (`/devices`): 페어링·목록·삭제 (MQTT 토큰 1회 노출). `fw` 열(telemetry 보고 펌웨어 버전), `sys` 색 기준은 표 아래 범례 — 빨강=지금 조치(크래시·전원 부족 재부팅 24h 안, 내부 RAM 최대 블록 16K/여유 32K 미만 — P4 평시 60~128K/31~42K, RSSI −80 이하), 주황=관찰(자가 복구 재부팅, 약한 WiFi), 하루 넘게 돌면 재부팅 사유 색 없음
 - 📷 **카메라** (`/cameras`): 페어링·목록·삭제 (Camera 토큰 1회 노출). 클립 셀 색: 빨강=업로드 고착·인코더 연속 실패·플래핑·스킵 20%+·SD fault 3+, 주황=스킵·업로드 실패·클립 유실(24시간 안)·SD 백로그 3+ (유실·백로그는 빨강 없음, owner 2026-10-21)
 - 📱 **모바일**: ≤600px 에서 표가 카드(라벨 값)로 바뀜 — `enableTableLabels()`(shared.js) 가 th → td `data-label` 을 붙이고 shared.css 가 세운다
-- 🎫 **베타 테스터** (`beta.html`): 계정별 등록 현황 조회·테스트·일괄 제어·재부팅·OTA·해제·삭제 (신규 등록은 앱에서 — 2026-10-08 콘솔 발급 버튼 제거)
-- ⬆️ **선택 일괄 OTA** (`beta.html`): 카메라·기기 체크 → target(camera_p4/hub_p4/device_nano)별 릴리스 선택 → [1단계 prepare 모두](간격, 기본 15초) → 작업 표 8초 폴링(GET /firmware/jobs/{id}, 그 계정 JWT) → [2단계 apply · ready 전부](5초 간격). 서버는 기기당 진행 중 1개·같은 버전 409 만 막고 전역 동시 제한은 없음(스펙 결정 6 "한 대씩"은 canary 권고) — 바이너리가 API 서버를 거치니 간격 유지
+- 🎫 **베타 테스터** (`beta.html`): 가입 계정 전부의 등록 현황 조회(검색·등록 없는 계정 숨김)·테스트·일괄 제어·재부팅·OTA·해제·삭제 (신규 등록·가입은 앱에서 — 2026-10-08 콘솔 발급 버튼 제거)
+- ⬆️ **선택 일괄 OTA** (`beta.html`): 카메라·기기 체크 → target(camera_p4/hub_p4/device_nano)별 릴리스 선택 → [1단계 prepare 모두](간격, 기본 15초) → 작업 표 8초 폴링(GET /firmware/jobs/{id}, 그 계정 대행) → [2단계 apply · ready 전부](5초 간격). 서버는 기기당 진행 중 1개·같은 버전 409 만 막고 전역 동시 제한은 없음(스펙 결정 6 "한 대씩"은 canary 권고) — 바이너리가 API 서버를 거치니 간격 유지
 - 🎥 **라이브 대시보드** (`live.html`): 베타 카메라 동시 시청. 서버 규칙(15분·5분 쉼·한 기기, `docs/APP_LIVE_VIEW_LIMIT_2026-09-30.md`)을 타일에 표시 —
   409 live_in_use 는 "○○에서 시청 중" + [가져오기], 429 는 카운트다운. 끊긴 뒤 자동 재연결 안 함(재연결 루프 사고 방지). [전체 연결]은 2초 간격 순차
 - 📈 **온도 추이** (`telemetry_30m`): 디바이스 행 `[📈추이]` — 24시간/7일/30일,

@@ -15,6 +15,7 @@
 | **Pair Token (1회용, RPi 전용)** | `Authorization: Bearer <pair_token>` | `POST /cameras/prepare-pair` 응답 (TTL 5분) | RPi 카메라 QR 페어링 (BLE 미사용 시) |
 | **Camera Token** | `Authorization: Bearer <camera_token>` | `POST /cameras/pair` 응답 (1회) | 카메라 자체 호출 (영상 업로드) |
 | **Device Token** | `Authorization: Bearer <device_token>` | `POST /devices/pair` 응답 (1회) | 디바이스 자체 호출 (펌웨어 업데이트 등, 추후) |
+| **관리자 JWT + 대행** | `Authorization: Bearer <admin jwt>` + `X-Act-As-User: <uuid>` | `.env ADMIN_USER_IDS` 의 계정 | 운영 콘솔. 대행 헤더가 붙으면 모든 JWT 엔드포인트가 **그 사용자가 부른 것으로** 동작 (§4.13, 2026-10-27) |
 
 ### Dev 모드 (`AUTH_MODE=dev`)
 
@@ -43,6 +44,8 @@ Content-Type: application/json
 | `POST` | `/devices/{id}/unlink` | JWT | **디바이스 등록 해제 (소프트, 기록 보존)** — 앱의 "삭제" 는 이것 |
 | `DELETE` | `/devices/{id}` | JWT | 디바이스 hard delete (운영·탈퇴용, 앱 미사용) |
 | `POST` | `/devices/{id}/reboot` | JWT | **IoT 기기 원격 재부팅** (`commands` 에 `reboot` 큐잉, 2026-09-28) |
+| `POST` | `/devices/{id}/commands` | JWT | **토글·온도 보정 명령** 큐잉 — action 화이트리스트 (운영 콘솔 대행용, §4.13, 2026-10-27) |
+| `GET` | `/devices/{id}/commands/{command_id}` | JWT | 명령 상태 1건 (ack 폴링, §4.13) |
 | `POST` | `/enclosures` | JWT | 사육장 생성 |
 | `GET` | `/enclosures` | JWT | 본인 사육장 목록 |
 | `GET` | `/enclosures/{id}` | JWT | 사육장 단건 |
@@ -56,6 +59,7 @@ Content-Type: application/json
 | `DELETE` | `/cameras/{id}` | JWT | 카메라 hard delete (운영·탈퇴용, 앱 미사용) |
 | `POST` | `/cameras/{id}/reboot` | JWT | **카메라 원격 재부팅** (MQTT `reboot` 명령 1회 발행, 2026-09-28) |
 | `POST` | `/ops/cameras/{id}/reboot` | `X-Ops-Secret` | **운영 카메라 재부팅** (petcam 감시 스크립트 전용, 베타 카메라·2시간 쿨다운, §4.12, 2026-10-20) |
+| `GET` | `/admin/accounts` | **관리자 JWT** | **전체 계정 + 등록 기기·카메라** (운영 콘솔, §4.13, 2026-10-27) |
 | `POST` | `/cameras/{id}/ota` | JWT | **OTA 1단계** `ota_prepare` 발행 (Stage J, 2026-10-07, §4.10) |
 | `POST` | `/cameras/{id}/ota/{job_id}/apply` | JWT | **OTA 2단계** `ota_apply` 발행 — `ready` 작업만 (§4.10) |
 | `POST` | `/devices/{id}/ota` · `/devices/{id}/ota/{job_id}/apply` | JWT | 기기(nano) OTA — 같은 계약, `commands` 큐잉 (§4.10) |
@@ -932,6 +936,42 @@ X-Ops-Secret: <.env OPS_REBOOT_SECRET>
 
 ---
 
+### 4.13 관리자 — `GET /admin/accounts` + `X-Act-As-User` 대행 + 토글 명령 API (2026-10-27)
+
+**왜**: 베타 테스터가 직접 가입·기기 등록을 하게 되면서 운영 콘솔(`web/beta.html`·`live.html`)이 테스터 공통 비밀번호로
+계정마다 로그인하던 방식이 막혔다. 관리자 계정 한 번 로그인으로 전체를 보고 다루게 했다. 라우터 `backend/routers/admin.py`, 판정 `backend/auth.py`.
+
+**관리자 판정**: `.env ADMIN_USER_IDS`(쉼표 구분 `auth.users.id`) 에 든 JWT `sub`. 아니면 **403** `{"detail": "not admin (user_id=<호출자 uid>) — 서버 .env ADMIN_USER_IDS 에 추가하면 허용"}` — 콘솔이 이 uid 를 그대로 보여 주므로 운영자가 바로 .env 에 넣을 수 있다. 비어 있으면 전부 403(기능 꺼짐).
+
+```
+GET /admin/accounts
+Authorization: Bearer <관리자 JWT>
+
+→ 200 [ { "user_id", "email", "created_at", "last_sign_in_at", "deleted_at",
+          "devices": [DeviceOut…],          // 활성(unlinked_at IS NULL) 만, GET /devices 와 같은 모양
+          "cameras": [CameraOut…] }, … ]    // GET /cameras 와 같은 모양 (clip_stats·live_* 포함)
+```
+- 가입 계정 **전부**(기기 없는 계정 포함). 정렬: 등록 있는 계정(최신 가입 먼저) → 등록 없는 계정 → 계정 행이 지워졌는데 기기가 남은 소유자(`email: null`, 맨 뒤).
+- `deleted_at` 이 있으면 소프트 삭제된 계정(로그인 불가). 서버는 `auth.admin.list_users` + `devices`/`cameras` 를 `owner_id` 로 묶는다(service_role, 관리자만 통과하므로 명시 필터 없음).
+
+**대행 `X-Act-As-User: <uuid>`**: 관리자 JWT 요청에 이 헤더가 있으면 `get_current_user_id` 가 **그 uuid 를 돌려준다** → `/devices`, `/cameras`, `/firmware/jobs`, OTA, 해제·삭제, 라이브 시그널링 등 모든 JWT 엔드포인트가 그 사용자가 부른 것과 똑같이 동작한다(소유자 검사 포함 — 과한 권한 없음).
+관리자가 아닌데 붙이면 403, UUID 가 아니면 400, 빈 값은 무시. 대행 요청은 서버 INFO 로그 `act-as admin=… target=…`.
+**PostgREST 직접 호출에는 안 통한다**(RLS 는 JWT 만 본다) — 그래서 콘솔이 쓰던 `commands` 직접 INSERT/SELECT 를 아래 API 로 바꿨다.
+
+```
+POST /devices/{device_uuid}/commands            (JWT, 대행 가능)
+{ "action": "led_toggle" }                      // relay_toggle | fan_toggle | fan2_toggle | led_toggle | heater_toggle | heater_clear
+{ "action": "set_temp_offset", "payload": { "offset_c": -1.5 } }   // ±10.0
+→ 201 { "id", "action", "status": "pending" }   // issued_by = 대행 대상 사용자 (앱 이력에 본인 명령으로 보임)
+→ 400 화이트리스트 밖 action / payload 형식 오류 (mist 는 /mist, reboot 는 /reboot 로)
+→ 404 본인(대행 대상) 기기 아님·해제됨
+
+GET /devices/{device_uuid}/commands/{command_id}
+→ 200 { "id", "action", "status", "result", "issued_at", "acked_at" }   // status: pending | sent | acked | no_ack | rejected
+→ 404 다른 기기의 명령 id, UUID 아님
+```
+앱은 기존처럼 `commands` 직접 INSERT(§3.7)를 계속 쓰면 된다 — 결과는 같다.
+
 ## 5. 에러 코드 표
 
 | 코드 | 의미 | 본문 예시 |
@@ -941,7 +981,7 @@ X-Ops-Secret: <.env OPS_REBOOT_SECRET>
 | 204 | 성공 (응답 본문 없음) | |
 | 400 | 잘못된 요청 (필수 필드 누락 등) | `{ "detail": "변경 필드 없음" }` |
 | 401 | 인증 실패 | `{ "detail": "Authorization 헤더가 없음." }` |
-| ~~403~~ | **사용하지 않음.** 소유권 위반은 404(조회·수정·삭제) 또는 400(그룹 배정)으로 응답합니다. 예외: `POST /recordings` 의 남의 카메라 403 (§4.11) | — |
+| 403 | **원칙적으로 사용하지 않음.** 소유권 위반은 404(조회·수정·삭제) 또는 400(그룹 배정). 예외: `POST /recordings` 의 남의 카메라 403 (§4.11), `/admin/*`·`X-Act-As-User` 의 관리자 아님 403 (§4.13) | `{ "detail": "not admin (user_id=…) — …" }` |
 | 404 | 리소스 없음 | `{ "detail": "device not found" }` |
 | 422 | Pydantic 유효성 검증 실패 | (FastAPI 자동 응답, field 별 detail) |
 | 500 | 서버 내부 오류 | `{ "detail": "..." }` |
@@ -1046,6 +1086,7 @@ supabase
 | 2026-05-27 | 0.2.0 | 카메라 페어링 흐름 RPi/QR 기반으로 변경 (prepare-pair + pair_token) |
 | 2026-05-27 | 0.3.0 | 메인 카메라 워커 ESP32-P4 로 변경 (BLE 페어링), Stage G(라이브 스트리밍) 엔드포인트 추가 |
 | 2026-05-27 | 0.4.0 | **Stage F 구현 완료** — enclosures/cameras/clips 라우터 + R2 presigned URL + Camera Token Bearer 인증 (44 tests passing). Swagger UI 메타데이터 보강 (`/docs` 즉시 사용 가능) |
+| 2026-10-27 | 0.12.0 | **관리자** — `GET /admin/accounts`(전체 계정·기기·카메라), `X-Act-As-User` 대행(`.env ADMIN_USER_IDS`), `POST /devices/{id}/commands` + `GET …/commands/{id}`(토글·보정 명령·ack 조회). 운영 콘솔이 테스터 비밀번호 없이 동작 (§4.13) |
 | 2026-10-20 | 0.11.0 | **운영 카메라 재부팅** — `POST /ops/cameras/{id}/reboot`(서버 시크릿 `X-Ops-Secret`, 베타 한정, 라이브·OTA 보호, 2시간 쿨다운), `camera_ops_reboots` 테이블, 카메라 ack 기록 (§4.12) |
 | 2026-10-20 | 0.10.0 | **Stage L 라이브 직접 녹화** — `POST /recordings`·`/complete`, `GET …/url`·`…/thumbnail/url`, `DELETE /recordings/{id}`, `live_recordings` 테이블, pending 24h 정리 스레드 (§4.11) |
 | 2026-10-08 | 0.9.1 | OTA 릴리스 퇴역 — `firmware_releases.retired_at/retired_reason`, `GET /firmware/releases?include_retired`, 퇴역 릴리스 `POST …/ota` 409 · `/bin` 410, `upload_firmware.py --delete` (§4.10) |

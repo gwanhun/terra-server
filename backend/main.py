@@ -33,6 +33,7 @@ from backend.live_session import LiveSessionReaper
 from backend.r2_client import delete_object, list_objects
 from backend.recording_cleanup import PendingRecordingReaper
 from backend.routers import (
+    admin,
     cameras,
     clips,
     commands,
@@ -116,6 +117,13 @@ tags_metadata = [
         ),
     },
     {
+        "name": "admin",
+        "description": (
+            "관리자 전용(.env ADMIN_USER_IDS 의 계정 JWT). 운영 콘솔이 전체 계정·기기·카메라를 본다. "
+            "관리자는 다른 엔드포인트에 `X-Act-As-User: <uuid>` 를 붙여 그 사용자 자격으로 호출할 수 있다(대행)."
+        ),
+    },
+    {
         "name": "ops",
         "description": (
             "운영 전용(서버 시크릿 `X-Ops-Secret`). petcam-lab 감시 스크립트가 베타 카메라를 "
@@ -134,6 +142,9 @@ async def _lifespan(_app: FastAPI):
     # 운영 재부팅(2026-10-20): 시크릿 미설정이면 /ops 는 전부 401. 값은 로그 금지.
     if not os.getenv("OPS_REBOOT_SECRET", "").strip():
         logging.getLogger(__name__).warning("OPS_REBOOT_SECRET 미설정 — /ops 운영 재부팅 비활성(401)")
+    # 관리자(2026-10-27): 비어 있으면 /admin 과 X-Act-As-User 대행이 전부 403. 운영 콘솔 베타·라이브 페이지가 못 뜬다.
+    if not os.getenv("ADMIN_USER_IDS", "").strip():
+        logging.getLogger(__name__).warning("ADMIN_USER_IDS 미설정 — /admin·대행(X-Act-As-User) 비활성(403)")
     relay = get_relay()
     loop = asyncio.get_running_loop()
     relay.start(loop)
@@ -250,6 +261,7 @@ app.include_router(settings.router)
 app.include_router(firmware.router)
 app.include_router(recordings.router)
 app.include_router(ops.router)
+app.include_router(admin.router)
 
 # 정적 웹 콘솔 — 루트(/) 에 마운트.
 # 라우터들 다음에 등록해야 /devices, /cameras, /web-config 등이 우선 매칭됨.

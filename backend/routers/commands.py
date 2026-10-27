@@ -4,6 +4,13 @@
 엔드포인트:
 - POST /devices/{device_uuid}/mist   — 물분무 1/2/3초 (JWT)
 - POST /devices/{device_uuid}/reboot — 원격 재부팅 (JWT, 2026-09-28)
+- POST /devices/{device_uuid}/commands — 토글류·온도 보정 명령 (JWT, 2026-10-27, 운영 콘솔 대행용)
+- GET  /devices/{device_uuid}/commands/{command_id} — 명령 상태 1건 (ack 폴링)
+
+## 왜 토글 명령에도 REST 가 생겼나 (2026-10-27)
+앱은 commands 를 PostgREST 로 직접 INSERT 한다(RLS: 본인 기기·issued_by=본인). 운영 콘솔은 관리자 JWT 로
+남의 기기를 **대행**(X-Act-As-User, backend/auth.py)하는데 PostgREST 는 그 헤더를 모르니 RLS 에 막힌다.
+그래서 콘솔이 쓰는 토글·보정 명령과 ack 조회를 API 로 열었다. action 은 화이트리스트, payload 는 action 별 검증.
 
 ## 왜 REST 엔드포인트? (앱이 commands 직접 INSERT 하는데)
 mist 는 물이 나가는 액추에이터 → 서버측 검증(허용 지속시간)을 강제하고 싶다.
@@ -30,6 +37,7 @@ from backend.command_service import (
     insert_pending_command,
     validate_mist_duration,
 )
+from backend.db_helpers import first_row, parse_uuid_or_404
 from backend.mqtt.camera_commands import ACTION_OTA_APPLY, ACTION_OTA_PREPARE, OTA_TTL_SEC
 from backend.supabase_client import get_supabase_client
 
@@ -55,6 +63,95 @@ class CommandOut(BaseModel):
     id: str = Field(..., description="commands.id — 앱이 Realtime 으로 status 추적")
     action: str
     status: str
+
+
+class CommandStatusOut(CommandOut):
+    result: str | None = Field(None, description="기기 ack result (ok | rejected_* | unsupported_action …). 응답 전엔 null")
+    issued_at: str | None = None
+    acked_at: str | None = None
+
+
+# 운영 콘솔(web/beta.html 테스트 패널)이 쓰는 즉시 명령. 펌웨어 action 목록은 docs/MQTT.md §2.
+# heater_* 는 dispatcher 가 unsupported_action 으로 거절하지만 콘솔이 그 거절을 보여 주는 용도로 둔다.
+GENERIC_ACTIONS: frozenset[str] = frozenset({
+    "relay_toggle", "fan_toggle", "fan2_toggle", "led_toggle",
+    "heater_toggle", "heater_clear", "set_temp_offset",
+})
+TEMP_OFFSET_ACTION = "set_temp_offset"
+TEMP_OFFSET_LIMIT_C = 10.0   # 펌웨어 허용 범위 ±10 (docs/MQTT.md)
+_BAD_ACTION = {400: {"description": "action 화이트리스트 밖 / payload 형식 오류"}}
+
+
+class GenericCommandIn(BaseModel):
+    action: str = Field(..., description="relay_toggle | fan_toggle | fan2_toggle | led_toggle | heater_toggle | heater_clear | set_temp_offset")
+    payload: dict[str, Any] | None = Field(None, description="set_temp_offset 만 {offset_c: -10.0~10.0}. 나머지는 비움")
+
+
+def _validate_generic(body: GenericCommandIn) -> dict[str, Any] | None:
+    """허용 action·payload 만 통과. 돌려주는 값이 INSERT 될 payload."""
+    if body.action not in GENERIC_ACTIONS:
+        raise InvalidCommand(f"허용되지 않은 action: {body.action}")
+    if body.action == TEMP_OFFSET_ACTION:
+        v = (body.payload or {}).get("offset_c")
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise InvalidCommand("set_temp_offset 은 payload.offset_c(숫자) 필요")
+        if not (-TEMP_OFFSET_LIMIT_C <= float(v) <= TEMP_OFFSET_LIMIT_C):
+            raise InvalidCommand(f"offset_c 는 ±{TEMP_OFFSET_LIMIT_C:g} 범위")
+        return {"offset_c": float(v)}
+    if body.payload:
+        raise InvalidCommand(f"{body.action} 은 payload 를 받지 않음")
+    return None
+
+
+@router.post(
+    "/{device_uuid}/commands",
+    response_model=CommandOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="토글·온도 보정 명령 (운영 콘솔 대행용)",
+    responses={**_AUTH_REQUIRED, **_NOT_FOUND, **_BAD_ACTION},
+)
+def generic_command(
+    device_uuid: str,
+    body: GenericCommandIn,
+    user_id: str = Depends(get_current_user_id),
+) -> CommandOut:
+    """`commands` 에 pending 1건 큐잉. 앱은 PostgREST 직접 INSERT 를 계속 쓰면 된다(동일 결과)."""
+    sb = get_supabase_client()
+    require_active_device(sb, device_uuid, user_id)
+    try:
+        payload = _validate_generic(body)
+    except InvalidCommand as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    inserted = insert_pending_command(
+        sb, device_uuid=device_uuid, action=body.action, payload=payload, issued_by=user_id,
+    )
+    if inserted is None:
+        raise HTTPException(status_code=500, detail="command INSERT 실패")
+    return CommandOut(id=inserted["id"], action=body.action, status="pending")
+
+
+@router.get(
+    "/{device_uuid}/commands/{command_id}",
+    response_model=CommandStatusOut,
+    summary="명령 상태 1건 (ack 폴링)",
+    responses={**_AUTH_REQUIRED, **_NOT_FOUND},
+)
+def get_command(
+    device_uuid: str,
+    command_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> CommandStatusOut:
+    """본인(또는 대행 중인 사용자) 기기의 명령만. 다른 기기 명령 id 는 404."""
+    sb = get_supabase_client()
+    require_active_device(sb, device_uuid, user_id)
+    cmd_uuid = parse_uuid_or_404(command_id, "command not found")
+    row = first_row((
+        sb.table("commands").select("id, action, status, result, issued_at, acked_at")
+        .eq("id", cmd_uuid).eq("device_id", device_uuid).limit(1).execute()
+    ).data)
+    if not row:
+        raise HTTPException(status_code=404, detail="command not found")
+    return CommandStatusOut(**row)
 
 
 # 원격 재부팅. 펌웨어(command_dispatch.c `reboot`)는 ack 를 먼저 보내고 1.5초 뒤 재부팅하며,
