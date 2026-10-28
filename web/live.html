@@ -112,7 +112,7 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="shared.js?v=20261027c"></script>
+<script src="shared.js?v=20261028"></script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────
 // 베타 라이브 대시보드 (2026-10-21)
@@ -148,7 +148,7 @@ function start() {
   if (CONFIG.apiBase.includes('localhost')) document.getElementById('reg-apibase').value = 'https://api.terra-server.uk';
   const cols = localStorage.getItem('terra-live-cols') || '3';
   document.getElementById('cols').value = cols; setCols(cols);
-  document.getElementById('beta-only').checked = localStorage.getItem('terra-live-beta-only') === '1';
+  document.getElementById('beta-only').checked = localStorage.getItem('terra-live-beta-only') !== '0';   // 기본 켬 — 베타 페이지 기본 필터와 동일 (owner 2026-10-28)
   loadCameras();
 }
 function setCols(n) {
