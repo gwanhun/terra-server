@@ -465,3 +465,24 @@ def build_humid_card(events: list[dict[str, Any]], buckets: list[dict[str, Any]]
         return Card("humid", "HUM_NORMAL", "normal", "건습 사이클이 건강하게 유지됐어요",
                     [f"습기 {wet}번 , 건기 {reached}번이 기록됐어요"], data)
     return None   # 사이클은 있는데 도달 0 — 기획 문구 없음(보통 환기 지연 이벤트가 먼저 잡힌다)
+
+
+# ---------- Stage Q 재사용 공개 래퍼 (동작 변경 없음) ----------
+# 주간 분석(backend/weekly_analysis.py)이 같은 chain 처리·표시 반올림·파싱을 그대로 쓰게 한다.
+# 규칙을 두 군데서 따로 고치다 일일·주간 숫자가 어긋나는 일을 막으려는 것.
+
+EventChain = _Line
+half_up = _half_up
+parse_ts = _parse_ts
+num = _num
+sample_count = _count
+
+
+def event_chains(events: list[dict[str, Any]], kinds: tuple[str, ...], window: Window) -> list[_Line]:
+    """P4·P11 그대로: kind 로 거르고 chain_root 로 묶어 구간과 겹치는 chain 만, 시작 시각순."""
+    return _event_lines(events, kinds, window)
+
+
+def chain_diff(chain: _Line) -> float | None:
+    """P6: chain 안 행들의 사용자 기준 대비 이탈 최댓값(값이 하나도 없으면 None)."""
+    return _diff(chain)
