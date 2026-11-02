@@ -41,9 +41,9 @@ HUM_DELAY·HUM_NORMAL 은 판정하지 않는다(Q10).
 - Q2 누락률 = 1 − 구간 표본 합 / 예정 표본. 예정 = (구간 끝 − max(구간 시작, 등록 시각)) × (28800/86400).
 - Q5 횟수 = 구간과 겹치는 chain 수. chain(경고 → 무음 주의 → 무음 재경고)은 1건, 경고로 분류(P11).
 - Q6 최대 이탈 = 경고 chain 들의 사용자 기준 대비 이탈 최댓값(P6 대체 규칙).
-- Q7 패턴: 경고 chain 이 걸친 (날짜, 시) 칸을 세어 같은 시가 서로 다른 3일 이상이면 그 시간대
-  (동률이면 이른 시 = 0시 쪽). 없으면 경고 있던 날 ≥ 3 이고 전부 주간/야간이면 `주간 시간`/`야간 시간`.
-  날짜는 KST 달력 날짜.
+- Q7 패턴: 경고 chain 이 **시작한** (날짜, 시)를 세어 같은 시가 서로 다른 3일 이상이면 그 시간대
+  (동률이면 이른 시 = 0시 쪽). 없으면 경고가 시작된 날 ≥ 3 이고 전부 주간/야간이면 `주간 시간`/`야간 시간`.
+  날짜는 KST 달력 날짜. 지난주에 시작해 넘어온 chain 은 시간대에 넣지 않는다(횟수에는 들어감).
 - Q8 주 평균 = 버킷 t_a_avg 의 t_a_count 가중평균, 표시값(소수 1자리 half-up)끼리의 차.
 - Q11 `{dry_time}` = 구간 안에서 시작해 건기에 도달한 사이클의 평균 소요 분 → `N시간 M분`.
 """
@@ -182,24 +182,21 @@ def _week_avg(buckets: list[dict[str, Any]], window: Window) -> float | None:
 
 # ---------- 온도 ----------
 
-def _hour_slots(chain: EventChain, window: Window) -> set[tuple[date, int]]:
-    """Q7: chain 이 걸친 (KST 날짜, 시) 칸. 구간 밖은 잘라내고, 진행 중이면 구간 끝까지."""
-    start = max(chain.start, window[0])
-    end = min(chain.end, window[1]) if chain.end is not None else window[1]
-    t = start.astimezone(KST).replace(minute=0, second=0, microsecond=0)
-    slots = {(t.date(), t.hour)}            # 길이 0 이어도 시작 칸은 센다
-    t += timedelta(hours=1)
-    while t < end:
-        slots.add((t.date(), t.hour))
-        t += timedelta(hours=1)
-    return slots
+def _start_slot(chain: EventChain, window: Window) -> tuple[date, int] | None:
+    """Q7: chain 이 **시작한** (KST 날짜, 시). 구간 밖(지난주)에서 시작했으면 None.
+
+    걸친 시간대를 전부 세면 하루 가까이 이어진 경고가 거의 모든 시간대를 3일 이상으로 만들어
+    동률 최소인 "0시~1시"가 뽑혔다(리플레이 2026-11-02) — "언제 문제가 생기나"를 보려고 시작만 센다.
+    """
+    if not window[0] <= chain.start < window[1]:
+        return None
+    t = chain.start.astimezone(KST)
+    return t.date(), t.hour
 
 
 def _time_label(chains: list[EventChain], window: Window) -> str | None:
-    """Q7: `{H}시~{H+1}시 사이` / `주간 시간` / `야간 시간` / None(줄 생략)."""
-    slots: set[tuple[date, int]] = set()
-    for ch in chains:
-        slots |= _hour_slots(ch, window)
+    """Q7: `{H}시~{H+1}시 사이` / `주간 시간` / `야간 시간` / None(줄 생략). 경고 시작 시각 기준."""
+    slots = {s for s in (_start_slot(ch, window) for ch in chains) if s is not None}
     days_by_hour: dict[int, set[date]] = {}
     for d, h in slots:
         days_by_hour.setdefault(h, set()).add(d)

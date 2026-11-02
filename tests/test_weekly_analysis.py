@@ -189,6 +189,15 @@ def test_temp_danger_pattern_3days():
     assert r.temp_card.lines[1] == "13시~14시 사이에 온도 이탈이 집중되었어요"
 
 
+def test_temp_danger_pattern_counts_start_hour_only():
+    # 하루 가까이 이어진 경고는 걸친 시간대가 아니라 시작 시간대로만 센다(Q7, 2026-11-02 변경)
+    long = [danger("a", kst(2, 5), kst(3, 1)), danger("b", kst(4, 10), kst(5, 6)),
+            danger("c", kst(6, 18), kst(7, 14))]
+    assert len(run(long).temp_card.lines) == 1          # 시작 05·10·18시 → 반복 없음, 주·야 섞임 → 줄 생략
+    same_start = [danger(f"s{i}", kst(d, 14, 5), kst(d + 1, 9)) for i, d in enumerate((2, 4, 6))]
+    assert run(same_start).temp_card.lines[1] == "14시~15시 사이에 온도 이탈이 집중되었어요"
+
+
 def test_temp_danger_pattern_day_night():
     day = [danger("a", kst(2, 13), kst(2, 13, 20)), danger("b", kst(4, 15), kst(4, 15, 20)),
            danger("c", kst(6, 11), kst(6, 11, 20))]
