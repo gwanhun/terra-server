@@ -121,3 +121,66 @@ def test_patch_settings_empty_body_400(app_client: TestClient, fake_sb: MagicMoc
 
     res = app_client.patch(f"/devices/{DEVICE_UUID}/settings", json={})
     assert res.status_code == 400, res.text
+
+
+# ---------- 기획 v4 1-1·1-2 MIN/MAX 범위 (Stage N2) ----------
+
+
+def _patch(app_client: TestClient, fake_sb: MagicMock, body: dict, existing: dict | None = None):
+    dev = _device_mock()
+    ds = _settings_mock(existing or {"device_id": DEVICE_UUID})
+    fake_sb.table.side_effect = lambda name: {"devices": dev, "device_settings": ds}[name]
+    return app_client.patch(f"/devices/{DEVICE_UUID}/settings", json=body), ds
+
+
+def test_patch_temp_minmax_v4_range(app_client: TestClient, fake_sb: MagicMock) -> None:
+    for body, code in (({"target_temp_max": 29.5}, 400), ({"target_temp_max": 29.0}, 200),
+                       ({"target_temp_min": 14.5}, 400), ({"target_temp_min": 15.0}, 200)):
+        res, ds = _patch(app_client, fake_sb, body)
+        assert res.status_code == code, (body, res.text)
+        if code == 400:
+            ds.upsert.assert_not_called()
+
+
+def test_patch_temp_step_half(app_client: TestClient, fake_sb: MagicMock) -> None:
+    res, ds = _patch(app_client, fake_sb, {"target_temp_min": 18.3})
+    assert res.status_code == 400, res.text
+    ds.upsert.assert_not_called()
+    res, _ = _patch(app_client, fake_sb, {"target_temp_min": 18.5})
+    assert res.status_code == 200, res.text
+
+
+def test_patch_humid_range_step(app_client: TestClient, fake_sb: MagicMock) -> None:
+    for body, code in (({"target_humid_min": 33}, 400), ({"target_humid_min": 37}, 400),
+                       ({"target_humid_min": 35}, 200), ({"target_humid_max": 85}, 200),
+                       ({"target_humid_max": 90}, 400)):
+        res, _ = _patch(app_client, fake_sb, body)
+        assert res.status_code == code, (body, res.text)
+
+
+def test_patch_min_equal_or_over_max_400(app_client: TestClient, fake_sb: MagicMock) -> None:
+    res, ds = _patch(app_client, fake_sb, {"target_temp_min": 24.0, "target_temp_max": 24.0})
+    assert res.status_code == 400, res.text
+    ds.upsert.assert_not_called()
+    # 병합 결과로 판정: 저장된 max 24 에 min 25 만 보내도 거절
+    res, ds = _patch(app_client, fake_sb, {"target_temp_min": 25.0},
+                     existing={"device_id": DEVICE_UUID, "target_temp_max": 24.0})
+    assert res.status_code == 400, res.text
+    ds.upsert.assert_not_called()
+    res, _ = _patch(app_client, fake_sb, {"target_humid_min": 60, "target_humid_max": 60})
+    assert res.status_code == 400, res.text
+
+
+def test_patch_other_field_with_legacy_value(app_client: TestClient, fake_sb: MagicMock) -> None:
+    # 구 범위로 저장된 max=35 는 요청에 없으니 검사하지 않는다(사용자가 고칠 수 있게)
+    res, ds = _patch(app_client, fake_sb, {"target_temp_min": 20.0},
+                     existing={"device_id": DEVICE_UUID, "target_temp_max": 35.0})
+    assert res.status_code == 200, res.text
+    ds.upsert.assert_called_once()
+
+
+def test_patch_null_resets_to_default(app_client: TestClient, fake_sb: MagicMock) -> None:
+    res, ds = _patch(app_client, fake_sb, {"target_temp_min": None},
+                     existing={"device_id": DEVICE_UUID, "target_temp_min": 20.0})
+    assert res.status_code == 200, res.text
+    assert ds.upsert.call_args.args[0]["target_temp_min"] is None

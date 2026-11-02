@@ -5,9 +5,16 @@
 - PATCH /devices/{device_uuid}/settings  — 목표 온/습도 수정 (JWT)
 
 ## 왜 REST 인가
-Supabase RLS 직결로도 device_settings 를 쓸 수 있지만, 값 범위 검증(온도 -20~60,
-습도 0~100, min<=max)을 서버 한 곳에서 하려고 REST 를 둔다. 유지형 가드가 이 목표값을
-기준으로 동작할 예정이라 잘못된 setpoint 가 저장되면 위험.
+Supabase RLS 직결로도 device_settings 를 쓸 수 있지만, 값 범위 검증을 서버 한 곳에서
+하려고 REST 를 둔다. 유지형 가드가 이 목표값을 기준으로 동작할 예정이라 잘못된 setpoint 가
+저장되면 위험.
+
+## 검증 범위
+- `target_temp_c` -20~60, `target_humidity_pct` 0~100 (물리 범위, 그대로).
+- MIN/MAX 는 기획 v4 1-1·1-2 (Stage N2): 온도 15~29℃ 0.5 단위, 습도 35~85% 5 단위,
+  **MIN < MAX**(같으면 거절). 범위·단위는 요청에 들어온 필드만 본다 — 구 범위로 저장된 값이
+  있어도 다른 필드 수정은 막지 않는다(사용자가 고칠 수 있게). MIN < MAX 는 병합 결과로 본다.
+- null 은 "미설정" — 판정은 디폴트(18~26℃, 40~80%)를 쓴다.
 
 ## 저장 방식
 device_settings PK = device_id (= devices.id). 디바이스당 1행이라 upsert.
@@ -41,9 +48,15 @@ _SETTINGS_COLS = (
     "target_temp_min, target_temp_max, target_humid_min, target_humid_max, updated_at"
 )
 
-# 물리적으로 말이 되는 범위 (사육장 일반 범위보다 넉넉하게).
+# 단일 목표값: 물리적으로 말이 되는 범위 (사육장 일반 범위보다 넉넉하게).
 _TEMP_RANGE = (-20.0, 60.0)
 _HUMID_RANGE = (0.0, 100.0)
+
+# MIN/MAX: 기획 v4 1-1·1-2 (사용자 설정 범위·설정 단위)
+_TEMP_MINMAX_RANGE = (15.0, 29.0)
+_TEMP_STEP = 0.5
+_HUMID_MINMAX_RANGE = (35.0, 85.0)
+_HUMID_STEP = 5.0
 
 
 class SettingsUpdate(BaseModel):
@@ -75,24 +88,31 @@ def _in_range(name: str, val: float | None, lo: float, hi: float) -> None:
         raise HTTPException(status_code=400, detail=f"{name} 는 {lo}~{hi} 범위여야 함")
 
 
+def _on_step(name: str, val: float | None, step: float) -> None:
+    if val is not None and abs(val / step - round(val / step)) > 1e-9:
+        raise HTTPException(status_code=400, detail=f"{name} 는 {step:g} 단위여야 함")
+
+
 def _validate(updates: dict[str, Any], existing: dict[str, Any]) -> None:
-    """범위 + min<=max 검증. 부분 수정이라 기존값과 병합해서 판정."""
+    """범위·단위 + MIN < MAX 검증. 부분 수정이라 MIN < MAX 는 기존값과 병합해서 판정."""
     _in_range("target_temp_c", updates.get("target_temp_c"), *_TEMP_RANGE)
-    _in_range("target_temp_min", updates.get("target_temp_min"), *_TEMP_RANGE)
-    _in_range("target_temp_max", updates.get("target_temp_max"), *_TEMP_RANGE)
     _in_range("target_humidity_pct", updates.get("target_humidity_pct"), *_HUMID_RANGE)
-    _in_range("target_humid_min", updates.get("target_humid_min"), *_HUMID_RANGE)
-    _in_range("target_humid_max", updates.get("target_humid_max"), *_HUMID_RANGE)
+    for key in ("target_temp_min", "target_temp_max"):
+        _in_range(key, updates.get(key), *_TEMP_MINMAX_RANGE)
+        _on_step(key, updates.get(key), _TEMP_STEP)
+    for key in ("target_humid_min", "target_humid_max"):
+        _in_range(key, updates.get(key), *_HUMID_MINMAX_RANGE)
+        _on_step(key, updates.get(key), _HUMID_STEP)
 
     def merged(key: str) -> float | None:
         return updates[key] if key in updates else existing.get(key)
 
     t_min, t_max = merged("target_temp_min"), merged("target_temp_max")
-    if t_min is not None and t_max is not None and t_min > t_max:
-        raise HTTPException(status_code=400, detail="target_temp_min 은 target_temp_max 이하여야 함")
+    if t_min is not None and t_max is not None and t_min >= t_max:
+        raise HTTPException(status_code=400, detail="target_temp_min 은 target_temp_max 보다 작아야 함")
     h_min, h_max = merged("target_humid_min"), merged("target_humid_max")
-    if h_min is not None and h_max is not None and h_min > h_max:
-        raise HTTPException(status_code=400, detail="target_humid_min 은 target_humid_max 이하여야 함")
+    if h_min is not None and h_max is not None and h_min >= h_max:
+        raise HTTPException(status_code=400, detail="target_humid_min 은 target_humid_max 보다 작아야 함")
 
 
 def _fetch_settings(sb: Any, device_uuid: str) -> dict[str, Any] | None:
