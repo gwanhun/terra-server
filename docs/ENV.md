@@ -132,6 +132,7 @@ Edge Function 으로 이벤트를 보낸다. 브리지가 `push_outbox` 에 적�
 |------|:---:|------|
 | `ALERTS_V4_ENABLED` | X | `true/1/yes/on` 이면 브리지가 v4 규칙(2분 진입·5분 회복)으로 `env_*` alerts 를 기록. **기본 꺼짐** = 구 판정(`alert_*` 컬럼) 그대로 |
 | `PUSH_ENV_ALERTS_ENABLED` | X | `env.alert.triggered` 적재. **기본 꺼짐**. 위 `PUSH_EVENT_INGEST_*` 도 채워져 있어야 동작 |
+| `ENV_REPORTS_ENABLED` | X | 일일 분석(`env_daily_reports`) 생성. **기본 꺼짐**. `ALERTS_V4_ENABLED` 도 켜져 있어야 동작(v4 이벤트가 없는 기간을 "이벤트 없음"으로 분석하지 않게). 켜기 전 `migrations/2026-11-02_env_daily_reports.sql` 적용 |
 
 - 켜는 순서·앱 회신 조건: [APP_ENV_ALERT_PUSH_2026-11-02.md](APP_ENV_ALERT_PUSH_2026-11-02.md) §4
 - 켜기 전 SQL Editor 로 확인: `alerts.kind`/`severity` 에 CHECK 제약 없음, `push_outbox.event_id` UNIQUE.

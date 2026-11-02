@@ -22,6 +22,7 @@
 | `live_recordings` | 영상 | 앱이 라이브 화면에서 직접 녹화한 영상(≤120초 mp4 + jpg, 2026-10-21 60→120초) — 2026-10-20. `status` pending→ready, `client_id`(앱 멱등 키), `r2_key`/`thumbnail_key`(`terra-clips/recordings/{user_id}/{camera_id}/{id}.mp4·.jpg`), `has_thumbnail`(생성 컬럼 = `thumbnail_key is not null`, INSERT 금지). 계정당 50개(pending+ready), 24시간 넘은 pending 은 서버 스레드가 행·객체 삭제. 보관 무기한 | UUID, user_id FK(auth.users, cascade), camera_id FK(cameras, **on delete set null**), UNIQUE(user_id, client_id) |
 | `firmware_releases` | OTA | 펌웨어 빌드 1건(`target` camera_p4/device_nano/hub_p4(2026-10-14, 허브 model=esp32-p4-hub 전용), `version`=esp_app_desc, R2 키, sha256). `scripts/upload_firmware.py` 가 INSERT — 2026-10-07. `retired_at`/`retired_reason`(2026-10-08) = 퇴역(soft-delete): 목록·OTA 대상·다운로드 제외, `ota_jobs` FK 이력 보존 | UUID, UNIQUE(target, version) |
 | `ota_jobs` | OTA | 기기 1대 × 릴리스 1건 작업. `status` pending→accepted→downloading→ready→applying→verified/rolled_back, failed/timeout. `prepare_msg_id`/`apply_msg_id`(카메라: MQTT msg_id, 기기: commands.id) — 2026-10-07 | UUID, release_id FK, target_uuid(FK 없음: 해제 행 이력 보존) |
+| `env_daily_reports` | IoT | 일일 온습도 분석 카드(기획 v4 2-1~2-3) — 2026-11-02. 기기 × `report_date`(집계 시작일 KST, 08:00~다음 날 08:00) 1행, `temp_card`/`humid_card` JSONB(서버가 문구 완성, NULL=미생성), `pass` 1(08시대)→2(09:05 재계산). 브리지 `analysis_runner` 가 upsert | UUID, device_id FK(cascade), UNIQUE(device_id, report_date) |
 | `camera_ops_reboots` | 운영 | 운영 재부팅(`POST /ops/cameras/{id}/reboot`, petcam 감시 스크립트) 발행 시도 1건 = 1행 — 2026-10-20. 발행 전 INSERT(`published=NULL`) → 결과로 `published` true/false UPDATE. `ack_result`/`acked_at` 은 브리지가 카메라 ack 로 채움. 쿨다운(2시간)은 `published` 가 false 아닌 행 기준. 건너뜀(409)은 기록 안 함. 앱 비노출 | UUID, camera_id(FK 없음: 카메라 삭제 후에도 기록 보존), UNIQUE(msg_id), INDEX(camera_id, requested_at desc) |
 
 ## ERD (ASCII)
@@ -68,6 +69,7 @@ auth.users (Supabase Auth)
 | `cameras` | 본인 | **service_role only** (페어링 API) | 본인 | 본인 |
 | `motion_clips` | 본인 | service_role only (terra-api 업로드 콜백) | - | 본인 |
 | `live_recordings` | 본인 (`user_id = auth.uid()`) | service_role only (`POST /recordings`) | service_role only (complete) | service_role only (`DELETE /recordings/{id}`, 정리 스레드) |
+| `env_daily_reports` | 본인 | service_role only (bridge) | service_role only (bridge) | - |
 | `camera_ops_reboots` | service_role only (정책 없음, anon·authenticated REVOKE) | service_role only (`/ops` 라우터) | service_role only (`/ops` 라우터, 브리지 ack) | - |
 
 > "본인" = `auth.uid() = owner_id` 또는 cascade로 매핑
@@ -116,7 +118,7 @@ ESP32-CAM MJPEG 대비 5~10배 축소.
 ## Realtime 구독 대상
 
 `supabase_realtime` publication 에 추가된 테이블:
-- `devices`, `telemetry`, `commands`, `alerts` (IoT)
+- `devices`, `telemetry`, `commands`, `alerts`, `env_daily_reports` (IoT)
 - `enclosures`, `cameras`, `motion_clips` (영상)
 
 → 앱이 사육장 화면에서 센서값 + 새 모션 영상 + 명령 결과 + 알림을 모두 실시간 push 수신.
