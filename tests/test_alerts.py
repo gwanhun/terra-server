@@ -205,10 +205,17 @@ def test_settings_fetch_failure_keeps_last(sb: FlakySB, clock: Clock) -> None:
 
 def test_settings_first_fetch_failure_defers(sb: FlakySB, clock: Clock) -> None:
     sb.fail[("device_settings", "select")] = 1
-    run(clock, 0, 3, 26.3)     # 직전 값 없음 → 보류(예외 없이)
-    run(clock, 3, 126, 26.3)
+    run(clock, 0, 3, 26.3)     # 직전 값 없음 → 보류(예외 없이), 30초 뒤 재조회
+    run(clock, 3, 153, 26.3)
     rows = env_rows(sb)
-    assert len(rows) == 1 and rows[0]["triggered_at"] == at(3)
+    assert len(rows) == 1 and rows[0]["triggered_at"] == at(30)
+
+
+def test_settings_fetch_failure_backs_off(sb: FlakySB, clock: Clock) -> None:
+    # 조회 실패 중엔 샘플마다(3초) 다시 묻지 않고 30초에 한 번만
+    sb.fail[("device_settings", "select")] = 10_000
+    run(clock, 0, 60, 26.3)
+    assert 10_000 - sb.fail[("device_settings", "select")] == 2
 
 
 # ---------- 재시작 복원 ----------
@@ -280,12 +287,16 @@ def test_firmware_alert_untouched(sb: FlakySB, clock: Clock) -> None:
     sb.rows("alerts").extend([
         {"id": "f-1", "device_id": DEV, "kind": "temp_high", "severity": "critical",
          "triggered_at": at(-9000), "resolved_at": None, "context": {"t": 31.0}},
+        # 펌웨어가 threshold 를 실어 보내도 구 브리지 행(정확히 {t_a|h_a, threshold})이 아니면 그대로
+        {"id": "f-3", "device_id": DEV, "kind": "temp_high", "severity": "critical",
+         "triggered_at": at(-9000), "resolved_at": None, "context": {"t": 31.0, "threshold": 30.0}},
         {"id": "f-2", "device_id": DEV, "kind": "heater_latched", "severity": "critical",
          "triggered_at": at(-9000), "resolved_at": None, "context": None},
     ])
     run(clock, 0, 600, 24.0)
     assert sb.one("alerts", id="f-1")["resolved_at"] is None
     assert sb.one("alerts", id="f-2")["resolved_at"] is None
+    assert sb.one("alerts", id="f-3")["resolved_at"] is None
 
 
 # ---------- 기록 실패·푸시 ----------
@@ -406,6 +417,70 @@ def test_unlinked_device_stops(sb: FlakySB, clock: Clock) -> None:
     run(clock, 3, 300, 26.5)
     assert len(sb.rows("alerts")) == 1
     assert sb.rows("push_outbox") == []
+
+
+def test_relinked_device_resumes_and_unlink_closes_again(sb: FlakySB, clock: Clock) -> None:
+    dev = sb.rows("devices")[0]
+    dev["unlinked_at"] = at(-60)
+    run(clock, 0, 3, 26.5)                       # 해제 확인
+    dev["unlinked_at"] = None                    # 같은 행 재페어링
+    handlers.reset_device_cache()
+    run(clock, 3, 126, 26.3)                     # 새 이벤트
+    opened = env_rows(sb)
+    assert len(opened) == 1 and opened[0].get("resolved_at") is None
+    dev["unlinked_at"] = at(130)                 # 다시 해제
+    handlers.reset_device_cache()
+    run(clock, 132, 135, 26.3)
+    assert env_rows(sb)[0]["resolved_at"] == at(132)
+
+
+def test_unlink_api_closes_active_v4_alerts(monkeypatch: pytest.MonkeyPatch, sb: FlakySB) -> None:
+    # 해제 뒤엔 telemetry 가 안 와서 브리지가 못 닫는다 → 해제 API 가 닫는다(D12)
+    from backend import unlink_service
+    monkeypatch.setattr(unlink_service.registry, "unregister_device", lambda key: None)
+    sb.rows("alerts").append(_active_v4(peak_value=27.0))
+    sb.rows("alerts").append({"id": "f-1", "device_id": DEV, "kind": "heater_latched",
+                              "severity": "critical", "triggered_at": at(-9000),
+                              "resolved_at": None, "context": None})
+    unlink_service.unlink_entity(sb, table="devices", entity_uuid=DEV, user_id=OWNER,
+                                 request_id="req-1")
+    a = sb.one("alerts", id="a-old")
+    assert a["resolved_at"] is not None and a["context"]["peak_diff"] == 1.0
+    assert sb.one("alerts", id="f-1")["resolved_at"] is None
+
+
+def test_sensor_fault_not_queried_every_sample(monkeypatch: pytest.MonkeyPatch, sb: FlakySB,
+                                               clock: Clock) -> None:
+    calls: list[str] = []
+    orig = alerts._active_alert
+
+    def counting(sb_: Any, device_uuid: str, kind: str):
+        if kind == "sensor_fault":
+            calls.append(kind)
+        return orig(sb_, device_uuid, kind)
+
+    monkeypatch.setattr(alerts, "_active_alert", counting)
+    run(clock, 0, 300, 24.0)                     # 정상 100샘플
+    assert len(calls) == 1
+    run(clock, 300, 309, None, None, a_ok=False)
+    run(clock, 309, 400, 24.0)
+    faults = [r for r in sb.rows("alerts") if r["kind"] == "sensor_fault"]
+    assert len(faults) == 1 and faults[0].get("resolved_at") is not None
+    assert len(calls) <= 3                       # 상태가 바뀔 때만
+
+
+def test_redanger_chain_reminder_rows(sb: FlakySB, clock: Clock) -> None:
+    # 복원한 무음 주의(체인 최초 푸시 40분 전) → 재경고(푸시 생략) → 최초 푸시 +1시간에 reminder 1회
+    cau = _active_v4(deescalated_from="d-1", chain_root="d-1", value=27.5, peak_value=27.5,
+                     chain_pushed_at=at(-2400), chain_reminded=False)
+    cau["triggered_at"] = at(-600)
+    sb.rows("alerts").append(cau)
+    run(clock, 0, 1500, 29.4)
+    danger = [r for r in env_rows(sb) if r["severity"] == "critical"]
+    assert len(danger) == 1 and danger[0]["context"]["push_suppressed"] is True
+    assert danger[0]["context"]["chain_pushed_at"] == at(-2400)
+    assert [r["event_id"] for r in sb.rows("push_outbox")] == [f"alert:{danger[0]['id']}:reminder"]
+    assert danger[0]["context"]["reminded_at"] == at(1200)
 
 
 def test_handler_to_outbox_integration(sb: FlakySB, clock: Clock) -> None:

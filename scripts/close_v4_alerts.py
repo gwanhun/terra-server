@@ -26,7 +26,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from backend.alerts import forced_close_context, select_active_v4_rows  # noqa: E402
+from backend.alerts import close_v4_row, forced_close_context, select_active_v4_rows  # noqa: E402
 
 
 def run(sb: Any, *, apply: bool, device: str | None = None,
@@ -45,8 +45,7 @@ def run(sb: Any, *, apply: bool, device: str | None = None,
             done += 1
             continue
         try:
-            sb.table("alerts").update({"resolved_at": now.isoformat(), "context": ctx}) \
-                .eq("id", r["id"]).execute()
+            close_v4_row(sb, r, now.isoformat())
         except Exception as exc:  # noqa: BLE001 — supabase-py 예외 타입 넓음, 나머지 행은 계속
             out(f"    ! 종료 실패: {exc}")
             continue

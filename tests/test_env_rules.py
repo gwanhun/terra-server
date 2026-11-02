@@ -228,6 +228,31 @@ def test_redanger_within_30min_silent():
     assert [(a.level, a.push) for _, a in opens] == [("danger", True)]
 
 
+def test_redanger_inherits_chain_reminder():
+    # 경고(푸시) → 무음 주의 → 30분 안 재경고(푸시 생략): 추가 푸시는 처음 경고 푸시 +1시간에 1회
+    tr = ElementTracker("temp")
+    feed(tr, seg((0, 30.0), end=123))
+    tr.active.alert_id = "d1"
+    tr.mark_pushed(120)
+    got = feed(tr, seg((123, 30.0), (300, 27.5), (1200, 29.4), end=8000))
+    opens = ops(got, "open")
+    assert [(t, a.level, a.push) for t, a in opens] == [(600, "caution", False), (1320, "danger", False)]
+    assert tr.active.pushed_mono == 120
+    assert [t for t, _ in ops(got, "remind")] == [3720]
+
+
+def test_redanger_chain_already_reminded_no_second():
+    # 처음 경고가 이미 추가 푸시를 보냈으면 체인 안의 재경고는 더 보내지 않는다
+    tr = ElementTracker("temp")
+    feed(tr, seg((0, 30.0), end=123))
+    tr.active.alert_id = "d1"
+    tr.mark_pushed(120)
+    got = feed(tr, seg((123, 30.0), (3800, 27.5), (4200, 29.4), end=12000))
+    assert [(t, a.level, a.push) for t, a in ops(got, "open")] == [
+        (4100, "caution", False), (4320, "danger", False)]
+    assert [t for t, _ in ops(got, "remind")] == [3720]
+
+
 # ---------- 추가 푸시 ----------
 
 def test_reminder_once_after_1h():

@@ -77,9 +77,12 @@ HYST_HUMID_PCT = 5.0
 V4_KINDS = ("env_temp_high", "env_temp_low", "env_humid_low", "env_humid_high")
 LEGACY_BRIDGE_KINDS = ("temp_high", "temp_low", "humid_low")
 SETTINGS_TTL_SEC = 60.0      # D8
+SETTINGS_RETRY_SEC = 30.0    # 설정 조회 실패 시 다음 재조회까지(장애 중 샘플마다 묻지 않게)
 PUSH_RETRY_SEC = 600.0       # D16 적재 실패 재시도 창
 _SEVERITY = {"caution": "warning", "danger": "critical"}
 _ELEMENTS = ("temp", "humid")
+# 구 브리지 판정(_evaluate_legacy)이 쓰는 context 키 집합 — 펌웨어 행과 구분
+_LEGACY_CTX_KEYS = ({"t_a", "threshold"}, {"h_a", "threshold"})
 
 
 def v4_enabled() -> bool:
@@ -140,9 +143,10 @@ def _active_alert(sb, device_uuid: str, kind: str) -> dict[str, Any] | None:
 
 def _insert_alert(
     sb, device_uuid: str, kind: str, severity: str, message: str, context: dict[str, Any],
-) -> None:
+) -> bool:
+    """활성 행이 있거나 INSERT 성공이면 True. legacy 는 반환값을 안 쓴다."""
     if _active_alert(sb, device_uuid, kind):
-        return  # dedup
+        return True  # dedup
     try:
         sb.table("alerts").insert({
             "device_id": device_uuid,
@@ -154,12 +158,15 @@ def _insert_alert(
         logger.info("alert INSERT: device=%s kind=%s", device_uuid, kind)
     except Exception:  # noqa: BLE001
         logger.exception("alert INSERT 실패: device=%s kind=%s", device_uuid, kind)
+        return False
+    return True
 
 
-def _resolve_alert(sb, device_uuid: str, kind: str) -> None:
+def _resolve_alert(sb, device_uuid: str, kind: str) -> bool:
+    """활성 행이 없거나 UPDATE 성공이면 True."""
     active = _active_alert(sb, device_uuid, kind)
     if not active:
-        return
+        return True
     try:
         sb.table("alerts").update({
             "resolved_at": datetime.now(timezone.utc).isoformat(),
@@ -167,10 +174,15 @@ def _resolve_alert(sb, device_uuid: str, kind: str) -> None:
         logger.info("alert RESOLVED: device=%s kind=%s", device_uuid, kind)
     except Exception:  # noqa: BLE001
         logger.exception("alert resolve 실패: device=%s kind=%s", device_uuid, kind)
+        return False
+    return True
 
 
 def _evaluate_sensor_fault(sb, device_uuid: str, a_ok: Any) -> bool:
-    """DHT22-A fault → sensor_fault INSERT / 복구 시 resolve. 두 경로 공통. a_ok 를 돌려준다."""
+    """legacy: DHT22-A fault → sensor_fault INSERT / 복구 시 resolve (샘플마다). a_ok 를 돌려준다.
+
+    v4 는 같은 규칙을 상태가 바뀔 때만 확인한다(`_sensor_fault_v4`).
+    """
     if not a_ok:
         _insert_alert(
             sb, device_uuid, "sensor_fault", "warning",
@@ -279,6 +291,8 @@ class _DeviceState:
     push_retry: dict[str, _PendingPush] = field(default_factory=dict)   # element → started
     remind_fail_since: dict[str, float] = field(default_factory=dict)   # alert_id → 첫 실패 mono
     unlinked: bool = False
+    # sensor_fault 활성 여부(None = 모름). a_ok 가 바뀔 때만 DB 를 본다 — 정상 샘플마다 SELECT 안 함.
+    fault_active: bool | None = None
 
 
 _v4_lock = threading.Lock()
@@ -341,6 +355,10 @@ def _device_meta(device_uuid: str) -> dict[str, Any] | None:
     return handlers.device_meta(device_uuid)
 
 
+def _iso_mono(c: _Step, mono: float | None) -> str | None:
+    return c.wall(mono).isoformat() if mono is not None else None
+
+
 def forced_close_context(row: dict[str, Any]) -> dict[str, Any]:
     """강제 종료(중복 정리·기기 해제·close_v4_alerts.py)용 context.
 
@@ -370,6 +388,12 @@ def select_active_v4_rows(sb: Any, device_uuid: str | None = None) -> list[dict[
         q = q.eq("device_id", device_uuid)
     rows = q.execute().data or []
     return [r for r in rows if isinstance(r.get("context"), dict) and r["context"].get("rule") == "v4"]
+
+
+def close_v4_row(sb: Any, row: dict[str, Any], resolved_at: str) -> None:
+    """활성 v4 행 1개 강제 종료(peak_diff 포함). 예외는 호출측(해제 API·롤백 스크립트)이 처리."""
+    sb.table("alerts").update({"resolved_at": resolved_at, "context": forced_close_context(row)}) \
+        .eq("id", row["id"]).execute()
 
 
 # ---------- 행 쓰기 (실패 시 재시도 목록) ----------
@@ -415,12 +439,18 @@ def _to_active(row: dict[str, Any], now_mono: float, now_wall: datetime) -> Acti
     if level not in ("caution", "danger"):
         level = "danger" if row.get("severity") == "critical" else "caution"
     started = _parse_ts(row.get("triggered_at"))
-    pushed = _parse_ts(ctx.get("pushed_at"))
-    pushed_mono = now_mono - (now_wall - pushed).total_seconds() if pushed else None
+    def mono(ts: datetime | None) -> float | None:
+        return now_mono - (now_wall - ts).total_seconds() if ts else None
+
+    chain_pushed = mono(_parse_ts(ctx.get("chain_pushed_at")))
+    chain_reminded = bool(ctx.get("chain_reminded"))
+    pushed_mono = mono(_parse_ts(ctx.get("pushed_at")))
+    reminded = ctx.get("reminded_at") is not None
     silent = ctx.get("deescalated_from") is not None
-    silent_since = (
-        now_mono - (now_wall - started).total_seconds() if silent and started else None
-    )
+    silent_since = mono(started) if silent else None
+    if ctx.get("push_suppressed") and pushed_mono is None:   # D14 재경고: 체인 기준 추가 푸시
+        pushed_mono = chain_pushed
+        reminded = reminded or chain_reminded
     peak = _num(ctx.get("peak_value"))
     if peak is None:
         peak = _num(ctx.get("value"))
@@ -428,8 +458,10 @@ def _to_active(row: dict[str, Any], now_mono: float, now_wall: datetime) -> Acti
         peak = -math.inf if _is_high(kind) else math.inf
     return ActiveEvent(
         kind=kind, level=level, started_wall=started, pushed_mono=pushed_mono,
-        reminded=ctx.get("reminded_at") is not None, silent=silent, peak=peak,
+        reminded=reminded, silent=silent, peak=peak,
         alert_id=row["id"], silent_since_mono=silent_since,
+        chain_pushed_mono=chain_pushed if silent else None,
+        chain_reminded=chain_reminded if silent else False,
     )
 
 
@@ -462,8 +494,8 @@ def _restore(c: _Step) -> bool:
                 latest[el] = r
             else:
                 to_close.append(r)
-        elif r["kind"] in LEGACY_BRIDGE_KINDS and "threshold" in ctx and "rule" not in ctx:
-            to_close.append(r)    # 구 브리지 판정 행. 펌웨어 행(threshold 없음)은 건드리지 않음
+        elif r["kind"] in LEGACY_BRIDGE_KINDS and set(ctx) in _LEGACY_CTX_KEYS:
+            to_close.append(r)    # 구 브리지 판정 행. 펌웨어 행(context 가 다름)은 건드리지 않음
     for r in to_close:
         _force_close(c.sb, c.st, r, c.now_wall)
     for el, r in latest.items():
@@ -475,8 +507,8 @@ def _restore(c: _Step) -> bool:
 
 def _thresholds(c: _Step) -> Thresholds | None:
     st = c.st
-    if st.th is not None and c.now_mono < st.th_expires:
-        return st.th
+    if c.now_mono < st.th_expires:
+        return st.th   # 캐시 유효 또는 실패 backoff 중(그동안 th 가 None 이면 보류)
     try:
         res = (
             c.sb.table("device_settings")
@@ -487,7 +519,8 @@ def _thresholds(c: _Step) -> Thresholds | None:
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("device_settings 조회 실패 — 직전 기준 유지 (device=%s): %s", c.device_uuid, exc)
-        return st.th   # 없으면 None → 이 샘플 보류. 만료 그대로라 다음 샘플에 재조회
+        st.th_expires = c.now_mono + SETTINGS_RETRY_SEC
+        return st.th   # 없으면 None → 보류. 30초 뒤 재조회
     rows = res.data or []
     new = Thresholds.sanitize(rows[0] if rows else None)
     old = st.th
@@ -586,9 +619,13 @@ def _insert_open(c: _Step, tracker: ElementTracker, act: Action,
     if a.silent and close is not None and prev is not None:          # D3 무음 완화
         ctx["deescalated_from"] = close.closes_alert_id
         ctx["chain_root"] = _chain_root(c, prev)
+        ctx["chain_pushed_at"] = _iso_mono(c, a.chain_pushed_mono)
+        ctx["chain_reminded"] = a.chain_reminded
     elif act.level == "danger" and not act.push and prev is not None:  # D14 무음 재경고
         ctx["push_suppressed"] = True
         ctx["chain_root"] = _chain_root(c, prev)
+        ctx["chain_pushed_at"] = _iso_mono(c, a.pushed_mono)   # 체인 기준 추가 푸시(복원용)
+        ctx["chain_reminded"] = a.reminded
     triggered = c.wall(act.at_mono)
     body = {
         "device_id": c.device_uuid,
@@ -683,6 +720,20 @@ def _stop_unlinked(c: _Step) -> None:
     _flush_dirty(c.sb, c.st)
 
 
+def _sensor_fault_v4(sb: Any, st: _DeviceState, device_uuid: str, a_ok: Any) -> None:
+    """sensor_fault INSERT/resolve 를 상태가 바뀔 때만(모르면 한 번 확인). 실패면 다음 샘플 재시도."""
+    want = not a_ok
+    if st.fault_active is want:
+        return
+    if want:
+        ok = _insert_alert(sb, device_uuid, "sensor_fault", "warning", "DHT22-A 통신 실패",
+                           {"sensor": "dht22_a"})
+    else:
+        ok = _resolve_alert(sb, device_uuid, "sensor_fault")
+    if ok:
+        st.fault_active = want
+
+
 def _evaluate_v4(device_uuid: str, row: dict[str, Any], device_key: str | None) -> None:
     sb = get_supabase_client()
     meta = _device_meta(device_uuid)   # TTL 캐시. 실패면 None(해제 판정 못 함 → 평가는 계속)
@@ -693,9 +744,12 @@ def _evaluate_v4(device_uuid: str, row: dict[str, Any], device_key: str | None) 
         if meta is not None and meta.get("unlinked_at"):
             _stop_unlinked(c)
             return
+        if st.unlinked and meta is not None:
+            # 같은 행 재페어링 — 해제 전 상태를 버리고 DB 복원부터 다시(다음 해제도 다시 닫게)
+            st = c.st = _states[device_uuid] = _DeviceState()
 
         try:
-            _evaluate_sensor_fault(sb, device_uuid, row.get("a_ok", False))
+            _sensor_fault_v4(sb, st, device_uuid, row.get("a_ok", False))
         except Exception:  # noqa: BLE001 — sensor_fault 조회 실패가 온습도 판정을 막지 않게
             logger.exception("sensor_fault 평가 실패 (device=%s)", device_uuid)
         _flush_dirty(sb, st)

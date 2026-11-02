@@ -9,6 +9,8 @@
   1. 소유권 확인
   2. unlinked_at = now(), enclosure_id = NULL, unlink_request_id 저장 — **행은 지우지 않는다**
   3. schedules.enabled = false (devices 만 — 해제된 기기의 예약이 실행되면 안 됨)
+     + 진행 중 v4 온습도 알림(env_*) 종료 (devices 만 — 해제 뒤엔 telemetry 가 안 와서 브리지가
+       닫지 못한다. 재페어링한 다음 소유자에게 이전 이벤트가 보이면 안 됨)
   4. 개체↔카메라 이력 종료 — 앱팀 DB 트리거가 2번 UPDATE 를 잡아 처리 (서버 무관)
   5. Mosquitto 계정 회수 — 이후 접속 거부
   6. 멱등 기록 = 2번의 unlink_request_id
@@ -33,6 +35,7 @@ from typing import Any, Literal
 
 from fastapi import HTTPException
 
+from backend import alerts
 from backend.mqtt import registry
 
 logger = logging.getLogger(__name__)
@@ -45,6 +48,19 @@ _KEY_COLUMN: dict[str, str] = {"devices": "device_id", "cameras": "camera_id"}
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _close_env_alerts(sb: Any, device_uuid: str) -> None:
+    """활성 v4 알림 종료. 소유권은 2) 에서 확인했고 alerts 엔 owner 컬럼이 없어 device_id 로 거른다.
+
+    실패해도 raise 하지 않는다 — 재호출(멱등 경로)에서 다시 실행돼 메워진다.
+    """
+    try:
+        now = _now_iso()
+        for row in alerts.select_active_v4_rows(sb, device_uuid):
+            alerts.close_v4_row(sb, row, now)
+    except Exception:  # noqa: BLE001
+        logger.exception("unlink: v4 알림 종료 실패 (device=%s)", device_uuid)
 
 
 def unlink_entity(
@@ -100,6 +116,7 @@ def unlink_entity(
             ).execute()
         except Exception:  # noqa: BLE001
             logger.exception("unlink: schedules 비활성 실패 (%s=%s)", label, entity_uuid)
+        _close_env_alerts(sb, entity_uuid)
 
     # 5) MQTT 계정 회수 — 실패해도 raise 하지 않음(운영 안정성, registry 관례와 동일)
     key = row.get(key_col)

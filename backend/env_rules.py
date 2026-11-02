@@ -35,6 +35,7 @@ v4 온습도 판정 상태 기계 — Stage N (기획 v4 1-1~1-6).
 - D5 진행 중 이벤트의 반대쪽 조건이 진입 시간만큼 유지 → close + 반대쪽 open(푸시).
 - D13 경고 조건이 성립 중인 샘플에서는 주의 진입을 보류(주의 → 1분 뒤 경고 이중 푸시 방지).
 - D14 무음 주의(D3) 시작 후 30분 안에 같은 쪽 경고가 시작되면 경고는 열되 push=False.
+  추가 푸시는 체인 최초 경고의 푸시 시각 +1시간 기준으로 체인 전체에서 1회(이어받음).
 - D15 추가 푸시: 전이 없음 + 푸시된 이벤트 + 아직 안 함 + 푸시 후 1시간 + **현재 값이
   이벤트 조건 만족**(회복 대기 중 "아직 위험" 오발송 방지). 이벤트당 1회.
 - D16 open 은 push=True 로 내지만 `pushed_mono` 는 호출측이 적재 성공 후
@@ -141,6 +142,8 @@ class ActiveEvent:
     started_wall: 트래커는 wall clock 을 모르므로 open 직후엔 None — 호출측이 기록 시각
     (`wall(at_mono)`)으로 채운다. 재시작 복원 땐 DB `triggered_at`.
     silent: D3 완화로 열린 무음 주의. silent_since_mono 는 그 주의의 시작(at_mono) — D14 기준.
+    chain_pushed_mono / chain_reminded: 무음 주의가 이어받은 "체인 최초 경고"의 푸시 시각·추가 푸시
+    여부. D14 재경고는 이걸 자기 pushed_mono / reminded 로 받아 체인 기준 1시간 추가 푸시를 낸다.
     """
 
     kind: str
@@ -152,6 +155,8 @@ class ActiveEvent:
     peak: float
     alert_id: str | None = None
     silent_since_mono: float | None = None
+    chain_pushed_mono: float | None = None
+    chain_reminded: bool = False
 
 
 @dataclass(frozen=True)
@@ -347,13 +352,22 @@ class ElementTracker:
         )
 
     def _open(self, side: Side, level: Level, run: _Run, v: float, th: Thresholds,
-              *, push: bool = True, silent: bool = False) -> Action:
+              *, push: bool = True, silent: bool = False,
+              chain_from: ActiveEvent | None = None) -> Action:
+        """chain_from: silent 이면 직전 경고(체인 정보 넘김), D14 재경고면 직전 무음 주의(받음)."""
         kind = f"env_{self.element}_{side}"
         self.active = ActiveEvent(
             kind=kind, level=level, started_wall=None, pushed_mono=None,
             reminded=False, silent=silent, peak=run.ext,
             silent_since_mono=run.start if silent else None,
         )
+        if chain_from is not None:
+            if silent:    # D3: 경고(체인 최초 경고 또는 D14 재경고)의 푸시 상태를 들고 간다
+                self.active.chain_pushed_mono = chain_from.pushed_mono
+                self.active.chain_reminded = chain_from.reminded
+            else:         # D14: 체인 최초 푸시 기준으로 1시간 추가 푸시(이미 보냈으면 없음)
+                self.active.pushed_mono = chain_from.chain_pushed_mono
+                self.active.reminded = chain_from.chain_reminded
         self._peak_dirty_since = None
         return Action(
             op="open", kind=kind, level=level, push=push, value=v,
@@ -397,7 +411,8 @@ class ElementTracker:
                             and run.start - a.silent_since_mono <= REDANGER_SILENCE_SEC
                         )
                         close = self._close(run, v, th)
-                        return [close, self._open(s, "danger", run, v, th, push=not quiet)]
+                        return [close, self._open(s, "danger", run, v, th, push=not quiet,
+                                                  chain_from=a if quiet else None)]
             if not self._in_danger(conds):
                 run = self._held(f"caution_{opp}", now, self._entry_sec(opp))
                 if run:
@@ -430,7 +445,8 @@ class ElementTracker:
         run = self._held(f"calm_{side}", now, RECOVERY_SEC)
         if run and conds[f"caution_{side}"]:
             close = self._close(run, v, th)
-            return [close, self._open(side, "caution", run, v, th, push=False, silent=True)]
+            return [close, self._open(side, "caution", run, v, th, push=False, silent=True,
+                                      chain_from=a)]
         return []
 
     def step(self, now_mono: float, value: float | None, th: Thresholds) -> list[Action]:
