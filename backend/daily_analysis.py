@@ -30,11 +30,13 @@ v4 일일 온습도 분석 카드 — Stage P (기획 v4 2-1~2-3).
 |------|------|--------|--------|
 | 건조 주의 | HUM_DRY | caution | 건조를 주의해 주세요 |
 | 과습 주의 | HUM_OVER | caution | 과습을 주의해 주세요 |
-| 환기 지연 | HUM_DELAY | caution | 건습 사이클이 건강하지 않아요 |
+| 환기 지연 | HUM_DELAY | danger | 건습 사이클이 건강하지 않아요 |
 | 이벤트 없음 + 사이클 ≥ 1·도달 ≥ 1 | HUM_NORMAL | normal | 건습 사이클이 건강하게 유지됐어요 |
 | 이벤트 없음 + 사이클 0 | HUM_NO_MIST | caution | 습기가 감지되지 않았어요 |
 
 `cycles` 가 None(Stage O 전)이면 이벤트 없는 날 습도 카드는 없다(P9).
+status 는 환기 지연 줄이 하나라도 있으면 danger(기획 3-3 HUM_DELAY = 경고, 주간과 같은 어휘),
+아니면 caution. 타이틀 우선순위(건조 > 과습 > 환기 지연)와는 따로 본다.
 
 ## 결정 요약
 
@@ -49,7 +51,7 @@ v4 일일 온습도 분석 카드 — Stage P (기획 v4 2-1~2-3).
   주간·야간 평균을 각각 소수 1자리 half-up 한 뒤 그 차이(앱이 보는 세 숫자가 서로 맞게).
 - P11 같은 chain_root(없으면 자기 id)를 가진 행은 한 줄: 첫 시작 ~ 마지막 종료, 레벨 경고,
   `{temp}` = chain 안 가장 극단 peak. caution→danger 승격(chain_root 없음)은 별도 줄.
-- P12 status: 경고 있으면 danger, 주의만 caution, 주야간 1.5~6 normal / 그 외 caution.
+- P12 status: 경고(온도 경고·환기 지연) 있으면 danger, 주의만 caution, 주야간 1.5~6 normal / 그 외 caution.
 """
 
 from __future__ import annotations
@@ -439,7 +441,7 @@ def build_humid_card(events: list[dict[str, Any]], buckets: list[dict[str, Any]]
     if lines:
         present = {ln.kind for ln in lines}
         code, title = next((c, t) for k, c, t in _HUMID_EVENT_CARD if k in present)
-        status: Status = "danger" if any(ln.level == "danger" for ln in lines) else "caution"
+        status: Status = "danger" if "env_vent_delay" in present else "caution"
         text = [s for s in (_humid_line(ln, window) for ln in lines) if s is not None]
         return Card("humid", code, status, title, text, {"events": _events_data(lines)})
 

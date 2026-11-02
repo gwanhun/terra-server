@@ -249,7 +249,7 @@ def test_handler_to_outbox_integration():        # handlers.handle_telemetry 로
 ## 배포·검증·롤백
 
 1. 머지·배포: 두 플래그 모두 꺼짐 → 운영 동작 변화 없음(legacy 판정 그대로).
-2. 앱 팀에 핸드오프 전달(담당: 사용자). 앱이 env_* kind 표시 준비 완료 회신 → `ALERTS_V4_ENABLED=true` + 브리지 재시작. 이때부터 앱 Realtime 에 env_* 이벤트가 보임, 푸시는 아직 없음.
+2. 앱 팀에 핸드오프 전달(담당: 사용자). 앱이 env_* kind 표시 준비 완료 회신 → `ALERTS_V4_ENABLED=true` + `ALERTS_V4_SINCE=<켠 시각>`(Stage P 일일 분석 기준) + 브리지 재시작. 이때부터 앱 Realtime 에 env_* 이벤트가 보임, 푸시는 아직 없음.
 3. 하루 관측: v4 이벤트 open 수(무음 제외)와 "적재됐을 푸시 수(started+reminder)"를 로그로 집계. 기기당 하루 6건을 넘는 기기가 있으면 원인 확인 후 진행.
 4. 앱 서버 수신부 준비 회신 → `PUSH_ENV_ALERTS_ENABLED=true`.
 5. 롤백: `ALERTS_V4_ENABLED=false` + 재시작 → legacy 복귀. 활성 v4 행은 `uv run python scripts/close_v4_alerts.py --apply` 로 종료. 대기 중 outbox 는 `PUSH_ENV_ALERTS_ENABLED=false` 로 신규 적재만 막고 기존 행은 워커가 보냄(필요 시 수동 `status='abandoned'`).

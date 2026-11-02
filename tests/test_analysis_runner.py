@@ -70,6 +70,7 @@ class ExplodingSB:
 def enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ALERTS_V4_ENABLED", "true")
     monkeypatch.setenv("ENV_REPORTS_ENABLED", "true")
+    monkeypatch.setenv("ALERTS_V4_SINCE", "2026-10-01T00:00:00+09:00")
     monkeypatch.delenv("HUMID_CYCLES_ENABLED", raising=False)
 
 
@@ -157,11 +158,48 @@ def test_two_pass_idempotent(enabled: None) -> None:
     runner = AnalysisRunner(sb=sb)
     assert runner.tick(kst(8, 16)) == 2
     assert runner.tick(kst(8, 21)) == 0          # 1차는 없을 때만
-    assert runner.tick(kst(9, 6)) == 2           # 2차 정확히 1회
+    sb.rows("alerts").append({"id": "a-late", **alert(
+        "dev-0002", "env_humid_high", kst(7, 10), kst(7, 50), peak_value=92, threshold=80)})
+    assert runner.tick(kst(9, 6)) == 1           # 2차: 바뀐 기기만 덮어씀
     assert runner.tick(kst(9, 11)) == 0
     assert runner.tick(kst(23, 0)) == 0
-    rows = sb.rows("env_daily_reports")
-    assert len(rows) == 2 and {r["pass"] for r in rows} == {2}
+    rows = {r["device_id"]: r for r in sb.rows("env_daily_reports")}
+    assert len(rows) == 2
+    assert rows["dev-0001"]["pass"] == 1         # 내용이 같으면 다시 쓰지 않음(앱 Realtime 중복 방지)
+    assert rows["dev-0002"]["pass"] == 2
+
+
+def test_since_gates_reports(enabled: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    # v4 를 켜기 전 구간을 "이벤트 없음"으로 분석하지 않는다
+    monkeypatch.delenv("ALERTS_V4_SINCE")
+    assert AnalysisRunner(sb=ExplodingSB()).tick(kst(9, 30)) == 0          # 값 없음 → 생성 안 함
+    monkeypatch.setenv("ALERTS_V4_SINCE", "2026-11-02T15:00:00+09:00")    # 구간 도중 켬
+    assert AnalysisRunner(sb=ExplodingSB()).tick(kst(9, 30)) == 0
+    monkeypatch.setenv("ALERTS_V4_SINCE", "2026-11-02T08:00:00+09:00")    # 구간 시작과 같음
+    sb = FakeSB(devices=[dev(1)])
+    assert AnalysisRunner(sb=sb).tick(kst(9, 30)) == 1
+
+
+def test_cursor_exact_batch_no_empty_tick(enabled: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(analysis_runner, "BATCH_SIZE", 2)
+    sb = FakeSB(devices=[dev(1), dev(2)])
+    runner = AnalysisRunner(sb=sb)
+    assert runner.tick(kst(8, 16)) == 2
+    sb.rows("alerts").append({"id": "a-late", **alert(
+        "dev-0001", "env_humid_high", kst(7, 10), kst(7, 50), peak_value=92, threshold=80)})
+    assert runner.tick(kst(9, 6)) == 1           # 기기 수 = 배치 크기여도 빈 tick 없이 바로 2차
+
+
+def test_done_day_skips_queries(enabled: None) -> None:
+    sb = RecordingSB(devices=[dev(1)])
+    runner = AnalysisRunner(sb=sb)
+    assert runner.tick(kst(8, 16)) == 1
+    assert runner.tick(kst(9, 6)) == 0           # 2차(내용 같음) → 그날 완료
+    sb.touched.clear()
+    assert runner.tick(kst(9, 11)) == 0
+    assert runner.tick(kst(20, 0)) == 0
+    assert sb.touched == []                      # 완료된 날은 조회도 안 함
+    assert runner.tick(kst(8, 16, day=4)) == 1   # 다음 날은 다시
 
 
 def test_restart_after_0905_writes_once(enabled: None) -> None:
@@ -244,6 +282,26 @@ def test_inputs_overlap_rule_and_chain_root_outside_window(enabled: None) -> Non
     assert {i for ev in temp["data"]["events"] for i in ev["ids"]} == {"a-root", "a-tail"}
     assert row["humid_card"]["title"] == "건조를 주의해 주세요"
     assert row["humid_card"]["lines"] == ["22:00~ 적정 습도보다 최대 -9% 이탈"]
+
+
+def test_chain_middle_rows_outside_window_fetched(enabled: None) -> None:
+    """구간 밖 chain 중간 행(무음 주의·D14 재경고)도 가져와 peak·ids 에 반영(P11)."""
+    rows = [
+        {"id": "c-root", **alert("dev-0001", "env_temp_high", kst(5, 0, day=2), kst(5, 30, day=2),
+                                 level="danger", peak_value=29.5, threshold=26)},
+        {"id": "c-s1", **alert("dev-0001", "env_temp_high", kst(5, 30, day=2), kst(6, 0, day=2),
+                               peak_value=28.0, threshold=26, chain_root="c-root", deescalated_from="c-root")},
+        {"id": "c-d14", **alert("dev-0001", "env_temp_high", kst(6, 0, day=2), kst(6, 40, day=2),
+                                level="danger", peak_value=30.8, threshold=26, chain_root="c-root",
+                                push_suppressed=True)},
+        {"id": "c-s2", **alert("dev-0001", "env_temp_high", kst(6, 40, day=2), kst(8, 30, day=2),
+                               peak_value=28.2, threshold=26, chain_root="c-root", deescalated_from="c-d14")},
+    ]
+    sb = FakeSB(devices=[dev(1)], alerts=rows)
+    assert AnalysisRunner(sb=sb).tick(kst(8, 16)) == 1
+    temp = report(sb)["temp_card"]
+    assert temp["lines"] == ["11/2 05:00~08:30 위험 온도 30.8℃ 감지"]
+    assert temp["data"]["events"][0]["ids"] == ["c-root", "c-s1", "c-d14", "c-s2"]
 
 
 def test_buckets_feed_daynight_card(enabled: None) -> None:

@@ -3,7 +3,7 @@
 > **대상**: 앱 개발 담당
 > **작성**: terra-server 백엔드 담당, 2026-11-02
 > **성격**: 기획 v4 2-1~2-3(일일 분석)을 서버가 매일 아침 기기별로 만들어 `env_daily_reports` 에 저장합니다. 문구는 서버가 기획 원문대로 완성해 저장하니 앱은 **그대로 그리면** 됩니다. 앱은 RLS 로 본인 기기 행만 읽고, Realtime 으로 새 리포트를 받을 수 있습니다.
-> **선행**: v4 실시간 알림([APP_ENV_ALERT_PUSH_2026-11-02.md](APP_ENV_ALERT_PUSH_2026-11-02.md)) — 일일 분석은 그 `env_*` alerts 를 요약합니다. 서버 스위치 `ALERTS_V4_ENABLED` 와 `ENV_REPORTS_ENABLED` 가 **둘 다 켜져야** 생성됩니다(기본 꺼짐).
+> **선행**: v4 실시간 알림([APP_ENV_ALERT_PUSH_2026-11-02.md](APP_ENV_ALERT_PUSH_2026-11-02.md)) — 일일 분석은 그 `env_*` alerts 를 요약합니다. 서버 스위치 `ALERTS_V4_ENABLED` 와 `ENV_REPORTS_ENABLED` 가 **둘 다 켜져야** 생성됩니다(기본 꺼짐). 실시간 판정을 켠 날 이후 08:00 에 시작하는 날부터 만들어집니다(켜기 전 구간을 "이벤트 없음"으로 보여 주지 않게).
 > 설계: [specs/stage-p-daily-analysis-v4.md](../specs/stage-p-daily-analysis-v4.md)
 
 ---
@@ -30,7 +30,7 @@
 | `window_start` / `window_end` | timestamptz | 위 구간(UTC 저장) |
 | `temp_card` | jsonb \| null | 온도 카드 (§2) |
 | `humid_card` | jsonb \| null | 습도 카드 (§2) |
-| `pass` | smallint | 1 = 08시대 1차 생성, 2 = 09:05 이후 재계산 |
+| `pass` | smallint | 1 = 08시대 1차 생성, 2 = 09:05 이후 재계산에서 내용이 바뀌어 다시 씀. 1 로 남아 있으면 재계산 결과가 같았다는 뜻(최종) |
 | `generated_at` | timestamptz | 마지막 생성 시각 |
 
 - UNIQUE(`device_id`, `report_date`). 앱 화면의 "어제 분석" = 오늘 아침 생성된 `report_date = 어제` 행입니다.
@@ -108,7 +108,7 @@ sb.channel('daily-reports-rt')
 |---|---|
 | `element` | `temp` / `humid` |
 | `code` | 카드 종류 (아래 표). 아이콘·색 분기용 |
-| `status` | `danger`(경고 있음) / `caution`(주의·주야간 이상) / `normal`. **alerts.severity 의 `warning`(=주의)·`critical`(=경고)과 다른 어휘**입니다 |
+| `status` | `danger`(온도 경고 또는 환기 지연 있음 — 주간 분석과 같은 기준) / `caution`(주의·주야간 이상) / `normal`. **alerts.severity 의 `warning`(=주의)·`critical`(=경고)과 다른 어휘**입니다 |
 | `title` | 카드 타이틀 — 기획 2-2·2-3 원문 |
 | `lines` | 세부 설명. 이벤트 카드는 이벤트 1건 = 1줄, 시작 시각순 |
 | `data.events` | 줄과 같은 순서의 이벤트 묶음. `ids` 는 그 줄에 합쳐진 alerts id (상세 화면 연결용) |
@@ -138,7 +138,7 @@ sb.channel('daily-reports-rt')
 | | 시각(KST) | 동작 |
 |---|---|---|
 | 1차 | 08:00 이후 (마지막 30분 집계가 확인되거나 08:15 지나면) | 행이 없을 때만 INSERT, `pass=1` |
-| 2차 | 09:05 이후 1회 | 같은 행을 다시 계산해 UPDATE, `pass=2` |
+| 2차 | 09:05 이후 1회 | 다시 계산해 **바뀌었을 때만** UPDATE, `pass=2` (같으면 쓰지 않음 — Realtime 이벤트 없음) |
 | (서버가 08시대에 멈춰 있었을 때) | 09:05 이후 처음 생성 | 바로 `pass=2` 로 1회 INSERT |
 
 2차가 필요한 이유: 07:59 에 시작한 이벤트는 2분 확정이 08:01 이라 1차에 빠질 수 있고, 08:20 에 끝난 이벤트는 1차엔 `22:00~` 로, 2차엔 `22:00~11/3 08:20` 으로 보입니다. **Realtime UPDATE 를 받거나 화면 진입 시 다시 조회**해 주세요.

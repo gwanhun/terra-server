@@ -188,6 +188,14 @@ def test_device_error_isolated():
 - Must know: ① 카드 JSON 예시(이벤트 날/주야간 날/진행 중/chain) ② `report_date`·`pass` 의미(09:05 이후 내용이 바뀔 수 있음) ③ 카드 NULL 의미(P7·P9) ④ Realtime 구독 예시 ⑤ status 어휘(danger/caution/normal)와 alerts severity 차이.
 - [ ] 작성 → 컬럼명·필드명 grep 확인 → 커밋 `"docs: v4 일일 분석 앱 핸드오프 + DB/ENV 문서"`
 
+## 코드 리뷰 반영 (2026-11-02)
+
+- v4 켜기 전 구간 보호: `ALERTS_V4_SINCE`(켠 시각) 이후에 시작하는 날만 생성, 없으면 생성 안 함.
+- 커서는 201개 조회로 끝 판정(기기 수가 200의 배수여도 빈 tick 없음).
+- 구간 밖 chain 중간 행(무음 주의·D14 재경고)도 조회해 peak·ids 반영.
+- 환기 지연 카드 status = danger(주간 HUM_DELAY 와 같은 어휘). P12 갱신.
+- 2차는 카드가 바뀌었을 때만 덮어씀(같으면 `pass=1` 유지), 전 기기 2차 완료 후엔 다음 날까지 조회 안 함.
+
 ## 기획 확인이 필요한 것
 
 - P7 "데이터 부족" 안내 문구가 필요한지(현재 카드 없음).

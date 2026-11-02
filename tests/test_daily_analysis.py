@@ -285,6 +285,7 @@ def test_humid_vent_delay_line():
     }
     card = build_humid_card([vent], [], W)
     assert card.title == "건습 사이클이 건강하지 않아요"
+    assert (card.code, card.status) == ("HUM_DELAY", "danger")   # 주간 HUM_DELAY(경고)와 같은 어휘
     assert card.lines == ["10:00에 분무 후 사육장이 충분히 마르지 않음"]
     no_start = dict(vent, context={"rule": "v4", "level": "caution"})
     card2 = build_humid_card([no_start], [], W)
