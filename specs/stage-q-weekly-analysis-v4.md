@@ -1,7 +1,7 @@
 # Stage Q — 주간 온습도 분석 + 예외 (기획 v4 3-1~3-3, 4-1) Implementation Plan
 
 > **구현 방식 (CAOF):** Critical 트랙 — Implementer 에이전트 분리(GATE 4), 별도 worktree.
-> 상태: ✅ 계획 승인 (2026-11-02, r2 + 잠정 결정 확정). 구현 대기 — 교차 검수 `reports/stage-opq-v4-review-final.md`. **선행: Stage N, Stage P 머지.** HUM_DELAY·HUM_NORMAL 은 Stage O 의 `HUMID_CYCLES_ENABLED` 가 켜진 뒤 활성.
+> 상태: 🚧 구현 완료(브랜치 feat/weekly-analysis-v4, `ENV_REPORTS_ENABLED` 꺼짐, 마이그레이션 미적용) — 계획 승인 2026-11-02 r2. 주간에도 `ALERTS_V4_SINCE` 적용(주 시작이 그 이후인 주만) — 교차 검수 `reports/stage-opq-v4-review-final.md`. **선행: Stage N, Stage P 머지.** HUM_DELAY·HUM_NORMAL 은 Stage O 의 `HUMID_CYCLES_ENABLED` 가 켜진 뒤 활성.
 
 **Goal:** 가장 최근에 끝난 주(월요일 08:00 ~ 다음 월요일 08:00, KST)에 대해 기기별 온도·습도 주간 카드(대표 케이스 1개 + 그 케이스의 세부 문구)와 예외 안내를 `env_weekly_reports` 에 저장한다.
 
