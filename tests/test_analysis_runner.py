@@ -381,15 +381,16 @@ def test_weekly_monday_after_8(weekly: None) -> None:
     runner.tick(kst(7, 59, day=9))               # 월 07:59 — 대상은 지지난 주(10/26), 이미 있음
     assert len(sb.rows("env_weekly_reports")) == 1
     assert wreport(sb) is None
-    runner.tick(kst(8, 1, day=9))                # 월 08:01 — 지난주(11/2) 생성
+    runner.tick(kst(8, 1, day=9))                # 월 08:01 — 소급 이벤트를 기다리느라 아직
+    assert wreport(sb) is None
+    runner.tick(kst(9, 6, day=9))                # 월 09:06 — 지난주(11/2) 생성 (일일 2차와 같은 시각)
     row = wreport(sb)
     assert row is not None
     assert row["window_start"] == WEEK_START_UTC.isoformat()
     assert row["window_end"] == WEEK_END_UTC.isoformat()
-    assert row["generated_at"] == iso(kst(8, 1, day=9))
+    assert row["generated_at"] == iso(kst(9, 6, day=9))
     assert row["temp_card"] is None and row["humid_card"] is None
     assert {n["code"] for n in row["notices"]} == {"ERR_NO_DATA"}   # 데이터 없음 → 지표별 안내
-    assert sb.rows("env_daily_reports") == []    # 일일은 08:15 전·07:30 버킷 없음 → 아직
 
 
 def test_weekly_recovery_tuesday(weekly: None) -> None:
@@ -402,7 +403,7 @@ def test_weekly_recovery_tuesday(weekly: None) -> None:
 
 def test_weekly_no_older_backfill(weekly: None) -> None:
     sb = FakeSB(devices=[dev(1)])
-    AnalysisRunner(sb=sb).tick(kst(9, 0, day=16))    # 11/16(월) — 대상 11/9 주. 11/2 주는 없어도 소급 안 함
+    AnalysisRunner(sb=sb).tick(kst(9, 6, day=16))    # 11/16(월) 09:05 이후 — 대상 11/9 주. 11/2 주는 없어도 소급 안 함
     assert wreport(sb, "2026-11-09") is not None
     assert wreport(sb) is None
     assert len(sb.rows("env_weekly_reports")) == 1
@@ -435,9 +436,9 @@ def test_weekly_done_week_skips_queries(weekly: None) -> None:
     assert runner.tick(kst(7, 0, day=10)) == 2     # 화 07:00 — 일일은 쉬고 주간만
     sb.touched.clear()
     assert runner.tick(kst(7, 5, day=10)) == 0
-    assert runner.tick(kst(7, 59, day=16)) == 0    # 다음 주 월 08:00 전까지 같은 주 → 조회 없음
+    assert runner.tick(kst(7, 59, day=16)) == 0    # 다음 주 월 09:05 전까지 같은 주 → 조회 없음
     assert sb.touched == []
-    runner.tick(kst(8, 1, day=16))                 # 새 주(11/9)는 다시
+    runner.tick(kst(9, 6, day=16))                 # 새 주(11/9)는 다시
     assert wreport(sb, "2026-11-09") is not None
 
 
@@ -453,7 +454,7 @@ def test_weekly_done_waits_for_full_cycle(weekly: None, monkeypatch: pytest.Monk
 
 def test_weekly_and_daily_share_batch(weekly: None) -> None:
     sb = RecordingSB(devices=[dev(1), dev(2)])
-    assert AnalysisRunner(sb=sb).tick(kst(8, 16, day=9)) == 4   # 일일 2 + 주간 2
+    assert AnalysisRunner(sb=sb).tick(kst(9, 6, day=9)) == 4    # 일일 2 + 주간 2
     assert sb.touched.count("devices") == 1                     # 대상 조회는 한 번
     assert len(sb.rows("env_daily_reports")) == 2
     assert len(sb.rows("env_weekly_reports")) == 2
@@ -477,6 +478,49 @@ def test_weekly_device_error_isolated(weekly: None, monkeypatch: pytest.MonkeyPa
     assert any("dev-0002" in r.getMessage() for r in caplog.records)
     monkeypatch.setattr(analysis_runner, "generate_weekly", real)
     assert runner.tick(kst(7, 5, day=10)) == 1     # 실패 기기는 완료로 치지 않고 다음 바퀴에 재시도
+
+
+def test_weekly_includes_monday_backdated_event(weekly: None) -> None:
+    # 월 07:10 시작 건조 주의가 08:10 에 소급 기록돼도 주간(09:05 이후 생성)에 들어간다
+    buckets = full_buckets("dev-0001", WEEK_START_UTC, 7, 24.0)
+    early = [{"id": f"h-{d}", **alert("dev-0001", "env_humid_low", kst(10, 0, day=d), kst(11, 0, day=d),
+                                       peak_diff=8, threshold=40)} for d in (3, 5)]
+    sb = FakeSB(devices=[dev(1, created_at="2026-10-01T00:00:00+00:00")], telemetry_30m=buckets,
+                alerts=early)
+    runner = AnalysisRunner(sb=sb)
+    runner.tick(kst(8, 5, day=9))
+    sb.rows("alerts").append({"id": "h-mon", **alert("dev-0001", "env_humid_low", kst(7, 10, day=9),
+                                                      kst(7, 50, day=9), peak_diff=9, threshold=40)})
+    runner.tick(kst(9, 6, day=9))
+    humid = wreport(sb)["humid_card"]
+    assert humid["code"] == "HUM_DRY"
+    assert humid["lines"] == ["총 3회 건조 주의가 발생. 사육장에 수분을 보충해 주세요"]
+
+
+def test_failing_device_given_up_after_3(weekly: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 계속 실패하는 기기 하나 때문에 일주일·하루 내내 재시도하지 않는다
+    sb = RecordingSB(devices=[dev(1), dev(2)])
+    real_w, real_d = analysis_runner.generate_weekly, analysis_runner.generate_daily
+
+    def bad_w(sb_: Any, device: dict[str, Any], *a: Any, **k: Any) -> bool:
+        if device["id"] == "dev-0002":
+            raise RuntimeError("주간 계속 실패")
+        return real_w(sb_, device, *a, **k)
+
+    def bad_d(sb_: Any, device: dict[str, Any], *a: Any, **k: Any) -> bool:
+        if device["id"] == "dev-0002":
+            raise RuntimeError("일일 계속 실패")
+        return real_d(sb_, device, *a, **k)
+
+    monkeypatch.setattr(analysis_runner, "generate_weekly", bad_w)
+    monkeypatch.setattr(analysis_runner, "generate_daily", bad_d)
+    runner = AnalysisRunner(sb=sb)
+    for m in (6, 11, 16):                          # 3번째 실패에서 포기 → 그 바퀴로 완료
+        runner.tick(kst(9, m, day=10))
+    sb.touched.clear()
+    assert runner.tick(kst(9, 21, day=10)) == 0
+    assert sb.touched == []                        # 일일·주간 모두 완료 — 조회 없음
+    assert wreport(sb, device_id="dev-0002") is None
 
 
 def test_weekly_prev_week_buckets_temp_diff_high(weekly: None) -> None:

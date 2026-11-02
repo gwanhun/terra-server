@@ -32,7 +32,7 @@
 | `generated_at` | timestamptz | 생성 시각 |
 
 - UNIQUE(`device_id`, `week_start`). 주당 한 번만 만들고 다시 쓰지 않습니다.
-- 생성: 월요일 08:00 이후 첫 처리(5분 주기). 서버가 월요일에 멈춰 있었으면 **그 주 안에** 복구해서 만듭니다. 그보다 오래된 주는 만들지 않습니다.
+- 생성: **월요일 09:05 이후** 첫 처리(5분 주기). 구간은 월 08:00 에 끝나지만, 08시 전후에 늦게 기록되는 실시간 이벤트(예: 07:10 시작 과습은 1시간 확정이라 08:10 기록)를 담으려고 일일 분석 재계산과 같은 시각까지 기다립니다. 서버가 월요일에 멈춰 있었으면 **그 주 안에** 복구해서 만듭니다. 그보다 오래된 주는 만들지 않습니다.
 - UI 표시 기간은 기획대로 월~일로 보여 주세요(구간은 월 08:00 ~ 다음 월 08:00).
 
 ```dart
@@ -57,7 +57,7 @@ final rows = await sb.from('env_weekly_reports')
     "n_danger": 2, "n_temp_caution": 0, "max_deviation": 4.1,
     "week_avg": 23.4, "prev_week_avg": null, "diff_prev": null, "diff_daynight": 3.2,
     "events": [
-      {"root": "d1", "kind": "env_temp_high", "level": "danger",
+      {"root": "d1", "ids": ["d1"], "kind": "env_temp_high", "level": "danger",
        "start": "2026-11-03T05:10:00+00:00", "end": "2026-11-03T06:00:00+00:00"}
     ]
   }
@@ -74,7 +74,8 @@ final rows = await sb.from('env_weekly_reports')
 ```
 
 - `lines` 순서는 기획의 카테고리 순서([1] 이벤트 요약 → [2] 전주 대비 → [3] 패턴 분석)이고, 데이터가 없는 줄은 빠집니다. 예: 위험 온도가 같은 시간대에 3일 이상 **시작**하지 않았으면 "…에 온도 이탈이 집중되었어요" 줄이 없습니다.
-- 횟수는 경고가 나아졌다 다시 나빠진 묶음(`chain_root`)을 1회로 셉니다(실시간 알림 문서 §1).
+- 횟수는 경고가 나아졌다 다시 나빠진 묶음(`chain_root`)을 1회로 셉니다(실시간 알림 문서 §1). `data.events` 는 일일 카드와 같은 형식(`ids` 포함)입니다.
+- 이탈 폭을 계산할 수 없는 드문 경우 TEMP_DANGER 첫 줄은 `총 N회 위험 온도 발생.` 까지만 나옵니다.
 - `status`: `danger`(TEMP_DANGER, HUM_DELAY) / `caution`(그 외 이상 케이스) / `normal`(TEMP_NORMAL, HUM_NORMAL). 일일 카드와 같은 어휘입니다.
 
 | code | status | 타이틀 |

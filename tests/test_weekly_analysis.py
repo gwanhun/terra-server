@@ -210,6 +210,24 @@ def test_temp_danger_pattern_day_night():
     assert len(run(mixed).temp_card.lines) == 1
 
 
+def test_temp_danger_count_kept_without_diff():
+    # 이탈 폭을 못 구해도 횟수 줄은 남긴다(빈 카드 방지)
+    bare = [ev("b1", "env_temp_high", "danger", kst(3, 14), kst(3, 15)),
+            ev("b2", "env_temp_high", "danger", kst(5, 9), kst(5, 10))]
+    c = run(bare).temp_card
+    assert c.code == "TEMP_DANGER"
+    assert c.lines[0] == "총 2회 위험 온도 발생."
+
+
+def test_events_data_has_ids_like_daily():
+    chain = [
+        danger("d1", kst(3, 14), kst(3, 14, 30), 3.0),
+        caution("c1", kst(3, 14, 30), kst(3, 15), chain_root="d1", deescalated_from="d1"),
+    ]
+    ev0 = run(chain).temp_card.data["events"][0]
+    assert ev0["ids"] == ["d1", "c1"] and ev0["root"] == "d1"
+
+
 def test_chain_counts_once():
     chain = [
         danger("d1", kst(3, 14), kst(3, 14, 30), 3.0),

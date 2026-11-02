@@ -69,6 +69,7 @@ from backend.daily_analysis import (
     chain_diff,
     daynight_diff,
     event_chains,
+    events_data,
     fmt_temp,
     half_up,
     is_valid_day,
@@ -255,13 +256,15 @@ def _temp_card(events: list[dict[str, Any]], buckets: list[dict[str, Any]],
         "prev_week_avg": float(half_up(prev_avg, "0.1")) if prev_avg is not None else None,
         "diff_prev": float(diff_prev) if diff_prev is not None else None,
         "diff_daynight": float(diff_dn) if diff_dn is not None else None,
-        "events": _chains_data(chains),
+        "events": events_data(chains),
     }
 
     if dangers:
         lines = []
         if max_dev is not None:
             lines.append(f"총 {len(dangers)}회 위험 온도 발생. 적정 온도보다 최대 {fmt_temp(max_dev)}℃ 이탈")
+        else:   # 이탈 폭을 못 구해도 횟수는 남긴다 — 타이틀만 있는 빈 카드 방지
+            lines.append(f"총 {len(dangers)}회 위험 온도 발생.")
         label = _time_label(dangers, window)
         if label is not None:
             lines.append(f"{label}에 온도 이탈이 집중되었어요")
@@ -319,7 +322,7 @@ def _humid_card(events: list[dict[str, Any]], window: Window,
     n_over = sum(1 for c in chains if c.kind == "env_humid_high")
     n_delay = sum(1 for c in chains if c.kind == "env_vent_delay")
     data: dict[str, Any] = {**stats, "n_dry": n_dry, "n_over": n_over, "n_delay": n_delay,
-                            "events": _chains_data(chains)}
+                            "events": events_data(chains)}
     dry_time: str | None = None
     if cycles is not None:
         n_cycles, mins = _cycle_stats(cycles, window)
@@ -353,19 +356,6 @@ def _humid_card(events: list[dict[str, Any]], window: Window,
 
 
 # ---------- 공용 ----------
-
-def _chains_data(chains: list[EventChain]) -> list[dict[str, Any]]:
-    return [
-        {
-            "root": c.root,
-            "kind": c.kind,
-            "level": c.level,
-            "start": c.start.isoformat(),
-            "end": c.end.isoformat() if c.end is not None else None,
-        }
-        for c in chains
-    ]
-
 
 def _notice(code: str, metric: Metric) -> dict[str, str]:
     title, body = _NOTICE[code]

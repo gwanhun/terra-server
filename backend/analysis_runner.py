@@ -47,9 +47,11 @@ report_date 는 완료로 기억하고, 다음 날 08:00 까지 tick 은 조회 
 
 ## 주간 (Stage Q)
 
-week_start = tick 시각(KST) 기준 08:00 이 지난 가장 최근 월요일 − 7일(가장 최근에 끝난 주,
-구간 week_start 08:00 ~ +7일 08:00). 요일과 무관하게 매 tick 판정하므로 월요일 08시대를 놓쳐도
-그 주 안에 복구된다. 그보다 이전 주는 소급하지 않는다. 일일처럼 `ALERTS_V4_SINCE` 이후에
+week_start = tick 시각(KST) 기준 **09:05** 가 지난 가장 최근 월요일 − 7일(가장 최근에 끝난 주,
+구간 week_start 08:00 ~ +7일 08:00). 구간은 월 08:00 에 끝나지만 생성은 일일 2차와 같은 09:05
+이후 — 월 08시 전후에 소급 기록되는 Stage N 이벤트(07:10 시작 과습 → 08:10 INSERT 등)와 마지막
+버킷을 기다린다(주간은 한 번 쓰면 다시 안 쓰므로). 요일과 무관하게 매 tick 판정하므로 월요일을
+놓쳐도 그 주 안에 복구된다. 그보다 이전 주는 소급하지 않는다. 일일처럼 `ALERTS_V4_SINCE` 이후에
 시작한 주만 만든다.
 
 기기·주당 **1회** 쓴다(2차 없음): `env_weekly_reports` 에 그 주 행이 없는 기기만 계산·upsert.
@@ -61,6 +63,12 @@ week_start = tick 시각(KST) 기준 08:00 이 지난 가장 최근 월요일 �
 완료 판정은 따로 한다: 한 바퀴(커서 처음 → 마지막 배치)를 도는 동안 모든 기기가 그 주 행을
 가졌으면 그 week_start 는 완료 — 다음 주가 될 때까지 주간은 조회하지 않는다. 바퀴 중간에
 새 주가 시작되면 그 바퀴로는 완료를 판정하지 않는다(앞 배치를 안 봤으므로).
+
+## 계속 실패하는 기기
+
+일일(그 report_date)·주간(그 week_start)마다 기기별 실패를 세어 `MAX_DEVICE_FAILURES`(3) 번째
+실패에서 그 날짜·주는 포기한다(경고 로그 1회). 포기한 기기는 완료 판정에서 빼므로, 한 기기 때문에
+하루·일주일 내내 5분마다 같은 조회를 반복하지 않는다. 다음 날짜·주에는 다시 시도한다.
 
 ## 대상·커서 (P10)
 
@@ -97,7 +105,8 @@ BATCH_SIZE = 200                         # 한 tick 최대 기기 수 (P10)
 FIRST_PASS_AT = time(8, 0)               # KST — 이 시각 전 tick 은 아무것도 안 함
 FIRST_PASS_DEADLINE = time(8, 15)        # 07:30 버킷이 없어도 이때부터 1차
 SECOND_PASS_AT = time(9, 5)              # 2차 재계산
-WEEK_STARTS_AT = time(8, 0)              # KST 월요일 이 시각부터 지난주가 "끝난 주"
+WEEKLY_AT = SECOND_PASS_AT               # KST 월요일 이 시각부터 지난주 리포트 생성(소급 이벤트 대기)
+MAX_DEVICE_FAILURES = 3                  # 기기·날짜(주)당 이만큼 실패하면 그 날짜(주)는 포기
 LAST_BUCKET_OFFSET = timedelta(minutes=30)   # 구간 마지막 버킷 = 구간 끝 − 30분 (07:30)
 
 EVENT_KINDS = TEMP_EVENT_KINDS + HUMID_EVENT_KINDS
@@ -263,10 +272,10 @@ def generate_daily(sb: Any, device: dict[str, Any], report_date: date, now: date
 
 
 def latest_week_start(now_kst: datetime) -> date:
-    """가장 최근에 끝난 주의 월요일: 08:00 이 지난 가장 최근 월요일 − 7일."""
+    """이번 tick 에 만들 주의 월요일: 09:05(WEEKLY_AT) 가 지난 가장 최근 월요일 − 7일."""
     today = now_kst.date()
     monday = today - timedelta(days=today.weekday())
-    if now_kst.time() < WEEK_STARTS_AT and today == monday:
+    if now_kst.time() < WEEKLY_AT and today == monday:
         monday -= timedelta(days=7)
     return monday - timedelta(days=7)
 
@@ -292,6 +301,12 @@ def generate_weekly(sb: Any, device: dict[str, Any], week_start: date, now: date
         "generated_at": _iso(now),
     }, on_conflict="device_id,week_start").execute()
     return True
+
+
+def _gave_up(fails: dict[str, int], device_id: str) -> bool:
+    """실패 1회 기록. MAX_DEVICE_FAILURES 번째면 True(그 날짜·주 포기)."""
+    fails[device_id] = fails.get(device_id, 0) + 1
+    return fails[device_id] >= MAX_DEVICE_FAILURES
 
 
 def _pass_to_run(sb: Any, device_id: str, existing_pass: int | None,
@@ -323,11 +338,13 @@ class AnalysisRunner:
         self._settled: set[str] = set()       # 그 날짜에 2차까지 끝난 기기(쓰거나, 같아서 안 쓴)
         self._cycle_ok = True                 # 이번 바퀴에서 모든 기기가 settled 였는지
         self._done_date: date | None = None   # 전 기기 2차 완료 — 다음 날까지 조회 안 함
+        self._fails: dict[str, int] = {}      # 그 날짜 기기별 실패 수
         # 주간 — 커서는 일일과 공유, 완료 추적은 따로
         self._week: date | None = None        # 지금 돌고 있는 week_start
         self._week_has: set[str] = set()      # 그 주 행이 있는 기기(썼거나 이미 있던)
         self._week_cycle_ok = True            # 이번 바퀴에서 모든 기기가 행을 가졌는지
         self._week_done: date | None = None   # 전 기기 완료 — 다음 주까지 조회 안 함
+        self._week_fails: dict[str, int] = {}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -392,6 +409,7 @@ class AnalysisRunner:
             return None
         if report_date != self._date:
             self._date, self._settled, self._cursor = report_date, set(), None
+            self._fails = {}
         return report_date
 
     def _daily_batch(self, sb: Any, devices: list[dict[str, Any]], last_batch: bool,
@@ -422,8 +440,13 @@ class AnalysisRunner:
                 else:
                     self._cycle_ok = False
             except Exception:  # noqa: BLE001 — 한 기기 실패가 나머지를 막지 않게
-                self._cycle_ok = False
                 logger.exception("일일 분석 생성 실패: device=%s date=%s", device_id, report_date)
+                if _gave_up(self._fails, device_id):
+                    self._settled.add(device_id)
+                    logger.warning("일일 분석 %s 포기: device=%s (%d회 실패)", report_date, device_id,
+                                   MAX_DEVICE_FAILURES)
+                else:
+                    self._cycle_ok = False
         if last_batch and self._cycle_ok and now_kst.time() >= SECOND_PASS_AT:
             self._done_date = report_date
             logger.info("일일 분석 %s 전 기기 완료 — 다음 날 08:00 까지 쉼", report_date)
@@ -439,7 +462,7 @@ class AnalysisRunner:
         if week_start == self._week_done:
             return None
         if week_start != self._week:
-            self._week, self._week_has = week_start, set()
+            self._week, self._week_has, self._week_fails = week_start, set(), {}
             # 바퀴 중간에 합류하면 앞 배치를 안 봤으니 이번 바퀴로는 완료 판정 안 함
             self._week_cycle_ok = self._cursor is None
         return week_start
@@ -467,8 +490,13 @@ class AnalysisRunner:
                     written += 1
                 self._week_has.add(device_id)
             except Exception:  # noqa: BLE001 — 한 기기 실패가 나머지를 막지 않게
-                self._week_cycle_ok = False
                 logger.exception("주간 분석 생성 실패: device=%s week=%s", device_id, week_start)
+                if _gave_up(self._week_fails, device_id):
+                    self._week_has.add(device_id)
+                    logger.warning("주간 분석 %s 주 포기: device=%s (%d회 실패)", week_start, device_id,
+                                   MAX_DEVICE_FAILURES)
+                else:
+                    self._week_cycle_ok = False
         if last_batch and self._week_cycle_ok:
             self._week_done = week_start
             logger.info("주간 분석 %s 주 전 기기 완료 — 다음 주까지 쉼", week_start)

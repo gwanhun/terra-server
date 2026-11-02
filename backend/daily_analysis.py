@@ -483,6 +483,11 @@ def event_chains(events: list[dict[str, Any]], kinds: tuple[str, ...], window: W
     return _event_lines(events, kinds, window)
 
 
+def events_data(chains: list[_Line]) -> list[dict[str, Any]]:
+    """카드 data.events 형식(root·ids·kind·level·start·end) — 일일·주간 같은 모양."""
+    return _events_data(chains)
+
+
 def chain_diff(chain: _Line) -> float | None:
     """P6: chain 안 행들의 사용자 기준 대비 이탈 최댓값(값이 하나도 없으면 None)."""
     return _diff(chain)
