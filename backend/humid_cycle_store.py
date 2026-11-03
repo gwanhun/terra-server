@@ -184,6 +184,17 @@ def _state_from_row(r: dict[str, Any], active: dict[str, dict[str, Any]]) -> Cyc
     )
 
 
+def _leftover_close(r: dict[str, Any], cycle: CycleState | None, now: datetime) -> tuple[str, str]:
+    """복원 때 남은 알림의 종료 (시각, 사유). 쓰기 실패 등으로 못 닫힌 알림이라 그때 시각으로 메운다."""
+    if cycle is not None and (r.get("context") or {}).get("cycle_id") == cycle.cycle_id:
+        if r["kind"] == "env_vent_delay" and cycle.dry_reached_at is not None:
+            return _iso(cycle.dry_reached_at), "dry"
+        return _iso(now), "restore"
+    if cycle is not None:
+        return _iso(cycle.started_at), "next_event"   # 이전 사이클 알림 — 이 사이클이 열리며 끝났어야 함
+    return _iso(now), "restore"
+
+
 def _restore(c: Any, st: CycleDeviceState, at: datetime) -> bool:
     since = humid_cycles_since()
     assert since is not None
@@ -219,10 +230,8 @@ def _restore(c: Any, st: CycleDeviceState, at: datetime) -> bool:
             if not pushed and trig is not None and (c.now_wall - trig).total_seconds() < RETRY_SEC:
                 st.push_retry[aid] = (r["kind"], _num((r.get("context") or {}).get("value")), trig)
             continue
-        # 도달·종료된 사이클에 남은 알림, 다른 사이클의 알림 → 닫는다
-        reason = "dry" if cycle is not None and cycle.dry_reached_at else "restore"
-        when = _iso(cycle.dry_reached_at) if (cycle is not None and cycle.dry_reached_at
-                                              and r["kind"] == "env_vent_delay") else _iso(c.now_wall)
+        # 도달·종료된 사이클에 남은 알림, 다른 사이클의 알림 → 실제로 끝났어야 할 시각으로 닫는다
+        when, reason = _leftover_close(r, cycle, c.now_wall)
         try:
             close_cycle_alert(c.sb, r, when, reason)
         except Exception:  # noqa: BLE001
@@ -262,7 +271,9 @@ def _write_cycle(c: Any, op: CycleOp) -> None:
     extra: dict[str, Any] = {}
     if op.op == "not_reached":
         extra = {"closed_at": _iso(op.at), "ended_by": "next_event"}
-    c.sb.table("humid_cycles").update(_cycle_patch(cy, now, **extra)).eq("id", cy.cycle_id).execute()
+    # 해제 API·롤백 스크립트가 끝낸 행(ended_by)은 브리지가 되돌려 쓰지 않는다(캐시상 아직 연결됨일 때)
+    c.sb.table("humid_cycles").update(_cycle_patch(cy, now, **extra)) \
+        .eq("id", cy.cycle_id).is_("ended_by", "null").execute()
 
 
 def _open_alert(c: Any, st: CycleDeviceState, op: CycleOp, confirm_linked: Callable[[], bool]) -> bool:
@@ -356,8 +367,8 @@ def _drain(c: Any, st: CycleDeviceState, confirm_linked: Callable[[], bool]) -> 
                     return False
             elif op.op in ("vent_delay_close", "mist_gap_close"):
                 _close_alert(c, st, op)
-            elif op.cycle.cycle_id is None and op.op != "open":
-                pass   # 저장 안 된 사이클은 open 이 앞에서 멈춰 있으므로 여기 오지 않는다
+            elif op.op == "open" and not confirm_linked():
+                return False   # 해제된 기기에 새 사이클을 만들지 않는다(브리지 캐시가 늦을 때)
             else:
                 _write_cycle(c, op)
         except Exception:  # noqa: BLE001 — supabase-py 예외 타입 넓음

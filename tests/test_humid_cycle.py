@@ -310,3 +310,32 @@ def test_snapshot_restore_reemits() -> None:
         t += 3
     assert first is not None and again is not None
     assert again.cycle.started_at == first.cycle.started_at
+
+
+# ---------- 코드 리뷰 반영 ----------
+
+def test_since_is_later_of_humid_and_v4(monkeypatch: pytest.MonkeyPatch) -> None:
+    # v4 를 껐다 다시 켜면(ALERTS_V4_SINCE 갱신) 그 전 사이클을 이어받지 않게 — 늦은 쪽
+    monkeypatch.setenv("HUMID_CYCLES_SINCE", "2026-11-04T09:00:00+09:00")
+    monkeypatch.setenv("ALERTS_V4_SINCE", "2026-11-10T09:00:00+09:00")
+    assert humid_cycles_since() == datetime(2026, 11, 10, 0, 0, tzinfo=UTC)
+    monkeypatch.setenv("ALERTS_V4_SINCE", "2026-11-01T09:00:00+09:00")
+    assert humid_cycles_since() == datetime(2026, 11, 4, 0, 0, tzinfo=UTC)
+    monkeypatch.delenv("HUMID_CYCLES_SINCE")
+    assert humid_cycles_since() is None                       # 습기 사이클 켠 시각이 없으면 꺼짐
+
+
+def test_bad_since_warns_once(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    monkeypatch.setenv("HUMID_CYCLES_SINCE", "모레")
+    monkeypatch.delenv("ALERTS_V4_SINCE", raising=False)
+    for _ in range(50):
+        assert humid_cycles_since() is None
+    assert sum("HUMID_CYCLES_SINCE" in r.message for r in caplog.records) == 1
+
+
+def test_clock_jump_back_resumes() -> None:
+    # 기기 시계가 5분 뒤로 보정돼도 샘플을 버리지 않고 이어서 본다(공백으로 세지도 않음)
+    tr = HumidCycleTracker(cycle=reached(), last_sample_at=at(29997))
+    run(tr, [(30000, 50), (30600, 50)])
+    ops = run(tr, [(30010, 50), (30300, 50), (30360, 70), (30500, 70)])   # 전부 이전 마지막 시각(30600) 이전
+    assert len(of(ops, "open")) == 1 and of(ops, "offline") == []

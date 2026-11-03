@@ -35,6 +35,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
+from functools import lru_cache
 from typing import Literal
 
 logger = logging.getLogger(__name__)
@@ -74,17 +75,28 @@ def humid_cycles_enabled() -> bool:
     return (os.getenv("HUMID_CYCLES_ENABLED") or "").strip().lower() in _TRUE
 
 
-def humid_cycles_since() -> datetime | None:
-    """`HUMID_CYCLES_SINCE` — 판정을 켠 시각. 없거나 못 읽으면 None(판정·카드 안 함)."""
-    raw = (os.getenv("HUMID_CYCLES_SINCE") or "").strip()
-    if not raw:
-        return None
+@lru_cache(maxsize=8)
+def _parse_since(name: str, raw: str) -> datetime | None:
+    """env 값 하나 파싱(같은 값은 캐시 — 샘플마다 불려도 형식 오류 경고는 한 번)."""
     try:
         dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
-        logger.warning("HUMID_CYCLES_SINCE 형식 오류(ISO8601 필요): %r", raw)
+        logger.warning("%s 형식 오류(ISO8601 필요): %r", name, raw)
         return None
     return (dt if dt.tzinfo else dt.replace(tzinfo=_UTC)).astimezone(_UTC)
+
+
+def humid_cycles_since() -> datetime | None:
+    """판정 기준 시각 = max(`HUMID_CYCLES_SINCE`, `ALERTS_V4_SINCE`). 앞의 것이 없거나 못 읽으면 None
+    (판정·카드 안 함). v4 를 껐다 켜며 `ALERTS_V4_SINCE` 만 갱신해도 그 전 사이클을 이어받지 않는다
+    — 꺼진 동안에도 telemetry 는 들어와 공백으로 안 잡히므로, 이어받으면 환기 지연·분무 공백이 몰린다."""
+    raw = (os.getenv("HUMID_CYCLES_SINCE") or "").strip()
+    since = _parse_since("HUMID_CYCLES_SINCE", raw) if raw else None
+    if since is None:
+        return None
+    raw_v4 = (os.getenv("ALERTS_V4_SINCE") or "").strip()
+    v4 = _parse_since("ALERTS_V4_SINCE", raw_v4) if raw_v4 else None
+    return max(since, v4) if v4 is not None else since
 
 
 # ---------- 상태 ----------
@@ -158,7 +170,14 @@ class HumidCycleTracker:
         if humid is None:
             return []
         if self._last_at is not None and now <= self._last_at:
-            return []   # 역순·중복 샘플
+            if (self._last_at - now).total_seconds() <= GAP_SEC:
+                return []   # 중복·잠깐 역순 샘플
+            # 기기 시계가 뒤로 보정됨(SNTP) — 버리면 그만큼 눈이 멀므로 창을 비우고 새 시각으로 이어 간다.
+            # 공백으로 세지 않는다(타이머는 보정 폭만큼 늦게 울릴 수 있음, 최대 ±10분 — store 의 시계 허용폭).
+            self._raw.clear()
+            self._mins.clear()
+            self._hist_start = None
+            self._last_at = None
         ops: list[CycleOp] = []
         if self._last_at is not None:
             gap = (now - self._last_at).total_seconds()

@@ -347,3 +347,49 @@ def test_close_script_cycles(sb: LossySB) -> None:
     assert close_v4_alerts.run(sb, apply=True, cycles=True, now=now, out=lambda s: None) == 1
     assert sb.one("alerts", id="al-1")["resolved_at"] == now.isoformat()
     assert sb.rows("humid_cycles")[0]["ended_by"] == "disabled"
+
+
+# ---------- 코드 리뷰 반영 ----------
+
+def test_restore_ignores_cycles_before_v4_since(monkeypatch: pytest.MonkeyPatch, sb: LossySB, clock: Clock) -> None:
+    # Stage N 롤백 뒤 v4 를 다시 켜면(ALERTS_V4_SINCE 갱신) 예전 사이클로 푸시가 몰리지 않는다
+    monkeypatch.setenv("ALERTS_V4_SINCE", at(-60))
+    sb.rows("humid_cycles").append(cycle_row(started_at=at(-90000)))
+    sb.rows("telemetry").append({"device_id": DEV, "ts": at(-3), "h_a": 65.0, "a_ok": True})
+    run(clock, 0, 120, 65)
+    assert sb.rows("alerts") == [] and sb.rows("push_outbox") == []
+
+
+def test_unlink_not_blocked_by_cycle_error(sb: LossySB, clock: Clock) -> None:
+    # 습기 사이클 정리가 실패해도 Stage N 해제 처리(unlinked 표시)는 끝난다
+    sb.rows("devices")[0]["unlinked_at"] = at(-60)
+    sb.fail[("humid_cycles", "select")] = 99
+    sample(clock, 0, 65)
+    assert alerts._states[DEV].unlinked is True
+
+
+def test_ended_cycle_not_overwritten(sb: LossySB, clock: Clock) -> None:
+    # 해제 API 가 사이클을 끝낸 뒤에도 브리지(캐시상 연결됨)가 상태를 되돌려 쓰지 않는다
+    sb.rows("humid_cycles").append(cycle_row(started_at=at(-3600)))
+    run(clock, 0, 30, 65)
+    row = sb.rows("humid_cycles")[0]
+    row.update(status="not_reached", ended_by="unlinked", closed_at=at(30))
+    run(clock, 30, 120, 65, 50)                      # 브리지는 건기 도달을 본다
+    row = sb.rows("humid_cycles")[0]
+    assert row["status"] == "not_reached" and row["dry_reached_at"] is None
+
+
+def test_open_requires_linked(sb: LossySB, clock: Clock) -> None:
+    run(clock, 0, 3, 50)                             # 캐시에 "연결됨"
+    sb.rows("devices")[0]["unlinked_at"] = at(3)     # 브리지 캐시는 그대로
+    rise(clock, 3)
+    assert sb.rows("humid_cycles") == []
+
+
+def test_restore_closes_older_cycle_alert_at_next_start(sb: LossySB, clock: Clock) -> None:
+    # 이전 사이클의 환기 지연이 남아 있으면 다음 사이클 시작 시각으로 닫는다(지금이 아니라)
+    sb.rows("humid_cycles").append(cycle_row(id="cyc-2", started_at=at(-7200)))
+    sb.rows("alerts").append(cycle_alert("env_vent_delay", triggered=-20000))   # cycle_id = cyc-1
+    sample(clock, 0, 65)
+    a = sb.one("alerts", id="al-1")
+    assert a["resolved_at"] == at(-7200) and a["context"]["closed_reason"] == "next_event"
