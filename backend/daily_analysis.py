@@ -34,7 +34,9 @@ v4 일일 온습도 분석 카드 — Stage P (기획 v4 2-1~2-3).
 | 이벤트 없음 + 사이클 ≥ 1·도달 ≥ 1 | HUM_NORMAL | normal | 건습 사이클이 건강하게 유지됐어요 |
 | 이벤트 없음 + 사이클 0 | HUM_NO_MIST | caution | 습기가 감지되지 않았어요 |
 
-`cycles` 가 None(Stage O 전)이면 이벤트 없는 날 습도 카드는 없다(P9).
+`cycles` 가 None(Stage O 전·켜기 전 구간)이면 이벤트 없는 날 습도 카드는 없다(P9).
+사이클 카드(Stage O)는 그날 습도가 유효 수집일일 때만. 사이클 소속은 `cycle_window`(05:00~05:00, O-f),
+건기 도달 수는 카드 구간 끝(다음 날 08:00)까지 도달한 것만 — 2차 생성 시점에 따라 바뀌지 않게.
 status 는 환기 지연 줄이 하나라도 있으면 danger(기획 3-3 HUM_DELAY = 경고, 주간과 같은 어휘),
 아니면 caution. 타이틀 우선순위(건조 > 과습 > 환기 지연)와는 따로 본다.
 
@@ -72,6 +74,7 @@ TEMP_EVENT_KINDS = ("env_temp_high", "env_temp_low")
 HUMID_EVENT_KINDS = ("env_humid_low", "env_humid_high", "env_vent_delay")
 
 DAY_START_HOUR = 8      # 주간 08:00~20:00, 그 외 야간. 일일 구간도 08:00 시작
+CYCLE_SHIFT = timedelta(hours=3)   # O-f: 습기 사이클 하루 = 05:00~05:00 (05시부터 시작한 습기 이벤트는 다음 날)
 NIGHT_START_HOUR = 20
 
 EXPECTED_SAMPLES_PER_DAY = 28800   # 3초 주기 × 24시간
@@ -442,7 +445,6 @@ def build_humid_card(events: list[dict[str, Any]], buckets: list[dict[str, Any]]
 
     buckets 는 온도 카드와 시그니처를 맞추려고 받는다(현재 습도 카드 판정에는 안 쓴다).
     """
-    del buckets
     lines = _event_lines(events, HUMID_EVENT_KINDS, window)
     if lines:
         present = {ln.kind for ln in lines}
@@ -453,16 +455,11 @@ def build_humid_card(events: list[dict[str, Any]], buckets: list[dict[str, Any]]
 
     if cycles is None:
         return None   # P9: Stage O 전에는 이벤트 없는 날 습도 카드 없음
-    in_win = []
-    for c in cycles:
-        started = _parse_ts(c.get("started_at"))
-        if started is None or _in_window(started, window):
-            in_win.append(c)
+    if not is_valid_day(buckets, window, "h_a"):
+        return None   # 습도가 비는 날에 "습기가 감지되지 않았어요"를 내지 않는다
+    in_win = [c for c in cycles if _in_window_opt(_parse_ts(c.get("started_at")), cycle_window(window))]
     wet = len(in_win)
-    reached = sum(
-        1 for c in in_win
-        if _parse_ts(c.get("dry_reached_at")) is not None or c.get("status") in ("reached_in_time", "reached_late")
-    )
+    reached = sum(1 for c in in_win if _reached_by(c, window[1]))
     data = {"events": [], "wet_count": wet, "dry_reach_count": reached}
     if wet == 0:
         return Card("humid", "HUM_NO_MIST", "caution", "습기가 감지되지 않았어요",
@@ -471,6 +468,24 @@ def build_humid_card(events: list[dict[str, Any]], buckets: list[dict[str, Any]]
         return Card("humid", "HUM_NORMAL", "normal", "건습 사이클이 건강하게 유지됐어요",
                     [f"습기 {wet}번, 건기 {reached}번이 기록됐어요"], data)
     return None   # 사이클은 있는데 도달 0 — 기획 문구 없음(보통 환기 지연 이벤트가 먼저 잡힌다)
+
+
+def cycle_window(window: Window) -> Window:
+    """습기 사이클 소속 구간(O-f) = 카드 구간을 3시간 당긴 05:00~05:00. 일일·주간 공용."""
+    return window[0] - CYCLE_SHIFT, window[1] - CYCLE_SHIFT
+
+
+def _in_window_opt(t: datetime | None, window: Window) -> bool:
+    return t is not None and _in_window(t, window)
+
+
+def _reached_by(cycle: dict[str, Any], cutoff: datetime) -> bool:
+    """카드 구간 끝까지 건기 도달(그 뒤 도달은 그날·그 주 도달로 안 센다)."""
+    reached = _parse_ts(cycle.get("dry_reached_at"))
+    return reached is not None and reached <= cutoff
+
+
+reached_by = _reached_by
 
 
 # ---------- Stage Q 재사용 공개 래퍼 (동작 변경 없음) ----------
