@@ -41,7 +41,7 @@ status 는 환기 지연 줄이 하나라도 있으면 danger(기획 3-3 HUM_DEL
 ## 결정 요약
 
 - P4 구간과 겹치는 이벤트(시작 < 구간 끝, 종료 없음 또는 종료 > 구간 시작)만. 진행 중이면 `{start}~`.
-- P5 시각은 KST `HH:MM`. 구간 **밖** 시각만 `M/D HH:MM`. 구간 경계 시각(08:00)은 안으로 본다.
+- P5 시각은 KST `HH:MM`. report_date 가 아닌 날 시각만 `M/D HH:MM`, 범위 끝은 시작과 같은 날이면 생략.
 - P6 `{temp}` = peak_value(없으면 value). `{diff}` = peak_diff → |peak_value − threshold| →
   |value − threshold| → context.diff. 계산이 필요하면 Stage N D10(올림)과 같은 `display_diff` —
   종료 전·후 같은 이벤트가 같은 값으로 보이게. 값이 하나도 없으면 그 줄만 뺀다("None" 금지).
@@ -178,18 +178,24 @@ def report_window(report_date: date) -> tuple[datetime, datetime]:
     return start.astimezone(_UTC), (start + timedelta(days=1)).astimezone(_UTC)
 
 
-def _fmt_time(t: datetime, window: Window) -> str:
-    """P5: 구간 안(경계 포함)이면 HH:MM, 밖이면 M/D HH:MM (KST)."""
+def _fmt_time(t: datetime, window: Window, same_as: datetime | None = None) -> str:
+    """P5 r2: report_date(구간 시작일) 시각이면 HH:MM, 다른 날이면 M/D HH:MM (KST).
+
+    날짜 없는 시각은 앱 자정~자정 그래프의 그날로 읽힌다(앱 회신 §7). `same_as` 와
+    같은 날이면 날짜를 생략한다 — 범위 끝 시각용(`11/3 02:00~03:00`).
+    """
     k = t.astimezone(KST)
     hm = f"{k.hour:02d}:{k.minute:02d}"
-    if window[0] <= t <= window[1]:
+    if k.date() == window[0].astimezone(KST).date():
+        return hm
+    if same_as is not None and k.date() == same_as.astimezone(KST).date():
         return hm
     return f"{k.month}/{k.day} {hm}"
 
 
 def _fmt_range(start: datetime, end: datetime | None, window: Window) -> str:
     s = _fmt_time(start, window)
-    return f"{s}~" if end is None else f"{s}~{_fmt_time(end, window)}"
+    return f"{s}~" if end is None else f"{s}~{_fmt_time(end, window, same_as=start)}"
 
 
 def _in_window(t: datetime, window: Window) -> bool:

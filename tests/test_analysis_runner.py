@@ -150,7 +150,7 @@ def test_second_pass_picks_backdated(enabled: None) -> None:
     row = report(sb)
     assert row["pass"] == 2
     assert row["humid_card"]["title"] == "과습을 주의해 주세요"
-    assert row["humid_card"]["lines"][0].startswith("07:10~07:50")
+    assert row["humid_card"]["lines"][0].startswith("11/3 07:10~07:50")
     assert len(sb.rows("env_daily_reports")) == 1
 
 
@@ -279,7 +279,7 @@ def test_inputs_overlap_rule_and_chain_root_outside_window(enabled: None) -> Non
     row = report(sb)
     temp = row["temp_card"]
     assert temp["title"] == "위험한 온도가 기록되었어요"
-    assert temp["lines"] == ["11/2 07:00~08:20 위험 온도 29.6℃ 감지"]
+    assert temp["lines"] == ["07:00~08:20 위험 온도 29.6℃ 감지"]
     assert {i for ev in temp["data"]["events"] for i in ev["ids"]} == {"a-root", "a-tail"}
     assert row["humid_card"]["title"] == "건조를 주의해 주세요"
     assert row["humid_card"]["lines"] == ["22:00~ 적정 습도보다 최대 -9% 이탈"]
@@ -301,7 +301,7 @@ def test_chain_middle_rows_outside_window_fetched(enabled: None) -> None:
     sb = FakeSB(devices=[dev(1)], alerts=rows)
     assert AnalysisRunner(sb=sb).tick(kst(8, 16)) == 1
     temp = report(sb)["temp_card"]
-    assert temp["lines"] == ["11/2 05:00~08:30 위험 온도 30.8℃ 감지"]
+    assert temp["lines"] == ["05:00~08:30 위험 온도 30.8℃ 감지"]
     assert temp["data"]["events"][0]["ids"] == ["c-root", "c-s1", "c-d14", "c-s2"]
 
 

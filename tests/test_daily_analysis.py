@@ -101,7 +101,7 @@ def test_temp_caution_titles_and_low_side():
     assert both.title == "높은 온도가 기록됐어요"       # 고온 주의(3) > 저온 주의(4)
     assert both.lines == [
         "14:00~15:00 적정 온도보다 최대 +0.4℃ 이탈",
-        "03:00~04:00 적정 온도보다 최대 -1.3℃ 이탈",     # |16.75-18| = 1.25 → 올림 1.3 (D10 과 같은 값)
+        "11/3 03:00~04:00 적정 온도보다 최대 -1.3℃ 이탈",     # |16.75-18| = 1.25 → 올림 1.3 (D10 과 같은 값)
     ]
     low = build_temp_card([ev("c2", "env_temp_low", "caution", kst(3, 3), kst(3, 4),
                               peak_diff=1.3, threshold=18.0)], [], W)
@@ -109,7 +109,7 @@ def test_temp_caution_titles_and_low_side():
     low_danger = build_temp_card([ev("d2", "env_temp_low", "danger", kst(3, 3), kst(3, 4),
                                      peak_value=14.2, threshold=18.0)], [], W)
     assert low_danger.title == "위험한 온도가 기록되었어요"
-    assert low_danger.lines == ["03:00~04:00 위험 온도 14.2℃ 감지"]
+    assert low_danger.lines == ["11/3 03:00~04:00 위험 온도 14.2℃ 감지"]
 
 
 def test_chain_merged_line():
@@ -147,8 +147,8 @@ def test_event_overlapping_both_days():
     e = ev("c1", "env_temp_high", "caution", kst(2, 7, 50), kst(2, 8, 20), peak_diff=0.5, threshold=26.0)
     prev = build_temp_card([e], [], report_window(date(2026, 11, 1)))
     cur = build_temp_card([e], [], W)
-    assert prev.lines == ["07:50~11/2 08:20 적정 온도보다 최대 +0.5℃ 이탈"]
-    assert cur.lines == ["11/2 07:50~08:20 적정 온도보다 최대 +0.5℃ 이탈"]
+    assert prev.lines == ["11/2 07:50~08:20 적정 온도보다 최대 +0.5℃ 이탈"]
+    assert cur.lines == ["07:50~08:20 적정 온도보다 최대 +0.5℃ 이탈"]
 
 
 def test_event_outside_window_excluded():
@@ -165,7 +165,23 @@ def test_cross_day_time_format():
     a = ev("c1", "env_temp_high", "caution", kst(1, 22), kst(2, 8, 20), peak_diff=0.5, threshold=26.0)
     b = ev("c1", "env_temp_high", "caution", kst(1, 22), kst(2, 3), peak_diff=0.5, threshold=26.0)
     assert build_temp_card([a], [], w1).lines == ["22:00~11/2 08:20 적정 온도보다 최대 +0.5℃ 이탈"]
-    assert build_temp_card([b], [], w1).lines == ["22:00~03:00 적정 온도보다 최대 +0.5℃ 이탈"]
+    assert build_temp_card([b], [], w1).lines == ["22:00~11/2 03:00 적정 온도보다 최대 +0.5℃ 이탈"]
+
+
+@pytest.mark.parametrize("start, end, expected", [
+    (kst(2, 14), kst(2, 15), "14:00~15:00"),
+    (kst(3, 2), kst(3, 3), "11/3 02:00~03:00"),
+    (kst(2, 23, 30), kst(3, 0, 40), "23:30~11/3 00:40"),
+    (kst(2, 22), kst(3, 8, 20), "22:00~11/3 08:20"),
+    (kst(1, 23, 10), kst(2, 9, 30), "11/1 23:10~09:30"),
+    (kst(3, 2), None, "11/3 02:00~"),
+])
+def test_time_date_marks_non_report_date(start, end, expected):
+    """P5 r2: 날짜 없는 시각 = report_date 의 시각(앱 자정~자정 그래프와 같은 날).
+    다른 날짜는 붙이고, 끝 시각은 시작과 같은 날이면 생략."""
+    card = build_temp_card([ev("c1", "env_temp_high", "caution", start, end,
+                               peak_diff=0.5, threshold=26.0)], [], W)
+    assert card.lines == [f"{expected} 적정 온도보다 최대 +0.5℃ 이탈"]
 
 
 def test_peak_fallbacks():
