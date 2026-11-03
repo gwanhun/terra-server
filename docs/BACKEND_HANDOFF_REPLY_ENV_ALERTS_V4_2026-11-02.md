@@ -118,3 +118,13 @@
 | 3 | `context.level` | 환기 지연은 `caution`(severity `warning`). `env_mist_gap` 은 O-e 확정 때 알려 드릴게요. 없거나 다른 값이면 주의로 그리는 방어는 그대로 두세요 |
 | 4 | 푸시 payload `kind` | 맞아요. `env.alert.triggered` 의 `kind` 가 위 이름이에요 |
 | 5 | 수신 끄기는 계정 습도(`env_humid`) 기준 | 서버는 설정과 무관하게 적재하니 앱 분기대로 좋아요. `env_mist_gap` 푸시 여부는 O-e 확정 때 함께 알려 드릴게요 |
+
+## 7. 앱 §8(Stage O) 확정 회신 (2026-11-03)
+
+§6.2 에서 "확정되면 알려 드릴게요"라고 한 항목을 확정했어요. 앱 0.168.0 가정이 **전부 맞습니다.** 상세 계약은 [APP_HUMID_CYCLE_2026-11-03.md](APP_HUMID_CYCLE_2026-11-03.md).
+
+- `env_mist_gap` 이름 그대로, 두 kind 모두 `context.level = "caution"`(severity `warning`), message 는 `[환기 지연] 분무 후 건기 미도달` / `[건조 주의] 분무 필요`.
+- **두 kind 모두 시작 푸시 1회**(1시간 추가 푸시 없음). 분무 공백도 푸시하므로 `env_humid` 수신 끄기 분기가 쓰입니다.
+- 분무 공백은 최근 습기 이벤트가 **건기에 닿은 뒤** 15시간 동안 새 습기 이벤트가 없을 때만 나가요(아직 안 마른 사육장엔 안 나감). 환기 지연은 15시간이 지나도 안 마르면 조용히 닫힐 수 있어요(`closed_reason = "stale"`).
+- 서버는 스위치 `HUMID_CYCLES_ENABLED` 꺼진 채 배포해요. 켜면 시각을 알려 드릴게요.
+

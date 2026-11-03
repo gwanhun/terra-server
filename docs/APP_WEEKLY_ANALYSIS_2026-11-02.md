@@ -91,7 +91,8 @@ final rows = await sb.from('env_weekly_reports')
 | `HUM_OVER` | caution | 사육장이 습한날이 많았어요 |
 | `HUM_MIXED` | caution | 건조와 과습이 반복됐어요 |
 | `HUM_UNSTABLE` | caution | 습도 이탈이 반복됐어요 |
-| `HUM_NORMAL` | normal | 건습 사이클이 건강하게 유지되었어요 (습기 이벤트 확정 후) |
+| `HUM_NORMAL` | normal | 건습 사이클이 건강하게 유지되었어요 (습기 사이클 스위치 켠 뒤) |
+| `HUM_NO_MIST` | caution | 습기가 감지되지 않았어요 / 분무를 잊지 않으셨는지 확인해 주세요 — 그 주 습도 이벤트 0·습기 이벤트 0 (2026-11-03 추가, 기획 3-3 "(대신 예외 멘트가 출력됨)" 자리에 일일 2-3 같은 상황 문구) |
 
 ## 3. `notices` — 예외 안내
 
@@ -113,4 +114,4 @@ final rows = await sb.from('env_weekly_reports')
 | 카드 | null 인 경우 |
 |---|---|
 | `temp_card` | `ERR_NO_DATA`(t_a) 이거나, 이벤트·전주 대비가 없고 주야간 온도차를 계산할 유효일이 없을 때 |
-| `humid_card` | `ERR_NO_DATA`(h_a) 이거나, 건조·과습 주의가 케이스 기준에 못 미칠 때 — 습기 이벤트 정의가 확정될 때까지 HUM_NORMAL·HUM_DELAY 는 나오지 않습니다 |
+| `humid_card` | `ERR_NO_DATA`(h_a) 이거나, 건조·과습 주의가 케이스 기준에 못 미칠 때. HUM_NORMAL·HUM_DELAY·HUM_NO_MIST 는 습기 사이클 스위치를 켠 뒤, 켠 주 다음 주부터(사이클 구간 월 05:00~) 나옵니다 |

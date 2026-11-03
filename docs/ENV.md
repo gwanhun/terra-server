@@ -133,11 +133,14 @@ Edge Function 으로 이벤트를 보낸다. 브리지가 `push_outbox` 에 적�
 | `ALERTS_V4_ENABLED` | X | `true/1/yes/on` 이면 브리지가 v4 규칙(2분 진입·5분 회복)으로 `env_*` alerts 를 기록. **기본 꺼짐** = 구 판정(`alert_*` 컬럼) 그대로 |
 | `PUSH_ENV_ALERTS_ENABLED` | X | `env.alert.triggered` 적재. **기본 꺼짐**. 위 `PUSH_EVENT_INGEST_*` 도 채워져 있어야 동작 |
 | `ENV_REPORTS_ENABLED` | X | 일일 분석(`env_daily_reports`) 생성. **기본 꺼짐**. `ALERTS_V4_ENABLED` 도 켜져 있어야 동작. 켜기 전 `migrations/2026-11-02_env_daily_reports.sql` 적용 |
+| `HUMID_CYCLES_ENABLED` | X | Stage O 습기 사이클(`humid_cycles` 기록 + `env_vent_delay`·`env_mist_gap` 알림, 일일·주간 사이클 카드). **기본 꺼짐**. `ALERTS_V4_ENABLED` 경로에서만 돈다. 켜기 전 `migrations/2026-11-03_humid_cycles.sql`(적용 완료) |
+| `HUMID_CYCLES_SINCE` | 습기 사이클 사용 시 | `HUMID_CYCLES_ENABLED` 를 켠 시각(ISO8601). **비어 있으면 판정·카드 안 함**. 이 시각 전에 시작한 사이클은 복원하지 않고, 사이클 구간(05:00~)이 이 시각 전인 날·주는 사이클 카드를 만들지 않는다. 껐다 다시 켜면 새 시각으로 |
 | `ALERTS_V4_SINCE` | 리포트 사용 시 | `ALERTS_V4_ENABLED` 를 켠 시각(ISO8601, 예 `2026-11-05T14:30:00+09:00`). 일일 분석은 구간 시작(08:00 KST)이 이 시각 이후인 날만 만든다 — 켜기 전 구간을 "이벤트 없음"으로 분석하지 않게. **비어 있으면 리포트를 만들지 않는다**. v4 를 껐다 다시 켜면 새 시각으로 바꾼다 |
 
 - 켜는 순서·앱 회신 조건: [APP_ENV_ALERT_PUSH_2026-11-02.md](APP_ENV_ALERT_PUSH_2026-11-02.md) §4
 - 켜기 전 SQL Editor 로 확인: `alerts.kind`/`severity` 에 CHECK 제약 없음, `push_outbox.event_id` UNIQUE.
 - 롤백: `ALERTS_V4_ENABLED=false` + 브리지 재시작 → `uv run python scripts/close_v4_alerts.py --apply` 로 진행 중 `env_*` 행 종료.
+- 습기 사이클만 롤백: `HUMID_CYCLES_ENABLED=false` + 재시작 → `uv run python scripts/close_v4_alerts.py --cycles --apply`(환기 지연·분무 공백 종료 + 최신 사이클 `ended_by='disabled'`). 다시 켤 땐 새 `HUMID_CYCLES_SINCE`.
 
 ### 운영 카메라 재부팅 (2026-10-20)
 
