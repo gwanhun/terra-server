@@ -217,7 +217,12 @@
       <h2 style="margin:0">🖼 LCD 화면보호기 · 전원 (Stage N)</h2>
       <button onclick="lcdLoadState()" style="margin-left:auto">상태 조회</button>
     </div>
-    <small class="muted">위 패널에서 고른 디바이스 대상. 규칙은 기기 NVS 에 저장돼 재부팅·오프라인 무관. 펌웨어가 <code>capabilities.lcd_saver</code> 를 보고해야 함(아니면 400).</small>
+    <small class="muted">사육장(디바이스)별 설정. 규칙은 기기 NVS 에 저장돼 재부팅·오프라인 무관. 펌웨어가 <code>capabilities.lcd_saver</code> 를 보고해야 함(아니면 400).</small>
+    <div class="row" style="margin-top:8px;gap:6px;align-items:center">
+      <b style="min-width:70px">대상</b>
+      <select id="lcdn-device" title="사육장 · 디바이스" onchange="lcdnOnDeviceChange()" style="max-width:320px"></select>
+      <span id="lcdn-caps" class="muted" style="font-size:11px"></span>
+    </div>
     <div id="lcdn-state" class="muted" style="font-size:12px;margin-top:6px"></div>
     <div class="row" style="margin-top:8px;gap:6px;align-items:center">
       <b style="min-width:70px">전원</b>
@@ -1080,11 +1085,40 @@ async function deleteSchedule(id) {
 // ─────────────────────────────────────────────────────────────────────────
 function refreshLcdDeviceOptions() {
   const sel = document.getElementById('lcd-device');
-  if (!sel) return;
-  const prev = sel.value;
-  sel.innerHTML = DEVICES.map(d =>
-    `<option value="${d.id}">${esc(d.device_id)} · ${esc(d.name)}</option>`).join('');
-  if (prev && DEVICES.some(d => d.id === prev)) sel.value = prev;
+  if (sel) {
+    const prev = sel.value;
+    sel.innerHTML = DEVICES.map(d =>
+      `<option value="${d.id}">${esc(d.device_id)} · ${esc(d.name)}</option>`).join('');
+    if (prev && DEVICES.some(d => d.id === prev)) sel.value = prev;
+  }
+  // Stage N 패널 — 사육장(그룹) 이름을 앞에 붙여 사육장별로 고르게. 사육장 순으로 정렬, 미배정은 뒤.
+  const sel2 = document.getElementById('lcdn-device');
+  if (sel2) {
+    const prev2 = sel2.value;
+    const encName = id => (ENCLOSURES.find(e => e.id === id) || {}).name || '';
+    const rows = [...DEVICES].sort((a, b) =>
+      (encName(a.enclosure_id) || '~').localeCompare(encName(b.enclosure_id) || '~', 'ko'));
+    sel2.innerHTML = rows.map(d => {
+      const en = encName(d.enclosure_id);
+      const ok = !!(d.capabilities && d.capabilities.lcd_saver);
+      return `<option value="${d.id}">${esc(en ? `🏠 ${en}` : '(사육장 미배정)')} · ${esc(d.name)} · ${esc(d.device_id)}${ok ? '' : ' · ⚠ 펌웨어 미지원'}</option>`;
+    }).join('');
+    if (prev2 && DEVICES.some(d => d.id === prev2)) sel2.value = prev2;
+    lcdnOnDeviceChange();
+  }
+}
+
+function lcdnOnDeviceChange() {
+  const sel = document.getElementById('lcdn-device');
+  const caps = document.getElementById('lcdn-caps');
+  const d = DEVICES.find(x => x.id === sel.value);
+  if (!d) { caps.textContent = ''; return; }
+  const ok = !!(d.capabilities && d.capabilities.lcd_saver);
+  caps.textContent = ok ? `fw ${d.firmware_ver || '?'} · lcd_saver 지원` : `fw ${d.firmware_ver || '?'} · lcd_saver 미보고 — 1.2.0 으로 OTA/USB 플래시 필요`;
+  caps.style.color = ok ? '' : '#fc9';
+  document.getElementById('lcdn-state').textContent = '';
+  document.getElementById('lcdn-img-preview').style.display = 'none';
+  if (ok) lcdLoadState();
 }
 
 // 입력 글자수 표시 — 한글 포함 시 폭이 크므로 한글은 1.6배 가중치로 대략 경고.
@@ -1121,7 +1155,7 @@ async function clearLcdText() {
 // 대상 디바이스는 Stage I 패널의 #lcd-device 를 공유한다.
 // ─────────────────────────────────────────────────────────────────────────
 function lcdnDevice() {
-  const id = document.getElementById('lcd-device').value;
+  const id = document.getElementById('lcdn-device').value;
   if (!id) toast('디바이스 선택', 'bad');
   return id;
 }
