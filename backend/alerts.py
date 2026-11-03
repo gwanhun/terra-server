@@ -35,7 +35,8 @@ handle_telemetry 가 INSERT 직후 호출(paho 콜백 스레드, 동기). 경로
 - 행 UPDATE(종료·pushed_at·peak 등) 실패 → 기기별 재시도 목록, 다음 샘플에서 다시 쓴다.
 - 푸시 적재 실패(`failed`) → 10분 동안 다음 샘플마다 재시도(event_id 멱등, D16). 스위치 꺼짐·
   소유자 없음은 기록만. `pushed_at`/`reminded_at` 은 적재 성공(queued/duplicate) 때만.
-- 기기 해제(`devices.unlinked_at`) 확인 → 활성 v4 행 종료 + 평가 중단(D12).
+- 기기 해제(`devices.unlinked_at`) 확인 → 활성 v4 행 종료 + 평가 중단(D12). 샘플마다는 캐시로 보고,
+  새 알림을 열거나 푸시를 내기 직전엔 캐시 없이 다시 본다(`_confirm_linked`).
 
 ## legacy 중복 방지 / 히스테리시스
 
@@ -575,6 +576,8 @@ def _push_started(c: _Step, element: str, p: _PendingPush) -> None:
 
 
 def _retry_pushes(c: _Step) -> None:
+    if c.st.push_retry and not _confirm_linked(c):
+        return
     for element, p in list(c.st.push_retry.items()):
         active = c.st.trackers[element].active
         if active is None or active.alert_id != p.alert_id or c.now_mono - p.first_mono >= PUSH_RETRY_SEC:
@@ -586,6 +589,8 @@ def _retry_pushes(c: _Step) -> None:
 def _remind(c: _Step, tracker: ElementTracker, act: Action) -> None:
     a = tracker.active
     if a is None or a.alert_id is None or act.value is None:
+        return
+    if not _confirm_linked(c):
         return
     res = _enqueue(c, a.alert_id, a.kind, a.level, "reminder",
                    title(a.kind, a.level, act.value, act.threshold), act.value, act.threshold)
@@ -679,6 +684,8 @@ def _apply(c: _Step, element: str, tracker: ElementTracker,
     pending: _PendingPush | None = None
     if opens:
         act = opens[0]
+        if not _confirm_linked(c):
+            return   # 해제됨 — _stop_unlinked 가 트래커를 비웠다
         if not _insert_open(c, tracker, act, prev, closes[0] if closes else None):
             # 이전 활성으로 되돌림 — close 도 커밋 안 했으니 다음 샘플이 같은 전이를 다시 낸다.
             tracker.rollback_open()
@@ -718,6 +725,36 @@ def _stop_unlinked(c: _Step) -> None:
         c.st.push_retry.clear()
         c.st.unlinked = True
     _flush_dirty(c.sb, c.st)
+
+
+def _confirm_linked(c: _Step) -> bool:
+    """새 알림을 열거나 푸시를 내기 직전, devices.unlinked_at 을 캐시 없이 다시 본다(D12 보강).
+
+    해제 API(unlink_service)는 API 프로세스에서 돌아서 브리지의 device_meta 캐시(5분 TTL)를 못
+    비운다. Mosquitto 가 기존 세션을 바로 끊지 않으면 해제 뒤에도 telemetry 가 몇 분 더 들어오고,
+    그 사이 캐시만 믿으면 해제된 기기에 새 알림·푸시가 나간다. 열기/푸시는 드문 전이라 그때만
+    SELECT 1건을 더 한다. 조회 실패면 연결된 것으로 보고 진행한다(INSERT 가 어차피 같이 실패).
+    해제가 확인되면 캐시도 비워 다음 샘플부터 평소 경로(_evaluate_v4 첫 분기)가 해제로 본다.
+    """
+    try:
+        res = (
+            c.sb.table("devices")
+            .select("unlinked_at")
+            .eq("id", c.device_uuid)
+            .limit(1)
+            .execute()
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("v4 해제 재확인 실패 — 연결된 것으로 진행 (device=%s)", c.device_uuid)
+        return True
+    rows = res.data or []
+    if not rows or not rows[0].get("unlinked_at"):
+        return True
+    from backend.mqtt import handlers   # 지연 임포트(순환 회피)
+    handlers.invalidate_device_meta(c.device_uuid)
+    logger.info("v4: 해제된 기기 감지(fresh) — 열기/푸시 취소 (device=%s)", c.device_uuid)
+    _stop_unlinked(c)
+    return False
 
 
 def _sensor_fault_v4(sb: Any, st: _DeviceState, device_uuid: str, a_ok: Any) -> None:
@@ -767,6 +804,8 @@ def _evaluate_v4(device_uuid: str, row: dict[str, Any], device_key: str | None) 
             acts = tracker.step(c.now_mono, value, th)
             if acts:
                 _apply(c, element, tracker, acts, prev)
+            if st.unlinked:
+                break   # _confirm_linked 가 해제를 확인함 — 나머지 요소도 평가 안 함
 
 
 __all__ = [

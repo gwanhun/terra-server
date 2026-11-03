@@ -285,6 +285,13 @@ def _resolve_entity(device_id_text: str) -> tuple[str | None, str | None]:
     return (None, None)
 
 
+def invalidate_device_meta(device_uuid: str) -> None:
+    """device_meta 캐시 1건 제거. v4 판정이 fresh 조회로 기기 해제를 알아챘을 때(alerts.py D12) 호출 —
+    다음 샘플부터 캐시 경로도 해제로 본다."""
+    with _entity_lock:
+        _entity_cache.pop(("device_meta", device_uuid), None)
+
+
 def reset_device_cache() -> None:
     """테스트/디바이스 삭제 시 호출. devices/cameras 양쪽 캐시 모두 비움."""
     with _entity_lock:
@@ -1307,6 +1314,7 @@ __all__ = [
     "handle_ack",
     "handle_alert",
     "handle_telemetry",
+    "invalidate_device_meta",
     "reset_device_cache",
     "resolve_camera_uuid",
     "resolve_device_text",

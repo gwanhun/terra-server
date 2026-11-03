@@ -335,7 +335,8 @@ def _humid_card(events: list[dict[str, Any]], window: Window,
 
     if cycles is not None and n_delay >= HUM_DELAY_MIN:
         line = (f"총 {n_delay}회 환기 지연이 발생. 건기 도달까지 평균 {dry_time}이 걸렸어요"
-                if dry_time is not None else None)
+                if dry_time is not None
+                else f"총 {n_delay}회 환기 지연이 발생했어요")   # 건기 도달 사이클이 없어도 횟수는 남긴다 — 빈 카드 방지
         return card("HUM_DELAY", "danger", "사육장 환기가 지연되는 경향이 보여요", line)
     if n_dry >= HUM_ONE_MIN and n_over >= HUM_ONE_MIN:
         return card("HUM_MIXED", "caution", "건조와 과습이 반복됐어요",
