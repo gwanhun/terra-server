@@ -14,6 +14,7 @@
 | ⏸️ | [stage-c-command-dispatch.md](stage-c-command-dispatch.md) | Supabase Realtime → MQTT publish |
 | ⏸️ | [stage-d-alerts.md](stage-d-alerts.md) | alerts INSERT + FCM 푸시 |
 | ⏸️ | [stage-e-timeseries-downsample.md](stage-e-timeseries-downsample.md) | telemetry → telemetry_1m, pg_cron |
+| 🚧 | [stage-p-daily-analysis-v4.md](stage-p-daily-analysis-v4.md) | 기획 v4 일일 분석 카드(온도 이벤트·주야간, 습도 이벤트) → `env_daily_reports`. 08시 1차·09:05 재계산. `ENV_REPORTS_ENABLED` 기본 꺼짐 |
 | 🚧 | [stage-n-env-alerts-v4.md](stage-n-env-alerts-v4.md) | 기획 v4 실시간 온습도 판정(2분 진입·5분 회복·1시간 추가 푸시) → `env_*` alerts + `env.alert.triggered`. 플래그 2개 기본 꺼짐 |
 
 ### 영상 (ESP32-P4 카메라)
