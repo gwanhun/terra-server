@@ -342,7 +342,7 @@ def test_humid_cycles_flag_on_queried(enabled: None, monkeypatch: pytest.MonkeyP
     assert AnalysisRunner(sb=sb).tick(kst(8, 16)) == 1
     humid = report(sb)["humid_card"]
     assert humid["title"] == "건습 사이클이 건강하게 유지됐어요"
-    assert humid["lines"] == ["습기 2번 , 건기 1번이 기록됐어요"]
+    assert humid["lines"] == ["습기 2번, 건기 1번이 기록됐어요"]
 
 
 # ---------- 주간 (Stage Q Task 3) ----------

@@ -320,7 +320,7 @@ def test_humid_cycles_healthy_and_none():
     ]
     card = build_humid_card([], [], W, cycles=cycles)
     assert card.title == "건습 사이클이 건강하게 유지됐어요"
-    assert card.lines == ["습기 3번 , 건기 2번이 기록됐어요"]
+    assert card.lines == ["습기 3번, 건기 2번이 기록됐어요"]
     assert card.status == "normal"
     none = build_humid_card([], [], W, cycles=[])
     assert none.title == "습기가 감지되지 않았어요"

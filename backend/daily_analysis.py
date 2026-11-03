@@ -469,7 +469,7 @@ def build_humid_card(events: list[dict[str, Any]], buckets: list[dict[str, Any]]
                     ["분무를 잊지 않으셨는지 확인해 주세요"], data)
     if reached >= 1:
         return Card("humid", "HUM_NORMAL", "normal", "건습 사이클이 건강하게 유지됐어요",
-                    [f"습기 {wet}번 , 건기 {reached}번이 기록됐어요"], data)
+                    [f"습기 {wet}번, 건기 {reached}번이 기록됐어요"], data)
     return None   # 사이클은 있는데 도달 0 — 기획 문구 없음(보통 환기 지연 이벤트가 먼저 잡힌다)
 
 
