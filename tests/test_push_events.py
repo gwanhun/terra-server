@@ -475,3 +475,134 @@ def test_skipped_needs_ingest_config_too(monkeypatch: pytest.MonkeyPatch) -> Non
 def test_skipped_without_user_skips() -> None:
     row = _skipped_row(); row["issued_by"] = None
     assert push_events.build_skipped_event(row, "terra-a1", {"name": "x"}, GUARD) is None
+
+
+# ---------- env.alert.triggered (v4 온습도 알림, 기본 꺼짐) ----------
+
+ALERT_ID = "a1"
+
+
+def _env_event(**over: Any) -> dict[str, Any] | None:
+    kw: dict[str, Any] = {
+        "alert_id": ALERT_ID,
+        "kind": "env_temp_high",
+        "level": "caution",
+        "phase": "started",
+        "title": "[고온 주의] 적정 온도보다 +0.3℃",
+        "value": 26.3,
+        "threshold": 26.0,
+        "device_id": DEVICE_UUID,
+        "device_key": "terra-a1b2c3d4",
+        "device_meta": META,
+    }
+    kw.update(over)
+    return push_events.build_env_alert_event(**kw)
+
+
+def _sb_with_unique_insert(inserts: list[dict]) -> MagicMock:
+    """push_outbox.event_id UNIQUE 흉내 — 같은 event_id 두 번째 INSERT 는 23505."""
+    sb = MagicMock()
+    t = MagicMock()
+
+    def _insert(row: dict) -> MagicMock:
+        q = MagicMock()
+        if any(r["event_id"] == row["event_id"] for r in inserts):
+            q.execute.side_effect = RuntimeError(
+                'duplicate key value violates unique constraint "push_outbox_event_id_key" (23505)'
+            )
+        else:
+            inserts.append(row)
+            q.execute.return_value.data = [row]
+        return q
+
+    t.insert.side_effect = _insert
+    sb.table.return_value = t
+    return sb
+
+
+def test_env_event_shape() -> None:
+    ev = _env_event()
+    assert ev is not None
+    assert ev["event_id"] == "alert:a1:started"
+    assert ev["type"] == "env.alert.triggered" == push_events.EVENT_ENV_ALERT
+    assert ev["schema_version"] == 1
+    assert ev["user_id"] == OWNER
+    assert ev["occurred_at"]
+    p = ev["payload"]
+    assert p["alert_id"] == ALERT_ID
+    assert p["device_id"] == DEVICE_UUID
+    assert p["device_key"] == "terra-a1b2c3d4"
+    assert p["device_name"] == "크레이 사육장"
+    assert p["enclosure_id"] == "enc-1"
+    assert p["kind"] == "env_temp_high"
+    assert p["level"] == "caution"
+    assert p["phase"] == "started"
+    assert p["title"] == "[고온 주의] 적정 온도보다 +0.3℃"
+    assert p["value"] == 26.3
+    assert p["threshold"] == 26.0
+
+
+def test_env_event_reminder_id() -> None:
+    ev = _env_event(phase="reminder", level="danger", threshold=None)
+    assert ev is not None
+    assert ev["event_id"] == "alert:a1:reminder"
+    assert ev["payload"]["phase"] == "reminder"
+    assert ev["payload"]["level"] == "danger"
+    assert ev["payload"]["threshold"] is None
+
+
+def test_env_event_none_without_owner() -> None:
+    assert _env_event(device_meta={"owner_id": None, "name": "x"}) is None
+    assert _env_event(device_meta=None) is None
+
+
+def test_enqueue_env_alert_disabled_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """플래그 미설정 → ingest 설정이 있어도 적재 안 함 (앱 계약 전 적재 금지, D9)."""
+    monkeypatch.delenv("PUSH_ENV_ALERTS_ENABLED", raising=False)
+    inserts: list[dict] = []
+    monkeypatch.setattr(
+        push_events, "get_supabase_client", lambda: _sb_with_unique_insert(inserts)
+    )
+    assert push_events.env_alerts_push_enabled() is False
+    assert push_events.enqueue_env_alert(_env_event()) == "disabled"
+    assert inserts == []
+
+
+def test_enqueue_env_alert_queued_and_dup(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PUSH_ENV_ALERTS_ENABLED", "true")
+    inserts: list[dict] = []
+    sb = _sb_with_unique_insert(inserts)
+    monkeypatch.setattr(push_events, "get_supabase_client", lambda: sb)
+    assert push_events.env_alerts_push_enabled() is True
+
+    ev = _env_event()
+    assert push_events.enqueue_env_alert(ev) == "queued"
+    assert len(inserts) == 1
+    assert inserts[0]["event_id"] == "alert:a1:started"
+    assert inserts[0]["event_type"] == "env.alert.triggered"
+    assert inserts[0]["body"] == ev
+
+    # 재시작 등으로 같은 이벤트 재적재 → duplicate (행은 그대로 1개)
+    assert push_events.enqueue_env_alert(_env_event()) == "duplicate"
+    assert len(inserts) == 1
+
+
+def test_enqueue_env_alert_disabled_without_ingest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """플래그가 켜져 있어도 URL/SECRET 없으면 disabled."""
+    monkeypatch.setenv("PUSH_ENV_ALERTS_ENABLED", "on")
+    monkeypatch.delenv("PUSH_EVENT_INGEST_SECRET", raising=False)
+    called = MagicMock()
+    monkeypatch.setattr(push_events, "get_supabase_client", called)
+    assert push_events.env_alerts_push_enabled() is False
+    assert push_events.enqueue_env_alert(_env_event()) == "disabled"
+    called.assert_not_called()
+
+
+def test_enqueue_env_alert_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PUSH_ENV_ALERTS_ENABLED", "1")
+    sb = MagicMock()
+    sb.table.return_value.insert.return_value.execute.side_effect = RuntimeError(
+        "connection reset"
+    )
+    monkeypatch.setattr(push_events, "get_supabase_client", lambda: sb)
+    assert push_events.enqueue_env_alert(_env_event()) == "failed"

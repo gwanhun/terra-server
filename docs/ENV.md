@@ -126,6 +126,17 @@ Edge Function 으로 이벤트를 보낸다. 브리지가 `push_outbox` 에 적�
 - `manual`(즉시 제어)·`guard`(가드 스킵)·`timer` 는 기본 제외다. 가드 스킵은 별도 스위치.
 - 계약 상세: [BACKEND_HANDOFF_REPLY_PUSH_2026-09-15.md](BACKEND_HANDOFF_REPLY_PUSH_2026-09-15.md)
 
+### v4 온습도 알림 (Stage N, 2026-11-02)
+
+| 변수 | 필수 | 설명 |
+|------|:---:|------|
+| `ALERTS_V4_ENABLED` | X | `true/1/yes/on` 이면 브리지가 v4 규칙(2분 진입·5분 회복)으로 `env_*` alerts 를 기록. **기본 꺼짐** = 구 판정(`alert_*` 컬럼) 그대로 |
+| `PUSH_ENV_ALERTS_ENABLED` | X | `env.alert.triggered` 적재. **기본 꺼짐**. 위 `PUSH_EVENT_INGEST_*` 도 채워져 있어야 동작 |
+
+- 켜는 순서·앱 회신 조건: [APP_ENV_ALERT_PUSH_2026-11-02.md](APP_ENV_ALERT_PUSH_2026-11-02.md) §4
+- 켜기 전 SQL Editor 로 확인: `alerts.kind`/`severity` 에 CHECK 제약 없음, `push_outbox.event_id` UNIQUE.
+- 롤백: `ALERTS_V4_ENABLED=false` + 브리지 재시작 → `uv run python scripts/close_v4_alerts.py --apply` 로 진행 중 `env_*` 행 종료.
+
 ### 운영 카메라 재부팅 (2026-10-20)
 
 petcam-lab 감시 스크립트가 `POST /ops/cameras/{id}/reboot` 를 부를 때 `X-Ops-Secret` 헤더로 보내는 서버 시크릿.

@@ -376,6 +376,8 @@ sb.channel('alerts-rt')
       if (payload.eventType == PostgresChangeEvent.insert) {
         final a = payload.newRecord;
         // a.kind: temp_high / temp_low / humid_low / heater_latched / sensor_fault / offline
+        //   v4 판정(ALERTS_V4_ENABLED): env_temp_high / env_temp_low / env_humid_low / env_humid_high
+        //   (context.rule == "v4", 주의 warning / 경고 critical — APP_ENV_ALERT_PUSH_2026-11-02.md)
         // a.severity: info / warning / critical
         // a.message, a.context (jsonb)
         if (a['severity'] == 'critical') {
