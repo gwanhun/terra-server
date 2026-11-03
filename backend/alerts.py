@@ -724,10 +724,11 @@ def _stop_unlinked(c: _Step) -> None:
             return
         for r in rows:
             _force_close(c.sb, c.st, r, c.now_wall)
-        try:
-            humid_cycle_store.on_unlinked(c.sb, c.st.cycles, c.device_uuid, c.now_wall)
-        except Exception:  # noqa: BLE001 — Stage O 정리 실패가 Stage N 해제를 막지 않게(해제 API 도 닫는다)
-            logger.exception("해제 기기 습기 사이클 종료 실패 (device=%s)", c.device_uuid)
+        if humid_cycles_enabled():   # 꺼져 있으면 습기 사이클은 건드리지 않는다(롤백은 --cycles 가 닫음)
+            try:
+                humid_cycle_store.on_unlinked(c.sb, c.st.cycles, c.device_uuid, c.now_wall)
+            except Exception:  # noqa: BLE001 — Stage O 정리 실패가 Stage N 해제를 막지 않게(해제 API 도 닫는다)
+                logger.exception("해제 기기 습기 사이클 종료 실패 (device=%s)", c.device_uuid)
         c.st.trackers = {e: ElementTracker(e) for e in _ELEMENTS}  # type: ignore[arg-type]
         c.st.push_retry.clear()
         c.st.unlinked = True
