@@ -9,7 +9,7 @@
 -- 기기가 flash 로 초기화되면 어긋날 수 있다 — lcd_text 와 같은 한계.
 --
 -- 적용 후 MIGRATIONS_APPLIED.md 에 기록. 코드보다 먼저 적용할 것 — 없으면 ACK 때 lcd_* UPDATE 만
--- 실패하고(로그) ack 처리 자체는 계속된다. GET /devices/{id}/lcd 는 컬럼 없으면 400.
+-- 실패하고(로그) ack 처리 자체는 계속된다. GET /devices/{id}/lcd 는 컬럼 없으면 500(postgrest APIError).
 
 ALTER TABLE public.devices
     ADD COLUMN IF NOT EXISTS lcd_power        BOOLEAN NOT NULL DEFAULT true,
