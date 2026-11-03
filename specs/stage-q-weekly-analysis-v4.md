@@ -30,7 +30,7 @@
 | Q1 | **유효 수집일**(온도 `t_a_count`, 습도 `h_a_count` 각각): 그날(08~08) 유효 표본 합 ≥ **23,040**(3초 주기 예정 28,800개의 80%) | 이전 v4 기획 추천안 "예정 수집 데이터의 80% 이상" 그대로. 베타 7일 실측(47기기·일): 버킷당 중앙값 591/600, 데이터는 꽉 차거나 통째로 비는 형태라 버킷 규칙·표본 규칙 모두 46/47 유효 — **확정(2026-11-02)** | 필요(확정 사항 고지) |
 | Q2 | **누락률**(지표별) = 1 − 구간 유효 표본 합 / 예정 표본 수. 예정 = (구간 끝 − max(구간 시작, `devices.created_at`)) ÷ 3초. 예정 0 이하면 None(판정 안 함) | 이전 v4 추천안 "주간 전체 예정 수집 데이터 기준" + 신규 기기 보정(수요일 설치 기기가 첫 주부터 28% 누락으로 잡히지 않게). Q1 과 같은 표본 단위. 베타 실측 6~77% — **확정(2026-11-02)** | 필요(확정 사항 고지) |
 | Q3 | ERR_NO_DATA: 지표별로 유효 수집일 < 3 이면 그 지표 카드 없이 `{code:"ERR_NO_DATA", metric}` 안내 | 4-1 | 불필요 |
-| Q4 | ERR_DISCONNECT: 지표별로 유효 수집일 ≥ 3 이고 누락률 ≥ 50% 면 카드는 그대로 만들고 `{code:"ERR_DISCONNECT", metric}` 안내를 함께 저장 | 4-1 에 대체인지 병기인지 없음. 기획이 "유효 3일 이상이면 주간 분석 생성"을 따로 정했고, 그 3일의 경고를 숨기지 않기 위해 — 대체안과 비교 후 **확정(2026-11-02)** | 필요(확정 사항 고지) |
+| Q4 | ERR_DISCONNECT: 지표별로 유효 수집일 ≥ 3 이고 누락률 ≥ 50% 면, 그 지표의 주의·경고 chain 이 있으면 카드만(안내 없음), 없으면 카드 없이 `{code:"ERR_DISCONNECT", metric}` 안내만. 이벤트가 있어도 카드 조건에 못 미쳐 카드가 None 이면 안내 | 4-1 에 대체인지 병기인지 없음 → 카드+안내 병기로 확정(2026-11-02) 후 노션 댓글 ㉗ 질문. **r2(2026-11-03) 기획자 답**: "주의·경고 이벤트가 있었던 경우는 안내 문구 없이 그 주간 카드만". 이벤트 없는 경우는 4-1 원래 규칙(예외 적용)으로 해석 | 필요(확정 사항 고지) |
 | Q5 | 횟수 = 구간과 **겹치는** 이벤트 chain 수(`chain_root` 같은 행은 1건, chain 의 최고 레벨로 분류). Stage N D3 무음 주의·D14 재경고는 chain 에 흡수돼 따로 세지 않음 | Stage N D3 확정, 플래핑으로 횟수가 부풀지 않게 | 불필요(N D3 고지에 포함) |
 | Q6 | `{max_deviation}` = 구간 내 경고 chain 들의 peak diff 최댓값(사용자 기준 대비, Stage P P6 대체 규칙 동일) | 3-2 | 불필요 |
 | Q7 | TEMP_DANGER 패턴 분석(`{time_label}`): **경고 chain 이 시작한 1시간대**(2026-11-02 변경 — 걸친 시간대를 전부 세면 하루 가까이 이어진 경고가 거의 모든 시간대를 채워 "0시~1시"가 뽑히는 것을 리플레이에서 확인)를 날짜별 1회씩 세어 같은 시간대가 서로 다른 3일 이상이면 `{H}시~{H+1}시 사이`(23시는 `23시~0시`, 동률이면 이른 시간대). 그게 없으면, 경고가 있었던 날이 3일 이상이고 경고가 전부 주간(08~20시)이면 `주간 시간`, 전부 야간이면 `야간 시간`. 둘 다 아니면 그 줄 생략 | 수정본에서 "동일 시간대 3일 이상"이 삭제되고 "반복 패턴"만 남음 → 삭제 전 3일 기준 + 기획자 `{time_label}` 예시(주간 시간·야간 시간·10시~11시 사이) — 1시간대만 쓰는 안과 비교 후 **확정(2026-11-02)** | 필요(확정 사항 고지) |
@@ -94,7 +94,9 @@ def test_week_window_buckets():                  # week_start=2026-11-02 → (11
 def test_valid_days_sample_rule():               # 하루 t_a_count 합 23,040 → 유효, 23,039 → 무효, h_a 는 따로 셈
 def test_missing_rate_from_registration():       # 수요일 08:00 등록, 이후 표본 꽉 참 → 0.0; 등록 이후 절반 → 0.5; 구간 끝 뒤 등록 → None
 def test_err_no_data_per_metric():               # t_a 유효 2일·h_a 5일 → temp_card None + notice(ERR_NO_DATA, metric="t_a"), humid 정상
-def test_err_disconnect_alongside():             # t_a 유효 4일·누락률 0.55 → temp_card 있음 + notice(ERR_DISCONNECT, metric="t_a")
+def test_err_disconnect_without_events_notice_only():  # 유효 4일·누락률 0.54, 이벤트 없음 → 카드 None + 안내 (Q4 r2)
+def test_err_disconnect_with_events_card_only():       # 이벤트 있는 지표는 카드만, 없는 지표는 안내만
+def test_err_disconnect_events_below_card_rule_fall_back_to_notice():  # 습도 이탈 1회 → 카드 None → 안내
 def test_temp_danger_card():                     # 경고 chain 2개 peak diff 3.2, 4.1 → lines[0]=="총 2회 위험 온도 발생. 적정 온도보다 최대 4.1℃ 이탈", status "danger", code "TEMP_DANGER"
 def test_temp_danger_pattern_3days():            # 14시대 걸친 경고 chain 이 서로 다른 3일 → "14시~15시 사이에 온도 이탈이 집중되었어요"; 23시대 → "23시~0시 사이…"
 def test_temp_danger_pattern_day_night():        # 월 13시·수 15시·금 11시 경고 → "주간 시간에 온도 이탈이 집중되었어요"; 21시·02시·23시(다른 3일) → "야간 시간…"; 주간·야간 섞임 → 줄 없음

@@ -33,7 +33,9 @@ HUM_DELAY·HUM_NORMAL 은 판정하지 않는다(Q10).
 ## 예외 (지표별, `notices`)
 
 - ERR_NO_DATA: 유효 수집일 < 3 → 그 지표 카드 없이 안내만(Q3).
-- ERR_DISCONNECT: 유효 수집일 ≥ 3 이고 누락률 ≥ 50% → 카드와 함께 안내(Q4).
+- ERR_DISCONNECT: 유효 수집일 ≥ 3 이고 누락률 ≥ 50% → 그 지표의 주의·경고 이벤트가 있으면
+  안내 없이 카드만, 없으면 안내만(Q4 r2, 기획자 답 2026-11-03). 이벤트가 카드 조건에 못 미쳐
+  카드가 없으면 안내.
 
 ## 결정 요약
 
@@ -381,11 +383,17 @@ def build_weekly(events: list[dict[str, Any]], buckets: list[dict[str, Any]],
             notices.append(_notice("ERR_NO_DATA", metric))
             continue
         rate = missing_rate(buckets, window, metric, registered_at)
-        if rate is not None and rate >= DISCONNECT_RATE:
+        # Q4 r2: 끊긴 주는 주의·경고 이벤트가 있으면 카드만, 없으면 안내만
+        disconnected = rate is not None and rate >= DISCONNECT_RATE
+        kinds = TEMP_EVENT_KINDS if metric == "t_a" else HUMID_EVENT_KINDS
+        if disconnected and not event_chains(events, kinds, window):
             notices.append(_notice("ERR_DISCONNECT", metric))
+            continue
         stats = {"valid_days": len(days), "missing_rate": rate}
         if metric == "t_a":
             cards[metric] = _temp_card(events, buckets, prev_buckets, window, days, stats)
         else:
             cards[metric] = _humid_card(events, window, cycles, stats)
+        if disconnected and cards[metric] is None:   # 이벤트가 카드 조건에 못 미치면 빈칸 대신 안내
+            notices.append(_notice("ERR_DISCONNECT", metric))
     return WeeklyResult(cards["t_a"], cards["h_a"], notices)
