@@ -31,7 +31,7 @@
 |---|---|---|
 | `terra-iot-nano` | ✅ | 베타 배포 기기. 플래시 4MB, 이미지 영역 `0x3E0000` + 128KB (OTA 슬롯 뒤 빈 공간). MQTT 버퍼 변경 없음 |
 | `terra-iot-supermini` | ✅ | nano 와 공통 로직 동일 유지 규칙 (핀맵만 차이). 플래시 맵 같음 — 파티션 표 대조 후 같은 주소 |
-| `terra-hub-p4` | ✅ | `iot/iot_lcd.c`. 16MB — coredump 뒤(`0x830000`) 빈 영역에 같은 방식. 주소만 Kconfig 로 분리 |
+| `terra-hub-p4` | ⏸️ | 0.4.0 까지 포팅·릴리스 등록 후 **2026-11-03 허브 개발 중단**(사용자). 이후 수정은 nano 만 |
 | `terra-iot-nano-relay` | ❌ | 구 보드. `unknown_action` 으로 자연 거절 |
 
 ## 조사 결과 (설계 근거)
@@ -190,7 +190,10 @@ APP_LCD_IMG_FLASH_ADDR (nano/supermini 0x3E0000, hub 0x830000) , APP_LCD_IMG_FLA
 - [x] **web** 업로드/미리보기/보호기 설정 (`api()` 가 FormData 면 Content-Type 생략)
 - [ ] E2E: 사진 업로드 → 미리보기와 LCD 동일(색·방향) 확인 → 교대 주기(예: 10/5초) 확인 → 재부팅 후 WiFi 없이도 사진 유지 → 소등 창에서는 보호기도 꺼짐 → 같은 사진 재업로드 시 다운로드 스킵 로그 → 다운로드 중 전원 차단 후 재부팅 시 이전 이미지 또는 INFO(크래시 없음)
 - [x] **docs** MQTT.md action 목록·DATABASE.md devices 컬럼·API.md §4.14 갱신, nano/hub `partitions.csv` 주석(supermini 는 내장 표라 Kconfig help 에), 앱 핸드오프 `docs/BACKEND_HANDOFF_REPLY_LCD_SAVER_2026-10-28.md`
-- [ ] **배포**: 마이그레이션 적용 → 서버 배포(`uv sync` — python-multipart) → `.env API_PUBLIC_BASE_URL` 확인 → 펌웨어 OTA(nano)·USB(supermini)·hub
+- [x] **마이그레이션 적용** (2026-11-03) · **main 머지** PR #32
+- [x] **OTA 릴리스 등록** (2026-11-03): nano `terra-fw 1.2.0-20261103`, hub `terra-hub-p4 0.4.0-20261103` — 둘 다 bin+elf R2. supermini 는 OTA 대상 아님(USB)
+- [x] `lcd_saver.mode` `rotate`/`image` (사진만 모드, 2026-11-03 요청)
+- [ ] **서버 재배포**(`uv sync` — python-multipart) → `.env API_PUBLIC_BASE_URL` 확인 → 기기 1대 OTA 선검증 → 전개. 앱 가이드 `docs/APP_GUIDE_LCD_SAVER_2026-11-03.md`
 
 ### N-3 (선택) — 슬라이드쇼
 - 128KB = 3장. `slot` 0~2 로 저장, `lcd_saver.slots:[0,1,2]` 순환. 사용자 요구가 실제로 나오면

@@ -30,7 +30,7 @@
 - **미리보기.** 업로드 응답의 `preview_url` 이 기기 화면과 같은 색(RGB565)·크롭이다. 세로 사진은 가운데를 가로로 잘라내니
   사용자에게 보여주고 확인받기. 나중에 "지금 올라간 사진" 은 `GET /lcd` 의 `preview_url` 로 다시 받을 수 있다.
 - **사진 명령은 ack 가 늦다.** 기기가 서버에서 40KB 를 받아 플래시에 쓰고 검증한 뒤 ack 하므로 보통 1~3초, 느린 WiFi 면 10초까지.
-  그동안 "기기로 전송 중…" 표시. 실패 result: `dl_connect` / `dl_read` / `http_NNN` / `sha_mismatch` / `flash_write` / `busy`(이미 다운로드 중, 잠시 뒤 재시도).
+  그동안 "기기로 전송 중…" 표시. 실패 result: `dl_connect` / `dl_read` / `http_NNN` / `sha_mismatch` / `flash_write` / `busy`(이미 다운로드 중, 잠시 뒤 재시도) / `no_token`(기기 재페어링 필요).
 - 같은 사진을 다시 보내면 기기가 다운로드 없이 바로 ok 한다(플래시에 같은 sha 가 있을 때).
 - 소등 시간 입력은 KST `HH:MM`. 시작>끝이면 자정 넘는 구간(23:00~07:00). 시작==끝은 400.
 - 확정 시점은 **기기 ACK ok** — 201 직후엔 옛 값, 이후 Realtime 으로 새 값. 기기 오프라인이면 안 바뀐다(기존 lcd_text 와 같은 규칙).
@@ -48,6 +48,10 @@
 
 ## 배포 상태
 
-- [ ] 운영 DB 마이그레이션 `migrations/2026-10-28_devices_lcd_saver.sql`
-- [ ] 서버 배포 (`uv sync` — `python-multipart` 추가됨)
-- [ ] 펌웨어: nano OTA / supermini USB / hub — 3트리 빌드 통과, 실기 검증 전
+- [x] 운영 DB 마이그레이션 `migrations/2026-10-28_devices_lcd_saver.sql` (2026-11-03)
+- [x] 서버 코드 main 머지 (PR #32, 2026-11-03) — 재배포는 `uv sync` 포함(`python-multipart`)
+- [x] 펌웨어 OTA 릴리스 등록 (2026-11-03): nano `terra-fw 1.2.0-20261103`(release b7d2e2dc), hub `terra-hub-p4 0.4.0-20261103`(release b7c49bc4)
+- ⚠️ **허브(hub_p4) 개발은 2026-11-03 부로 중단** — 이 기능의 실기 검증·후속 수정은 **nano 만**. 허브 0.4.0 은 등록만 된 상태(미검증)
+- [ ] 실기 검증 — 1대 선검증 후 전개
+
+앱 적용 상세는 [APP_GUIDE_LCD_SAVER_2026-11-03.md](APP_GUIDE_LCD_SAVER_2026-11-03.md).
