@@ -393,3 +393,19 @@ def test_restore_closes_older_cycle_alert_at_next_start(sb: LossySB, clock: Cloc
     sample(clock, 0, 65)
     a = sb.one("alerts", id="al-1")
     assert a["resolved_at"] == at(-7200) and a["context"]["closed_reason"] == "next_event"
+
+
+# ---------- 스위치 꺼짐이면 해제 경로도 습기 사이클을 건드리지 않는다 (이관훈님 리뷰) ----------
+
+def test_unlink_flag_off_leaves_cycles(monkeypatch: pytest.MonkeyPatch, sb: LossySB, clock: Clock) -> None:
+    from backend import unlink_service
+    monkeypatch.setenv("HUMID_CYCLES_ENABLED", "false")
+    monkeypatch.setattr(unlink_service.registry, "unregister_device", lambda key: None)
+    sb.rows("humid_cycles").append(cycle_row(vent_delay_alert_id="al-1"))
+    sb.rows("alerts").append(cycle_alert("env_vent_delay"))
+    sb.rows("devices")[0]["unlinked_at"] = at(-60)
+    sample(clock, 0, 65)                                                   # 브리지 해제 경로
+    unlink_service.unlink_entity(sb, table="devices", entity_uuid=DEV, user_id=OWNER, request_id="req-1")
+    assert sb.one("alerts", id="al-1")["resolved_at"] is None
+    assert sb.rows("humid_cycles")[0]["ended_by"] is None
+    assert alerts._states[DEV].unlinked is True                            # Stage N 해제는 그대로
