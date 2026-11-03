@@ -419,6 +419,28 @@ def test_unlinked_device_stops(sb: FlakySB, clock: Clock) -> None:
     assert sb.rows("push_outbox") == []
 
 
+def test_unlink_seen_fresh_before_open_despite_stale_cache(sb: FlakySB, clock: Clock) -> None:
+    # 해제 API 는 API 프로세스라 브리지 device_meta 캐시(5분, 실제 monotonic)를 못 비운다.
+    # 해제 뒤 telemetry 가 계속 와도 새 알림을 열기 직전 fresh 조회로 해제를 알아채야 한다(D12 보강).
+    run(clock, 0, 3, 24.0)                        # 캐시에 "연결됨" 메타 적재
+    sb.rows("devices")[0]["unlinked_at"] = at(3)  # 브리지 캐시는 그대로
+    run(clock, 3, 300, 26.5)                      # 2분 넘게 범위 밖 — 열리면 안 됨
+    assert env_rows(sb) == []
+    assert sb.rows("push_outbox") == []
+    assert handlers.device_meta(DEV)["unlinked_at"] == at(3)   # 캐시가 비워져 fresh 값
+
+
+def test_unlink_seen_fresh_before_reminder(sb: FlakySB, clock: Clock) -> None:
+    # 열린 알림이 있는 채로 해제(캐시는 stale) → 1시간 뒤 reminder 푸시가 나가면 안 된다
+    run(clock, 0, 126, 26.3)
+    opened = env_rows(sb)
+    assert len(opened) == 1 and len(sb.rows("push_outbox")) == 1
+    sb.rows("devices")[0]["unlinked_at"] = at(200)
+    run(clock, 200, 3900, 26.3)
+    assert len(sb.rows("push_outbox")) == 1                     # started 만, reminder 없음
+    assert env_rows(sb)[0]["resolved_at"] is not None           # _stop_unlinked 가 닫음
+
+
 def test_relinked_device_resumes_and_unlink_closes_again(sb: FlakySB, clock: Clock) -> None:
     dev = sb.rows("devices")[0]
     dev["unlinked_at"] = at(-60)

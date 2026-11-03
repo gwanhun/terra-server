@@ -204,6 +204,7 @@ def test_enqueue_env_alert_failed():            # INSERT 예외(23505 아님) �
     - `wall(at_mono) = now_wall - (now_mono - at_mono)`.
   - `a_ok=false` → 두 트래커에 None. `a_ok=true` 여도 `t_a`/`h_a` 가 숫자가 아니거나 NaN 이면 해당 요소만 None.
   - 기기 해제(D12): `device_meta`(handlers.device_meta, 지연 임포트)에 `unlinked_at` 이 있으면 활성 v4 행 종료 + 트래커 삭제 + 평가 안 함 — `device_meta` select 에 `unlinked_at` 추가 필요(handlers.py:234).
+  - D12 보강(2026-11-03, PR #26 리뷰): 해제 API 는 API 프로세스라 브리지 캐시(5분)를 못 비운다. 새 알림 열기·reminder·푸시 재시도 직전에 `_confirm_linked` 가 `unlinked_at` 을 캐시 없이 다시 보고, 해제면 `handlers.invalidate_device_meta` + `_stop_unlinked`.
 - Acceptance: `uv run pytest tests/test_alerts.py tests/test_mqtt_handlers.py -v` PASS, 이어서 `uv run pytest -q` 전체 PASS.
 
 - [ ] **Step 0: 스키마 확인** (위)

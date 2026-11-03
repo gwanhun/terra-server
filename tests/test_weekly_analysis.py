@@ -357,6 +357,16 @@ def test_hum_delay_and_dry_time():
     assert run(delays[:1] + humid("d", "env_humid_low", 3), cycles=cycles).humid_card.code == "HUM_DRY"
 
 
+def test_hum_delay_without_dry_reach_keeps_count_line():
+    # 구간 안 사이클이 전부 건기 미도달 → dry_time 없음. 타이틀만 있는 빈 카드가 아니라 횟수 한 줄
+    cycles = [cycle(kst(5, 9), None), cycle(kst(6, 9), None)]
+    delays = [ev(f"v{i}", "env_vent_delay", "caution", kst(5 + i, 15), None,
+                 cycle_started_at=iso(kst(5 + i, 9))) for i in range(2)]
+    c = run(delays, cycles=cycles).humid_card
+    assert c.code == "HUM_DELAY" and c.status == "danger"
+    assert c.lines == ["총 2회 환기 지연이 발생했어요"]
+
+
 def test_hum_normal_requires_cycles():
     assert run(cycles=[]).humid_card is None
     assert run(cycles=[cycle(kst(3, 9), None)]).humid_card is None               # 도달 0
