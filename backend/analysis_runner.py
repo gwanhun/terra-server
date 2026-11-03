@@ -93,8 +93,10 @@ from backend.daily_analysis import (
     TEMP_EVENT_KINDS,
     build_humid_card,
     build_temp_card,
+    cycle_window,
     report_window,
 )
+from backend.humid_cycle import humid_cycles_enabled, humid_cycles_since
 from backend.supabase_client import get_supabase_client
 from backend.weekly_analysis import build_weekly, week_window
 
@@ -133,11 +135,6 @@ def v4_since() -> datetime | None:
     if raw and dt is None:
         logger.warning("ALERTS_V4_SINCE 형식 오류(ISO8601 필요): %r", raw)
     return dt
-
-
-def humid_cycles_enabled() -> bool:
-    """Stage O 소유 플래그. 참이면 습도 카드에 humid_cycles 를 넘긴다(P9 해제)."""
-    return _flag("HUMID_CYCLES_ENABLED")
 
 
 def _iso(dt: datetime) -> str:
@@ -219,9 +216,12 @@ def _fetch_buckets(sb: Any, device_id: str, window: tuple[datetime, datetime]) -
 
 
 def _fetch_cycles(sb: Any, device_id: str, window: tuple[datetime, datetime]) -> list[dict[str, Any]] | None:
-    if not humid_cycles_enabled():
+    """Stage O 사이클(05:00 경계). 스위치 꺼짐·켠 시각 없음·켜기 전 구간이 섞인 날(주)은 None(P9)."""
+    since = humid_cycles_since()
+    cw = cycle_window(window)
+    if not humid_cycles_enabled() or since is None or cw[0] < since:
         return None
-    start, end = (_iso(t) for t in window)
+    start, end = (_iso(t) for t in cw)
     return (
         sb.table("humid_cycles").select("*")
         .eq("device_id", device_id).gte("started_at", start).lt("started_at", end)

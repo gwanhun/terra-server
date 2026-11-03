@@ -27,8 +27,9 @@ Stage P 의 하루 구간(08:00~08:00) 7개로 나눠 본다.
 ## 습도 카드
 
 HUM_DELAY(환기 지연 ≥ 2, danger) → HUM_DRY / HUM_OVER / HUM_MIXED → HUM_UNSTABLE →
-HUM_NORMAL(사이클 ≥ 1·도달 ≥ 1, normal). 나머지는 caution. `cycles` 가 None(Stage O 전)이면
-HUM_DELAY·HUM_NORMAL 은 판정하지 않는다(Q10).
+HUM_NORMAL(사이클 ≥ 1·도달 ≥ 1, normal) → HUM_NO_MIST(습도 이벤트 0·사이클 0, caution, ㉕).
+나머지는 caution. `cycles` 가 None(Stage O 전·켜기 전 주)이면 HUM_DELAY·HUM_NORMAL·HUM_NO_MIST 는
+판정하지 않는다(Q10). 사이클 소속은 05:00 경계(`cycle_window`), 도달은 주 구간 끝까지만 센다.
 
 ## 예외 (지표별, `notices`)
 
@@ -69,6 +70,7 @@ from backend.daily_analysis import (
     Status,
     Window,
     chain_diff,
+    cycle_window,
     daynight_diff,
     event_chains,
     events_data,
@@ -77,6 +79,7 @@ from backend.daily_analysis import (
     is_valid_day,
     num,
     parse_ts,
+    reached_by,
     report_window,
     sample_count,
 )
@@ -303,16 +306,19 @@ def fmt_dry_time(minutes: float) -> str:
 
 
 def _cycle_stats(cycles: list[dict[str, Any]], window: Window) -> tuple[int, list[float]]:
-    """구간 안에서 시작한 사이클 수, 그중 건기 도달한 사이클의 소요 분 목록(Q11·Q12)."""
+    """사이클 구간(05:00 경계, O-f) 안에서 시작한 사이클 수, 그중 주 구간 끝까지 건기 도달한
+    사이클의 소요 분 목록(Q11·Q12)."""
     n = 0
     mins: list[float] = []
+    cw = cycle_window(window)
     for c in cycles:
         started = parse_ts(c.get("started_at"))
-        if started is None or not _in_window(started, window):
+        if started is None or not _in_window(started, cw):
             continue
         n += 1
         reached = parse_ts(c.get("dry_reached_at"))
-        if reached is not None and reached >= started and c.get("status", _REACHED[0]) in _REACHED:
+        if (reached is not None and reached >= started and reached_by(c, window[1])
+                and c.get("status", _REACHED[0]) in _REACHED):
             mins.append((reached - started).total_seconds() / 60)
     return n, mins
 
@@ -355,6 +361,9 @@ def _humid_card(events: list[dict[str, Any]], window: Window,
     if cycles is not None and data["wet_count"] >= 1 and dry_time is not None:
         return card("HUM_NORMAL", "normal", "건습 사이클이 건강하게 유지되었어요",
                     f"건기 도달 평균 시간 {dry_time}으로 건습 사이클을 유지했어요")
+    if cycles is not None and not chains and data["wet_count"] == 0:
+        # ㉕: 3-3 "(대신 예외 멘트가 출력됨)" — 일일 2-3 같은 상황 문구를 그대로(Stage O)
+        return card("HUM_NO_MIST", "caution", "습기가 감지되지 않았어요", "분무를 잊지 않으셨는지 확인해 주세요")
     return None
 
 

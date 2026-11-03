@@ -24,6 +24,7 @@
 | `ota_jobs` | OTA | 기기 1대 × 릴리스 1건 작업. `status` pending→accepted→downloading→ready→applying→verified/rolled_back, failed/timeout. `prepare_msg_id`/`apply_msg_id`(카메라: MQTT msg_id, 기기: commands.id) — 2026-10-07 | UUID, release_id FK, target_uuid(FK 없음: 해제 행 이력 보존) |
 | `env_daily_reports` | IoT | 일일 온습도 분석 카드(기획 v4 2-1~2-3) — 2026-11-02. 기기 × `report_date`(집계 시작일 KST, 08:00~다음 날 08:00) 1행, `temp_card`/`humid_card` JSONB(서버가 문구 완성, NULL=미생성), `pass` 1(08시대)→2(09:05 재계산). 브리지 `analysis_runner` 가 upsert | UUID, device_id FK(cascade), UNIQUE(device_id, report_date) |
 | `env_weekly_reports` | IoT | 주간 온습도 분석 카드 + 예외 안내(기획 v4 3-1~3-3, 4-1) — 2026-11-02. 기기 × `week_start`(집계 시작 월요일 KST, 월 08:00~다음 월 08:00) 1행, `temp_card`/`humid_card` JSONB, `notices` JSONB(`[{code,metric,title,body}]`, ERR_NO_DATA·ERR_DISCONNECT). 주당 1회 생성, 그 주 안 복구 | UUID, device_id FK(cascade), UNIQUE(device_id, week_start) |
+| `humid_cycles` | IoT | 습기 사이클(기획 v4 0-2·1-2·1-3·1-6, Stage O) — 2026-11-03. 습기 이벤트(습도 급상승) 1개 = 1행: `started_at`(급상승 시작)·`start_humid`·`max_humid`(감지 + 3분 최고, 상한 85)·`max_raw`·`dry_target`(MAX − 12)·`dry_reached_at`(최초 도달)·`status` open/reached_in_time/reached_late/not_reached·`offline_sec`(6·15시간 판정에서 뺀 센서 공백)·`merged_count`(20분 안 재급상승)·`ended_by`(next_event/unlinked/disabled)·`vent_delay_alert_id`/`mist_gap_alert_id`(alerts FK). 브리지 `humid_cycle_store` 가 씀, `HUMID_CYCLES_ENABLED` 뒤. Realtime 없음(앱 칩은 alerts) | UUID, device_id FK(cascade), UNIQUE(device_id, started_at), INDEX(device_id, started_at desc) |
 | `camera_ops_reboots` | 운영 | 운영 재부팅(`POST /ops/cameras/{id}/reboot`, petcam 감시 스크립트) 발행 시도 1건 = 1행 — 2026-10-20. 발행 전 INSERT(`published=NULL`) → 결과로 `published` true/false UPDATE. `ack_result`/`acked_at` 은 브리지가 카메라 ack 로 채움. 쿨다운(2시간)은 `published` 가 false 아닌 행 기준. 건너뜀(409)은 기록 안 함. 앱 비노출 | UUID, camera_id(FK 없음: 카메라 삭제 후에도 기록 보존), UNIQUE(msg_id), INDEX(camera_id, requested_at desc) |
 
 ## ERD (ASCII)
@@ -72,6 +73,7 @@ auth.users (Supabase Auth)
 | `live_recordings` | 본인 (`user_id = auth.uid()`) | service_role only (`POST /recordings`) | service_role only (complete) | service_role only (`DELETE /recordings/{id}`, 정리 스레드) |
 | `env_daily_reports` | 본인 | service_role only (bridge) | service_role only (bridge) | - |
 | `env_weekly_reports` | 본인 | service_role only (bridge) | service_role only (bridge) | - |
+| `humid_cycles` | 본인 | service_role only (bridge) | service_role only (bridge) | - |
 | `camera_ops_reboots` | service_role only (정책 없음, anon·authenticated REVOKE) | service_role only (`/ops` 라우터) | service_role only (`/ops` 라우터, 브리지 ack) | - |
 
 > "본인" = `auth.uid() = owner_id` 또는 cascade로 매핑

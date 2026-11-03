@@ -51,6 +51,8 @@
 
 > 실시간 그래프 상태 칩은 `message` 의 `[ ]` 안 문구(기획 1-5)로 표시하면 됩니다.
 
+> **2026-11-03 추가(Stage O)**: 습기 사이클 kind 2개 `env_vent_delay`(`[환기 지연] 분무 후 건기 미도달`)·`env_mist_gap`(`[건조 주의] 분무 필요`)도 같은 형식(`rule = "v4"`, `level = "caution"`, severity `warning`)과 같은 푸시로 나갑니다. 푸시는 시작 1회뿐(추가 푸시 없음), `threshold = null`. 상세: [APP_HUMID_CYCLE_2026-11-03.md](APP_HUMID_CYCLE_2026-11-03.md)
+
 ## 2. 푸시 이벤트 `env.alert.triggered`
 
 봉투는 기존 `device.action.*` 와 같습니다([BACKEND_HANDOFF_REPLY_PUSH_2026-09-15.md](BACKEND_HANDOFF_REPLY_PUSH_2026-09-15.md)).

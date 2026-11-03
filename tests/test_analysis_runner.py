@@ -332,17 +332,33 @@ def test_humid_cycles_flag_off_not_queried(enabled: None) -> None:
 
 def test_humid_cycles_flag_on_queried(enabled: None, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HUMID_CYCLES_ENABLED", "true")
+    monkeypatch.setenv("HUMID_CYCLES_SINCE", "2026-11-01T00:00:00+09:00")
     cycles = [
         {"device_id": "dev-0001", "started_at": iso(kst(9, 0, day=2)), "dry_reached_at": iso(kst(11, 0, day=2))},
-        {"device_id": "dev-0001", "started_at": iso(kst(21, 0, day=2)), "dry_reached_at": None},
-        {"device_id": "dev-0001", "started_at": iso(kst(9, 0, day=1)), "dry_reached_at": None},   # 구간 밖
+        {"device_id": "dev-0001", "started_at": iso(kst(4, 30, day=3)), "dry_reached_at": None},  # 05시 전 = 11/2 소속
+        {"device_id": "dev-0001", "started_at": iso(kst(4, 30, day=2)), "dry_reached_at": None},  # 11/1 소속
+        {"device_id": "dev-0001", "started_at": iso(kst(5, 0, day=3)), "dry_reached_at": None},   # 11/3 소속
         {"device_id": "dev-0002", "started_at": iso(kst(10, 0, day=2)), "dry_reached_at": None},  # 다른 기기
     ]
-    sb = FakeSB(devices=[dev(1)], humid_cycles=cycles)
+    sb = FakeSB(devices=[dev(1)], humid_cycles=cycles, telemetry_30m=full_buckets("dev-0001", WIN_START, 1, 25.0))
     assert AnalysisRunner(sb=sb).tick(kst(8, 16)) == 1
     humid = report(sb)["humid_card"]
     assert humid["title"] == "건습 사이클이 건강하게 유지됐어요"
     assert humid["lines"] == ["습기 2번, 건기 1번이 기록됐어요"]
+
+
+@pytest.mark.parametrize("since", ["2026-11-02T06:00:00+09:00", None])
+def test_since_gate_daily(enabled: None, monkeypatch: pytest.MonkeyPatch, since: str | None) -> None:
+    # 켠 시각이 사이클 구간(11/2 05:00~) 뒤거나 없으면 사이클을 안 본다 → "습기 미감지" 오카드 없음
+    monkeypatch.setenv("HUMID_CYCLES_ENABLED", "true")
+    if since:
+        monkeypatch.setenv("HUMID_CYCLES_SINCE", since)
+    else:
+        monkeypatch.delenv("HUMID_CYCLES_SINCE", raising=False)
+    sb = RecordingSB(devices=[dev(1)], telemetry_30m=full_buckets("dev-0001", WIN_START, 1, 25.0))
+    assert AnalysisRunner(sb=sb).tick(kst(8, 16)) == 1
+    assert "humid_cycles" not in sb.touched
+    assert report(sb)["humid_card"] is None
 
 
 # ---------- 주간 (Stage Q Task 3) ----------
@@ -564,3 +580,17 @@ def test_runner_start_stop_cheap_when_disabled(monkeypatch: pytest.MonkeyPatch) 
     runner.start()
     runner.start()   # 두 번 불러도 스레드 하나
     runner.stop()
+
+
+@pytest.mark.parametrize("since, code", [
+    ("2026-11-02T04:00:00+09:00", "HUM_NO_MIST"),   # 주 사이클 구간(월 05:00~) 전부터 켜짐 → ㉕ 카드
+    ("2026-11-03T00:00:00+09:00", None),            # 주 중간에 켬 → 사이클을 안 봄(부분 주 오카드 방지)
+])
+def test_since_gate_weekly(weekly: None, monkeypatch: pytest.MonkeyPatch, since: str, code: str | None) -> None:
+    monkeypatch.setenv("HUMID_CYCLES_ENABLED", "true")
+    monkeypatch.setenv("HUMID_CYCLES_SINCE", since)
+    buckets = full_buckets("dev-0001", WEEK_START_UTC, 7, 24.0)
+    sb = FakeSB(devices=[dev(1, created_at="2026-10-01T00:00:00+00:00")], telemetry_30m=buckets, humid_cycles=[])
+    AnalysisRunner(sb=sb).tick(kst(9, 6, day=9))
+    humid = wreport(sb)["humid_card"]
+    assert (humid or {}).get("code") == code

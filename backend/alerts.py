@@ -57,7 +57,7 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any
 
-from backend import push_events
+from backend import humid_cycle_store, push_events
 from backend.env_rules import (
     Action,
     ActiveEvent,
@@ -66,6 +66,7 @@ from backend.env_rules import (
     display_diff,
     title,
 )
+from backend.humid_cycle import humid_cycles_enabled, humid_cycles_since
 from backend.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
@@ -294,6 +295,8 @@ class _DeviceState:
     unlinked: bool = False
     # sensor_fault 활성 여부(None = 모름). a_ok 가 바뀔 때만 DB 를 본다 — 정상 샘플마다 SELECT 안 함.
     fault_active: bool | None = None
+    # Stage O 습기 사이클(HUMID_CYCLES_ENABLED). 재페어링·reset_state 때 같이 새로 만든다.
+    cycles: humid_cycle_store.CycleDeviceState = field(default_factory=humid_cycle_store.CycleDeviceState)
 
 
 _v4_lock = threading.Lock()
@@ -721,6 +724,10 @@ def _stop_unlinked(c: _Step) -> None:
             return
         for r in rows:
             _force_close(c.sb, c.st, r, c.now_wall)
+        try:
+            humid_cycle_store.on_unlinked(c.sb, c.st.cycles, c.device_uuid, c.now_wall)
+        except Exception:  # noqa: BLE001 — Stage O 정리 실패가 Stage N 해제를 막지 않게(해제 API 도 닫는다)
+            logger.exception("해제 기기 습기 사이클 종료 실패 (device=%s)", c.device_uuid)
         c.st.trackers = {e: ElementTracker(e) for e in _ELEMENTS}  # type: ignore[arg-type]
         c.st.push_retry.clear()
         c.st.unlinked = True
@@ -790,6 +797,14 @@ def _evaluate_v4(device_uuid: str, row: dict[str, Any], device_key: str | None) 
         except Exception:  # noqa: BLE001 — sensor_fault 조회 실패가 온습도 판정을 막지 않게
             logger.exception("sensor_fault 평가 실패 (device=%s)", device_uuid)
         _flush_dirty(sb, st)
+        if humid_cycles_enabled() and humid_cycles_since() is not None:
+            # Stage O — 설정·Stage N 복원과 무관하게 습도만 본다(그쪽 실패로 급상승을 놓치지 않게)
+            try:
+                humid_cycle_store.step(c, st.cycles, row, _sample_values(row)[1], lambda: _confirm_linked(c))
+            except Exception:  # noqa: BLE001
+                logger.exception("습기 사이클 평가 실패 (device=%s)", device_uuid)
+            if st.unlinked:
+                return
         if not st.restored and not _restore(c):
             return
         th = _thresholds(c)

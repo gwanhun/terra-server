@@ -313,19 +313,57 @@ def test_humid_no_event_no_cycles_none():
 
 
 def test_humid_cycles_healthy_and_none():
+    hb = day_night_buckets(25.0, 22.0)
     cycles = [
         {"started_at": iso(kst(2, 9)), "dry_reached_at": iso(kst(2, 12)), "status": "reached_in_time"},
         {"started_at": iso(kst(2, 15)), "dry_reached_at": iso(kst(2, 23)), "status": "reached_late"},
         {"started_at": iso(kst(3, 2)), "dry_reached_at": None, "status": "open"},
     ]
-    card = build_humid_card([], [], W, cycles=cycles)
+    card = build_humid_card([], hb, W, cycles=cycles)
     assert card.title == "건습 사이클이 건강하게 유지됐어요"
     assert card.lines == ["습기 3번, 건기 2번이 기록됐어요"]
     assert card.status == "normal"
-    none = build_humid_card([], [], W, cycles=[])
+    none = build_humid_card([], hb, W, cycles=[])
     assert none.title == "습기가 감지되지 않았어요"
     assert none.lines == ["분무를 잊지 않으셨는지 확인해 주세요"]
     assert none.status == "caution"
+
+
+def _cyc(start: datetime, reached: datetime | None) -> dict:
+    return {"started_at": iso(start), "dry_reached_at": iso(reached),
+            "status": "open" if reached is None else "reached_in_time"}
+
+
+def test_cycle_belongs_from_0500():
+    # O-f: 11/2 카드의 사이클 = 11/2 05:00 ~ 11/3 05:00 에 시작
+    cycles = [_cyc(kst(2, 4, 59), kst(2, 7)), _cyc(kst(2, 5), kst(2, 9)), _cyc(kst(3, 4, 59), kst(3, 7))]
+    card = build_humid_card([], day_night_buckets(25.0, 22.0), W, cycles=cycles)
+    assert card.data["wet_count"] == 2 and card.data["dry_reach_count"] == 2
+
+
+def test_dry_reached_after_cutoff_not_counted():
+    # 08:00 마감 뒤 도달은 그날 도달로 안 센다(2차 생성 때 이미 도달했어도). status 가 reached 여도 같음
+    c = {**_cyc(kst(3, 4), kst(3, 8, 30)), "status": "reached_in_time"}
+    assert build_humid_card([], day_night_buckets(25.0, 22.0), W, cycles=[c]) is None   # 습기 1·건기 0
+
+
+def test_invalid_day_no_cycle_card():
+    # 습도 무효인 날(센서 종일 오류·켠 날 일부)엔 "습기가 감지되지 않았어요"를 내지 않는다
+    assert build_humid_card([], [], W, cycles=[]) is None
+    assert build_humid_card([], day_night_buckets(25.0, 22.0, count=100), W, cycles=[]) is None
+
+
+def test_vent_delay_line_split_documented():
+    # 11/3 03:00 시작 사이클은 11/2 카드(05시 경계), 그 환기 지연(11/3 09:00)은 11/3 카드 — 받아들이는 동작
+    cyc = _cyc(kst(3, 3), None)
+    vent = {"id": "v1", "kind": "env_vent_delay", "severity": "warning",
+            "triggered_at": iso(kst(3, 9)), "resolved_at": None,
+            "context": {"rule": "v4", "level": "caution", "cycle_started_at": iso(kst(3, 3))}}
+    hb = day_night_buckets(25.0, 22.0)
+    assert build_humid_card([vent], hb, W, cycles=[cyc]) is None          # 습기 1·건기 0, 줄 없음
+    w3 = report_window(date(2026, 11, 3))
+    card = build_humid_card([vent], hb, w3, cycles=[])
+    assert card.code == "HUM_DELAY" and card.lines == ["03:00에 분무 후 사육장이 충분히 마르지 않음"]
 
 
 # ---------- 직렬화 ----------
@@ -334,7 +372,7 @@ def test_card_json_has_element_code_status():
     cards = [
         build_temp_card([ev("d1", "env_temp_high", "danger", kst(2, 14), None, peak_value=29.6)], [], W),
         build_temp_card([], day_night_buckets(25.1, 21.8), W),
-        build_humid_card([], [], W, cycles=[]),
+        build_humid_card([], day_night_buckets(25.0, 22.0), W, cycles=[]),
     ]
     for c in cards:
         j = c.to_json()

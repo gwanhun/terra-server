@@ -389,7 +389,7 @@ def test_hum_delay_without_dry_reach_keeps_count_line():
 
 
 def test_hum_normal_requires_cycles():
-    assert run(cycles=[]).humid_card is None
+    assert run(cycles=[]).humid_card.code == "HUM_NO_MIST"                     # ㉕
     assert run(cycles=[cycle(kst(3, 9), None)]).humid_card is None               # 도달 0
     cycles = [cycle(kst(3, 9), 380), cycle(kst(4, 9), 360),
               cycle(kst(1, 9), 100)]                                            # 구간 전 시작은 제외
@@ -404,3 +404,20 @@ def test_dry_time_format():
     assert fmt_dry_time(360) == "6시간"
     assert fmt_dry_time(369.5) == "6시간 10분"      # half-up
     assert fmt_dry_time(45) == "45분"
+
+
+# ---------- Stage O: ㉕·05시 경계·도달 컷오프 ----------
+
+def test_weekly_no_mist_card():
+    c = run(cycles=[]).humid_card
+    assert (c.code, c.status) == ("HUM_NO_MIST", "caution")
+    assert c.title == "습기가 감지되지 않았어요" and c.lines == ["분무를 잊지 않으셨는지 확인해 주세요"]
+    assert run(humid("d", "env_humid_low", 1), cycles=[]).humid_card is None   # 습도 이벤트가 있으면 아님
+    assert run(cycles=None).humid_card is None                                  # Stage O 전
+
+
+def test_weekly_dry_cutoff_and_0500():
+    cycles = [cycle(kst(2, 5), 120), cycle(kst(2, 4, 59), 120), cycle(kst(9, 4), 270)]   # 마지막은 11/9 08:30 도달
+    c = run(cycles=cycles).humid_card
+    assert c.code == "HUM_NORMAL"
+    assert c.data["wet_count"] == 2 and c.data["dry_reach_count"] == 1 and c.data["dry_time"] == "2시간"
