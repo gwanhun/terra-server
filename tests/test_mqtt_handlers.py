@@ -1730,3 +1730,79 @@ def test_telemetry_insert_retried_on_transport_failure(
     )
 
     assert len(attempts) == 2
+
+
+# ---- Stage N: lcd_power / lcd_quiet / lcd_saver / lcd_image ACK → devices.lcd_* ----
+
+def _lcd_state_updates(fake_sb: MagicMock, action: str, result: str, payload: dict | None) -> list[dict]:
+    return [u for u in _lcd_ack(fake_sb, _lcd_row(action, result, payload)) if "lcd_updated_at" in u]
+
+
+def test_handle_ack_lcd_power_ok(fake_sb: MagicMock) -> None:
+    ups = _lcd_state_updates(fake_sb, "lcd_power", "ok", {"on": False})
+    assert len(ups) == 1 and ups[0]["lcd_power"] is False and ups[0]["lcd_updated_at"]
+
+
+def test_handle_ack_lcd_quiet_ok_converts_minutes_to_time(fake_sb: MagicMock) -> None:
+    ups = _lcd_state_updates(fake_sb, "lcd_quiet", "ok",
+                             {"start_min": 23 * 60 + 30, "end_min": 7 * 60, "tz_offset_min": 540})
+    assert len(ups) == 1
+    assert ups[0]["lcd_quiet_start"] == "23:30:00" and ups[0]["lcd_quiet_end"] == "07:00:00"
+
+
+def test_handle_ack_lcd_quiet_clear_nulls(fake_sb: MagicMock) -> None:
+    ups = _lcd_state_updates(fake_sb, "lcd_quiet_clear", "ok", None)
+    assert len(ups) == 1 and ups[0]["lcd_quiet_start"] is None and ups[0]["lcd_quiet_end"] is None
+
+
+def test_handle_ack_lcd_saver_ok_keeps_known_keys_only(fake_sb: MagicMock) -> None:
+    ups = _lcd_state_updates(fake_sb, "lcd_saver", "ok",
+                             {"enabled": True, "mode": "image", "image_sec": 20, "info_sec": 10,
+                              "show_offline_icon": False, "msg_id": "x"})
+    assert len(ups) == 1
+    assert ups[0]["lcd_saver"] == {"enabled": True, "mode": "image", "image_sec": 20, "info_sec": 10,
+                                   "show_offline_icon": False}
+
+
+def test_handle_ack_lcd_image_ok_sets_key_without_r2(fake_sb: MagicMock, monkeypatch) -> None:
+    """lcd_image ok → lcd_image_key = lcd/{uuid}/{sha8}. ACK 경로(MQTT 스레드)는 R2 를 부르지 않는다 —
+    이전 사진 정리는 다음 업로드의 _cleanup_orphans 몫."""
+    from backend import r2_client
+    monkeypatch.setattr(r2_client, "delete_object",
+                        lambda key: pytest.fail(f"ACK 경로에서 R2 삭제 호출됨: {key}"))
+    sha = "ab" * 32
+    updates = _lcd_ack_with_factory(
+        fake_sb, _ack_table_factory(_lcd_row("lcd_image", "ok", {"sha256": sha, "url": "u"})))
+    img = [u for u in updates if "lcd_image_key" in u]
+    assert len(img) == 1
+    assert img[0]["lcd_image_key"] == f"lcd/{DEVICE_UUID}/abababab" and img[0]["lcd_image_set_at"]
+
+
+def test_handle_ack_lcd_image_clear_nulls_without_r2(fake_sb: MagicMock, monkeypatch) -> None:
+    from backend import r2_client
+    monkeypatch.setattr(r2_client, "delete_object",
+                        lambda key: pytest.fail(f"ACK 경로에서 R2 삭제 호출됨: {key}"))
+    updates = _lcd_ack_with_factory(fake_sb, _ack_table_factory(_lcd_row("lcd_image_clear", "ok", None)))
+    img = [u for u in updates if "lcd_image_key" in u]
+    assert len(img) == 1 and img[0]["lcd_image_key"] is None and img[0]["lcd_image_set_at"] is None
+
+
+def _lcd_ack_with_factory(fake_sb: MagicMock, factory) -> list[dict]:
+    tables: list[MagicMock] = []
+    def _track(name: str) -> MagicMock:
+        t = factory(name)
+        if name == "devices":
+            tables.append(t)
+        return t
+    fake_sb.table.side_effect = _track
+    handlers.handle_ack(DEVICE_TEXT, {"msg_id": "cmd-1", "result": "ok"})
+    return [c.args[0] for t in tables for c in t.update.call_args_list]
+
+
+def test_handle_ack_lcd_state_not_ok_or_bad_payload_skipped(fake_sb: MagicMock) -> None:
+    """기기가 거부(bad_request/unknown_action)하면 화면이 안 바뀌었으니 서버 값도 그대로."""
+    assert not _lcd_state_updates(fake_sb, "lcd_power", "unknown_action", {"on": True})
+    assert not _lcd_state_updates(fake_sb, "lcd_quiet", "bad_request", {"start_min": 5000, "end_min": 1})
+    # ok 인데 payload 가 깨진 행(있을 수 없지만) — 확정값 못 만들면 건너뜀
+    assert not _lcd_state_updates(fake_sb, "lcd_quiet", "ok", {"start_min": 5000, "end_min": 1})
+    assert not _lcd_state_updates(fake_sb, "lcd_power", "ok", {"on": "yes"})

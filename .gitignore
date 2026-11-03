@@ -9,3 +9,6 @@ storage/
 *.log
 .mypy_cache/
 .ruff_cache/
+
+# Claude Code 로컬 설정·worktree
+.claude/

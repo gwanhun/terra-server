@@ -32,6 +32,7 @@
 |------|-----|-------|
 | 🚧 | [stage-j-ota.md](stage-j-ota.md) | 펌웨어 원격 업데이트(OTA) — 카메라 P4 + nano (supermini 제외). 16MB 전환·ota_0/1·부트로더 롤백·토큰 인증 다운로드 |
 | 🚧 | [stage-k-unified-hub.md](stage-k-unified-hub.md) | Terra Hub — 카메라 보드(P4) 한 대가 센서/액추에이터까지. 펌웨어 `~/project/esp32/terra-hub-p4`, 서버는 cameras+devices 두 행·한 MQTT 계정 |
+| 🚧 | [stage-n-lcd-saver-power.md](stage-n-lcd-saver-power.md) | LCD 화면보호기(컬러 사진↔온습도 교대, 전환 초 사용자 지정) + LCD 전원/소등 시간대 — 사진은 RGB565 40KB 를 서버 경유 HTTP 로 받아 OTA 슬롯 뒤 플래시 128KB 빈 영역에 저장, 규칙은 기기 NVS |
 
 ## 다음 세션 시작점
 

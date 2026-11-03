@@ -17,6 +17,7 @@ dependencies = [
     "bcrypt>=4.2.1",
     "boto3>=1.43.2", # R2 (S3 호환) presigned URL 발급
     "pillow>=12.3.0",
+    "python-multipart>=0.0.32",
 ]
 
 [project.scripts]

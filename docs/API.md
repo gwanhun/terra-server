@@ -982,6 +982,31 @@ GET /devices/{device_uuid}/commands/{command_id}
 ```
 앱은 기존처럼 `commands` 직접 INSERT(§3.7)를 계속 쓰면 된다 — 결과는 같다.
 
+### 4.14 LCD 화면보호기 · 전원 · 소등 시간대 — Stage N (2026-10-28, [specs/stage-n-lcd-saver-power.md](../specs/stage-n-lcd-saver-power.md))
+
+모두 JWT + 본인 활성 기기(404). **펌웨어가 `capabilities.lcd_saver: true` 를 보고한 기기만** — 아니면 400 `unsupported_firmware`
+(구 펌웨어는 `unknown_action` 만 돌려주므로 발행 전에 막는다). 응답은 다른 LCD 명령과 같은 `{id, action, status:"pending"}` (201).
+규칙은 **기기 NVS 가 진실**이고, 기기가 `result=ok` 로 ACK 하면 서버가 `devices.lcd_*` 에 확정한다(lcd_text 와 동일) — 앱은
+`devices` Realtime 으로 읽거나 아래 GET 으로 조회. 201 직후엔 아직 옛 값이고 보통 1~2초 뒤 바뀐다.
+
+| 메서드 | 경로 | body | 명령 |
+|---|---|---|---|
+| GET | `/devices/{id}/lcd` | — | 확정값 `{device_id, lcd_text, lcd_text_updated_at, lcd_power, lcd_quiet_start, lcd_quiet_end, lcd_saver, lcd_image_key, lcd_image_set_at, lcd_updated_at, preview_url}` — `preview_url` 은 확정된 사진의 PNG presigned(있을 때) |
+| PUT | `/devices/{id}/lcd/power` | `{on: bool}` | `lcd_power`. off 는 소등 시간과 무관하게 유지(sticky), on 으로만 풀림 |
+| PUT | `/devices/{id}/lcd/quiet` | `{start:"23:00", end:"07:00"}` (KST `HH:MM`) | `lcd_quiet`. start>end 면 자정 넘는 구간. start==end 400 |
+| DELETE | `/devices/{id}/lcd/quiet` | — | `lcd_quiet_clear` |
+| PUT | `/devices/{id}/lcd/saver` | `{enabled: bool, mode: "rotate"\|"image" (기본 rotate), image_sec: 5~300 (기본 20), info_sec: 3~300 (기본 10), show_offline_icon: bool (기본 true)}` | `lcd_saver`. `rotate` = 사진 N초 ↔ 온습도 M초 교대, `image` = 사진만(온습도 화면 없음, 2026-11-03). 사진 없으면 켜도 온습도만 |
+| POST | `/devices/{id}/lcd/image` | **multipart** `file` (PNG/JPG 등 ≤5MB) | `lcd_image`. 서버가 EXIF 회전·cover-fit 160×128·RGB565 변환 → R2 `lcd/{uuid}/{sha8}.rgb565`+`.png` → 명령 payload 는 서버 경유 다운로드 URL·size·sha256. **응답 `{id, action, status, sha256, preview_url}`** — `preview_url` 은 기기와 같은 색의 160×128 PNG(presigned, 1시간). 원본은 저장 안 함. R2 미설정 503 |
+| GET | `/devices/{id}/lcd/image/bin?sha=<sha8>` | `Authorization: Bearer <device token>` | **펌웨어 전용.** R2 에서 RGB565 40,960B 스트리밍(`Content-Length`). 토큰이 이 기기 것이 아니면 401, 해당 sha 없음 404 |
+| DELETE | `/devices/{id}/lcd/image` | — | `lcd_image_clear` |
+
+- 기기 동작: `effective_on = lcd_power && !(소등 창 && 시각 유효 && now ∈ 창)`. 시각 미동기(핫스팟 콜드부트)면 켜둠. 화면보호기 이미지 중
+  서버 끊김이면 우상단 빨간 아이콘(`show_offline_icon:false` 로 숨김), 연결 중엔 이미지만 온전히.
+- 사진은 컬러(RGB565, 65K 색)다. 앱 UI 는 업로드 응답의 `preview_url` 을 보여주고, 나중에 "지금 올라간 사진" 은 `GET /lcd` 의
+  `preview_url` 로 다시 받는다. 기기 ACK ok 시 `lcd_image_key` 확정. 이전 사진의 R2 객체는 다음 업로드 때 정리된다
+  (ACK 경로는 MQTT 스레드라 R2 를 안 부름). 업로드 시 정리는 확정 사진과 아직 pending/sent 인 `lcd_image` 명령의 사진은 남긴다.
+- TTL 30초. `lcd_image` 는 기기가 다운로드·플래시 기록을 마친 뒤 ack 하므로 다른 명령보다 1~3초 늦다. 기기 오프라인·만료·거부면 서버 확정값은 안 바뀐다.
+
 ## 5. 에러 코드 표
 
 | 코드 | 의미 | 본문 예시 |
@@ -1096,6 +1121,7 @@ supabase
 | 2026-05-27 | 0.2.0 | 카메라 페어링 흐름 RPi/QR 기반으로 변경 (prepare-pair + pair_token) |
 | 2026-05-27 | 0.3.0 | 메인 카메라 워커 ESP32-P4 로 변경 (BLE 페어링), Stage G(라이브 스트리밍) 엔드포인트 추가 |
 | 2026-05-27 | 0.4.0 | **Stage F 구현 완료** — enclosures/cameras/clips 라우터 + R2 presigned URL + Camera Token Bearer 인증 (44 tests passing). Swagger UI 메타데이터 보강 (`/docs` 즉시 사용 가능) |
+| 2026-11-03 | 0.14.0 | **Stage N LCD** — `GET /devices/{id}/lcd`, `PUT …/lcd/power`, `PUT/DELETE …/lcd/quiet`, `PUT …/lcd/saver`, `POST/DELETE …/lcd/image`(multipart → R2, `preview_url`), `GET …/lcd/image/bin`(기기 토큰), `capabilities.lcd_saver` 게이트, `devices.lcd_*` ACK 확정 (§4.14) |
 | 2026-11-02 | 0.13.0 | **목표 온습도 MIN/MAX 검증을 기획 v4 범위로** — `PATCH /devices/{id}/settings` 의 `target_temp_min/max` 15~29℃·0.5 단위, `target_humid_min/max` 35~85%·5 단위, MIN < MAX(병합 결과, 같으면 400). 요청에 든 필드만 범위 검사(구 범위 저장값이 있어도 다른 필드 수정 가능). `target_temp_c`·`target_humidity_pct` 는 기존 -20~60 / 0~100 그대로. null = 미설정(판정은 디폴트 18~26℃ / 40~80%) |
 | 2026-10-27 | 0.12.0 | **관리자** — `GET /admin/accounts`(전체 계정·기기·카메라), `X-Act-As-User` 대행(`.env ADMIN_EMAILS`/`ADMIN_USER_IDS`), `POST /devices/{id}/commands` + `GET …/commands/{id}`(토글·보정 명령·ack 조회). 운영 콘솔이 테스터 비밀번호 없이 동작 (§4.13) |
 | 2026-10-20 | 0.11.0 | **운영 카메라 재부팅** — `POST /ops/cameras/{id}/reboot`(서버 시크릿 `X-Ops-Secret`, 베타 한정, 라이브·OTA 보호, 2시간 쿨다운), `camera_ops_reboots` 테이블, 카메라 ack 기록 (§4.12) |

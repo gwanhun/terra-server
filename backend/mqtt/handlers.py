@@ -1140,6 +1140,7 @@ def _ack_device_command(
             except Exception:  # noqa: BLE001
                 logger.exception("push 이벤트 적재 실패 (msg_id=%s)", msg_id)
             _commit_lcd_text(sb, res.data[0], device_uuid)
+            _commit_lcd_state(sb, res.data[0], device_uuid)
             if res.data[0].get("action") in (ACTION_OTA_PREPARE, ACTION_OTA_APPLY):
                 _route_ota_ack(sb, payload)   # 첫 ack: ok → accepted / busy·unknown_action → failed
 
@@ -1250,6 +1251,69 @@ def _commit_lcd_text(sb: Any, command_row: dict[str, Any], device_uuid: str) -> 
         }).eq("id", device_uuid).execute()
     except Exception:  # noqa: BLE001
         logger.exception("devices.lcd_text UPDATE 실패 (device=%s)", device_uuid)
+
+
+# Stage N LCD 명령 → ACK ok 때 devices.lcd_* 확정 (lcd_text 와 같은 규칙)
+_LCD_STATE_ACTIONS: frozenset[str] = frozenset({
+    "lcd_power", "lcd_quiet", "lcd_quiet_clear", "lcd_saver", "lcd_image", "lcd_image_clear",
+})
+
+
+def _min_to_time(v: Any) -> str | None:
+    """payload 의 minute-of-day(0~1439) → 'HH:MM:00' (Postgres TIME). 비정상이면 None."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    m = int(v)
+    if not 0 <= m <= 1439:
+        return None
+    return f"{m // 60:02d}:{m % 60:02d}:00"
+
+
+def _commit_lcd_state(sb: Any, command_row: dict[str, Any], device_uuid: str) -> None:
+    """Stage N LCD 명령(전원/소등/보호기/이미지)이 ok 로 ACK 되면 devices.lcd_* 확정.
+
+    규칙은 기기 NVS 가 진실이고 여기는 "서버가 마지막으로 확인한 값". ok 아니면 안 바뀌었으니 둔다.
+    payload 가 깨져 확정값을 못 만들면 건너뛴다(기기는 bad_request 로 거부했을 것). 실패는 삼킨다.
+
+    여기는 paho 네트워크 스레드라 Supabase 한 번 외에 외부 호출을 하지 않는다 — 특히 R2 를 안 부른다.
+    이전 사진의 R2 객체는 다음 업로드 때 routers/lcd._cleanup_orphans 가 치운다(기기당 옛 사진 한 쌍
+    ~45KB 가 잠시 남는 게 전부). R2 가 막히면(2026-09-29 anycast 블랙홀) 이 스레드가 서서 전 기기
+    telemetry 가 멈추기 때문.
+    """
+    action = command_row.get("action")
+    if action not in _LCD_STATE_ACTIONS or command_row.get("result") != "ok":
+        return
+    payload = command_row.get("payload") or {}
+    update: dict[str, Any]
+    if action == "lcd_power":
+        on = payload.get("on")
+        if not isinstance(on, bool):
+            return
+        update = {"lcd_power": on}
+    elif action == "lcd_quiet":
+        start, end = _min_to_time(payload.get("start_min")), _min_to_time(payload.get("end_min"))
+        if start is None or end is None:
+            return
+        update = {"lcd_quiet_start": start, "lcd_quiet_end": end}
+    elif action == "lcd_quiet_clear":
+        update = {"lcd_quiet_start": None, "lcd_quiet_end": None}
+    elif action == "lcd_saver":
+        keys = ("enabled", "mode", "image_sec", "info_sec", "show_offline_icon")
+        if not isinstance(payload.get("enabled"), bool):
+            return
+        update = {"lcd_saver": {k: payload.get(k) for k in keys if k in payload}}
+    elif action == "lcd_image":
+        sha = payload.get("sha256")
+        if not isinstance(sha, str) or len(sha) != 64:
+            return
+        update = {"lcd_image_key": f"lcd/{device_uuid}/{sha[:8]}", "lcd_image_set_at": _now_iso()}
+    else:  # lcd_image_clear
+        update = {"lcd_image_key": None, "lcd_image_set_at": None}
+    update["lcd_updated_at"] = _now_iso()
+    try:
+        sb.table("devices").update(update).eq("id", device_uuid).execute()
+    except Exception:  # noqa: BLE001
+        logger.exception("devices.lcd_* UPDATE 실패 (device=%s, action=%s)", device_uuid, action)
 
 
 def _enqueue_command_event(
