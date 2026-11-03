@@ -1121,7 +1121,8 @@ supabase
 | 2026-05-27 | 0.2.0 | 카메라 페어링 흐름 RPi/QR 기반으로 변경 (prepare-pair + pair_token) |
 | 2026-05-27 | 0.3.0 | 메인 카메라 워커 ESP32-P4 로 변경 (BLE 페어링), Stage G(라이브 스트리밍) 엔드포인트 추가 |
 | 2026-05-27 | 0.4.0 | **Stage F 구현 완료** — enclosures/cameras/clips 라우터 + R2 presigned URL + Camera Token Bearer 인증 (44 tests passing). Swagger UI 메타데이터 보강 (`/docs` 즉시 사용 가능) |
-| 2026-10-28 | 0.13.0 | **Stage N LCD** — `GET /devices/{id}/lcd`, `PUT …/lcd/power`, `PUT/DELETE …/lcd/quiet`, `PUT …/lcd/saver`, `POST/DELETE …/lcd/image`(multipart → R2, `preview_url`), `GET …/lcd/image/bin`(기기 토큰), `capabilities.lcd_saver` 게이트, `devices.lcd_*` ACK 확정 (§4.14) |
+| 2026-11-03 | 0.14.0 | **Stage N LCD** — `GET /devices/{id}/lcd`, `PUT …/lcd/power`, `PUT/DELETE …/lcd/quiet`, `PUT …/lcd/saver`, `POST/DELETE …/lcd/image`(multipart → R2, `preview_url`), `GET …/lcd/image/bin`(기기 토큰), `capabilities.lcd_saver` 게이트, `devices.lcd_*` ACK 확정 (§4.14) |
+| 2026-11-02 | 0.13.0 | **목표 온습도 MIN/MAX 검증을 기획 v4 범위로** — `PATCH /devices/{id}/settings` 의 `target_temp_min/max` 15~29℃·0.5 단위, `target_humid_min/max` 35~85%·5 단위, MIN < MAX(병합 결과, 같으면 400). 요청에 든 필드만 범위 검사(구 범위 저장값이 있어도 다른 필드 수정 가능). `target_temp_c`·`target_humidity_pct` 는 기존 -20~60 / 0~100 그대로. null = 미설정(판정은 디폴트 18~26℃ / 40~80%) |
 | 2026-10-27 | 0.12.0 | **관리자** — `GET /admin/accounts`(전체 계정·기기·카메라), `X-Act-As-User` 대행(`.env ADMIN_EMAILS`/`ADMIN_USER_IDS`), `POST /devices/{id}/commands` + `GET …/commands/{id}`(토글·보정 명령·ack 조회). 운영 콘솔이 테스터 비밀번호 없이 동작 (§4.13) |
 | 2026-10-20 | 0.11.0 | **운영 카메라 재부팅** — `POST /ops/cameras/{id}/reboot`(서버 시크릿 `X-Ops-Secret`, 베타 한정, 라이브·OTA 보호, 2시간 쿨다운), `camera_ops_reboots` 테이블, 카메라 ack 기록 (§4.12) |
 | 2026-10-20 | 0.10.0 | **Stage L 라이브 직접 녹화** — `POST /recordings`·`/complete`, `GET …/url`·`…/thumbnail/url`, `DELETE /recordings/{id}`, `live_recordings` 테이블, pending 24h 정리 스레드 (§4.11) |

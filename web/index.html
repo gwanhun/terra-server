@@ -187,10 +187,10 @@
       <select id="set-device" onchange="loadSettings()" title="대상 디바이스" style="max-width:160px"></select>
       <label style="font-size:12px">목표온도℃ <input id="set-temp-c" type="number" step="0.1" style="width:70px"></label>
       <label style="font-size:12px">목표습도% <input id="set-humid-pct" type="number" step="1" style="width:70px"></label>
-      <label style="font-size:12px">온도min <input id="set-temp-min" type="number" step="0.1" style="width:64px"></label>
-      <label style="font-size:12px">온도max <input id="set-temp-max" type="number" step="0.1" style="width:64px"></label>
-      <label style="font-size:12px">습도min <input id="set-humid-min" type="number" step="1" style="width:56px"></label>
-      <label style="font-size:12px">습도max <input id="set-humid-max" type="number" step="1" style="width:56px"></label>
+      <label style="font-size:12px">온도min <input id="set-temp-min" type="number" step="0.5" min="15" max="29" style="width:64px"></label>
+      <label style="font-size:12px">온도max <input id="set-temp-max" type="number" step="0.5" min="15" max="29" style="width:64px"></label>
+      <label style="font-size:12px">습도min <input id="set-humid-min" type="number" step="5" min="35" max="85" style="width:56px"></label>
+      <label style="font-size:12px">습도max <input id="set-humid-max" type="number" step="5" min="35" max="85" style="width:56px"></label>
       <button onclick="saveSettings()">저장</button>
       <span id="set-status" class="muted" style="font-size:11px"></span>
     </div>

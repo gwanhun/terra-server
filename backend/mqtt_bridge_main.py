@@ -16,9 +16,12 @@ systemd 에서는:
 | `OfflineMonitor`    | devices.last_seen_at 감시 → offline alert (1분 주기) |
 | `OtaMonitor`        | ota_jobs 단계별 시한 초과 → timeout, 기기 commands 실패 → failed (1분 주기) |
 | `PushOutboxWorker`  | push_outbox(pending) → 앱 Edge Function POST (5초 polling) |
+| `AnalysisRunner`    | v4 일일 분석 카드 → env_daily_reports (5분 주기, 08시 1차·09:05 2차), 주간 → env_weekly_reports (최근 완료 주) |
 
 모두 같은 프로세스 안. 전부 SIGTERM 에서 graceful shutdown.
 PushOutboxWorker 는 PUSH_EVENT_INGEST_URL/SECRET 미설정이면 시작하지 않는다.
+AnalysisRunner 는 항상 뜨지만 ALERTS_V4_ENABLED·ENV_REPORTS_ENABLED 가 둘 다 참이고
+ALERTS_V4_SINCE 가 있어야 동작한다. 아니면 tick 마다 테이블을 건드리지 않고 넘어간다.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ import logging
 import signal
 import sys
 
+from backend.analysis_runner import AnalysisRunner
 from backend.mqtt.bridge import MqttBridge
 from backend.mqtt.dispatcher import CommandDispatcher
 from backend.offline_monitor import OfflineMonitor
@@ -64,8 +68,10 @@ def run() -> None:
     offline_monitor = OfflineMonitor()
     ota_monitor = OtaMonitor()
     push_worker = PushOutboxWorker()
+    analysis_runner = AnalysisRunner()
 
     def _shutdown(_signum: int, _frame) -> None:
+        analysis_runner.stop()
         push_worker.stop()
         ota_monitor.stop()
         offline_monitor.stop()
@@ -83,6 +89,7 @@ def run() -> None:
     offline_monitor.start()
     ota_monitor.start()
     push_worker.start()
+    analysis_runner.start()
     bridge.wait_stopped()
 
 

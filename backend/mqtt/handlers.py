@@ -219,10 +219,11 @@ def resolve_camera_uuid(camera_id_text: str) -> str | None:
 
 
 def device_meta(device_uuid: str) -> dict[str, Any] | None:
-    """devices 행의 알림용 메타 (owner_id / name / enclosure_id). 미존재·실패면 None.
+    """devices 행의 알림용 메타 (owner_id / name / enclosure_id / unlinked_at). 미존재·실패면 None.
 
     푸시 이벤트가 device_name·enclosure_id 를 싣는데 commands 행에는 없어서 필요하다.
     TTL 캐시라 이름을 바꾸면 최대 ENTITY_TTL_SEC 만큼 옛 이름이 나갈 수 있다.
+    unlinked_at 은 v4 알림 판정이 기기 해제를 확인하는 데 쓴다(alerts.py, D12).
     """
     hit, val = _cache_get("device_meta", device_uuid)
     if hit:
@@ -231,7 +232,7 @@ def device_meta(device_uuid: str) -> dict[str, Any] | None:
     try:
         res = (
             sb.table("devices")
-            .select("owner_id, name, enclosure_id")
+            .select("owner_id, name, enclosure_id, unlinked_at")
             .eq("id", device_uuid)
             .limit(1)
             .execute()
@@ -282,6 +283,13 @@ def _resolve_entity(device_id_text: str) -> tuple[str | None, str | None]:
     if cam is not None:
         return ("camera", cam)
     return (None, None)
+
+
+def invalidate_device_meta(device_uuid: str) -> None:
+    """device_meta 캐시 1건 제거. v4 판정이 fresh 조회로 기기 해제를 알아챘을 때(alerts.py D12) 호출 —
+    다음 샘플부터 캐시 경로도 해제로 본다."""
+    with _entity_lock:
+        _entity_cache.pop(("device_meta", device_uuid), None)
 
 
 def reset_device_cache() -> None:
@@ -1024,10 +1032,10 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
         _sync_device_capabilities(sb, device_uuid, device_id_text, caps)
 
     # 임계값 평가 → alerts INSERT/RESOLVE (Stage D). 실패해도 telemetry 저장은 성공.
-    # 임포트는 함수 안에서 — 순환참조 회피 (alerts.py 는 handlers 의존 안 함).
+    # 임포트는 함수 안에서 — 순환참조 회피 (alerts.py 도 device_meta 를 함수 안에서만 임포트).
     try:
         from backend import alerts as alerts_mod
-        alerts_mod.evaluate_telemetry(device_uuid, row)
+        alerts_mod.evaluate_telemetry(device_uuid, row, device_key=device_id_text)
     except Exception:  # noqa: BLE001
         logger.exception("alerts 평가 실패 (device=%s)", device_id_text)
 
@@ -1370,6 +1378,7 @@ __all__ = [
     "handle_ack",
     "handle_alert",
     "handle_telemetry",
+    "invalidate_device_meta",
     "reset_device_cache",
     "resolve_camera_uuid",
     "resolve_device_text",

@@ -18,6 +18,17 @@ schedule/guard 인 것만 보낸다. `PUSH_EVENT_SOURCES` 로 조정 가능.
 one-shot 타이머라 종료 ACK 가 오지 않는다(회신 §3). 구간 예약의 off 명령 ACK 는
 그 자체가 별도 command 라 `started` 로 나가며, 앱 답변이 오면 phase 매핑만 바꾸면 된다.
 
+### 온습도 알림 `env.alert.triggered` (Stage N, 기획 v4 1-5)
+
+브리지의 v4 판정(`backend/alerts.py` + `backend/env_rules.py`)이 이벤트를 열 때
+`phase=started`, 같은 이벤트가 최초 푸시 후 1시간 지속되면 `phase=reminder` 1회.
+`event_id = alert:{alert_id}:{phase}` 라 재시작 후 재적재해도 outbox UNIQUE 로 걸러진다.
+수신자는 `devices.owner_id`, 푸시 문구는 payload `title`(타이틀만).
+
+앱 계약 전 적재를 막으려고 `PUSH_ENV_ALERTS_ENABLED`(true/1/yes/on) 스위치 뒤에 있고
+**기본 꺼짐**. 꺼져 있으면 `enqueue_env_alert` 가 "disabled" 를 돌려주고 INSERT 0 —
+호출부는 이 결과로 `pushed_at` 기록 여부와 재시도(failed 만)를 가른다.
+
 ## 보안
 
 ingest secret 은 `.env` 의 `PUSH_EVENT_INGEST_SECRET` 에만 둔다. outbox body 나
@@ -32,7 +43,7 @@ import os
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -46,6 +57,10 @@ EVENT_STARTED = "device.action.started"
 EVENT_ENDED = "device.action.ended"
 EVENT_FAILED = "device.action.failed"
 EVENT_SKIPPED = "device.action.skipped"      # 2026-09-16 앱 수신부 준비 완료 → 발송
+EVENT_ENV_ALERT = "env.alert.triggered"      # v4 온습도 알림 — PUSH_ENV_ALERTS_ENABLED 뒤, 기본 꺼짐
+
+EnvAlertPhase = Literal["started", "reminder"]
+EnqueueResult = Literal["queued", "duplicate", "disabled", "failed"]
 
 # 펌웨어가 성공을 알리는 유일한 값. 나머지(busy/error/unknown_action/rejected_* …)는
 # 전부 실패로 묶는다 — status 는 결과와 무관하게 항상 'acked' 라 못 쓴다(회신 §4).
@@ -91,6 +106,16 @@ def _skipped_enabled() -> bool:
     """기본 켜짐. 명시적으로 false/0/no 를 줄 때만 끈다."""
     raw = (os.getenv("PUSH_EVENT_SKIPPED_ENABLED") or "").strip().lower()
     return raw not in ("0", "false", "no")
+
+
+def env_alerts_push_enabled() -> bool:
+    """온습도 알림 푸시 스위치. 기본 꺼짐 — 명시적으로 true/1/yes/on 일 때만 켠다.
+
+    `_skipped_enabled` 와 반대 방향(기본값)인 이유: 앱 수신부 계약 전이라 적재 자체를 막는다.
+    ingest URL/secret 도 있어야 한다(`_enabled`).
+    """
+    raw = (os.getenv("PUSH_ENV_ALERTS_ENABLED") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on") and _enabled()
 
 
 def _ingest_url() -> str:
@@ -232,10 +257,8 @@ def build_command_event(
     }
 
 
-def enqueue(event: dict[str, Any]) -> bool:
-    """outbox INSERT. 이미 같은 event_id 가 있으면 조용히 무시(멱등)."""
-    if not _enabled():
-        return False
+def _insert_outbox(event: dict[str, Any]) -> Literal["queued", "duplicate", "failed"]:
+    """outbox INSERT 한 번. 스위치 판정은 호출부 몫."""
     sb = get_supabase_client()
     try:
         sb.table("push_outbox").insert({
@@ -245,11 +268,76 @@ def enqueue(event: dict[str, Any]) -> bool:
         }).execute()
     except Exception as exc:  # noqa: BLE001 — supabase-py 예외 타입 넓음
         if "23505" in str(exc) or "duplicate key" in str(exc).lower():
-            return False        # 같은 이벤트 재적재 — 정상
+            return "duplicate"  # 같은 이벤트 재적재 — 정상
         logger.exception("push_outbox INSERT 실패 (event=%s)", event["event_id"])
-        return False
+        return "failed"
     logger.info("push 이벤트 적재: %s", event["event_id"])
-    return True
+    return "queued"
+
+
+def enqueue(event: dict[str, Any]) -> bool:
+    """outbox INSERT. 이미 같은 event_id 가 있으면 조용히 무시(멱등)."""
+    if not _enabled():
+        return False
+    return _insert_outbox(event) == "queued"
+
+
+# ---------- env.alert.triggered (v4 온습도 알림) ----------
+
+
+def build_env_alert_event(
+    *,
+    alert_id: str,
+    kind: str,
+    level: str,
+    phase: EnvAlertPhase,
+    title: str,
+    value: float,
+    threshold: float | None,
+    device_id: str,
+    device_key: str | None,
+    device_meta: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """v4 온습도 이벤트 → env.alert.triggered 본문. 소유자 없으면 None.
+
+    level 은 alerts.severity(warning/critical)가 아니라 판정 단계 caution|danger 그대로.
+    threshold 는 넘은 쪽 사용자 MIN/MAX (경고 문구엔 안 쓰지만 앱 표시용으로 싣는다).
+    """
+    meta = device_meta or {}
+    user_id = meta.get("owner_id")
+    if not user_id:
+        logger.warning("push: user_id 확보 실패 (env alert) alert=%s — 건너뜀", alert_id)
+        return None
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "event_id": f"alert:{alert_id}:{phase}",
+        "type": EVENT_ENV_ALERT,
+        "occurred_at": _now().isoformat(),
+        "user_id": user_id,
+        "payload": _drop_empty_device_key({
+            "alert_id": alert_id,
+            "device_id": device_id,
+            "device_key": device_key,
+            "device_name": meta.get("name"),
+            "enclosure_id": meta.get("enclosure_id"),
+            "kind": kind,
+            "level": level,
+            "phase": phase,
+            "title": title,
+            "value": value,
+            "threshold": threshold,
+        }),
+    }
+
+
+def enqueue_env_alert(event: dict[str, Any]) -> EnqueueResult:
+    """스위치 꺼짐 → "disabled"(INSERT 0). 켜져 있으면 queued/duplicate/failed.
+
+    호출부(alerts.py)는 queued·duplicate 면 pushed_at 기록, failed 일 때만 재시도(D16).
+    """
+    if not env_alerts_push_enabled():
+        return "disabled"
+    return _insert_outbox(event)
 
 
 def build_skipped_event(
@@ -481,15 +569,19 @@ class PushOutboxWorker:
 
 __all__ = [
     "EVENT_ENDED",
+    "EVENT_ENV_ALERT",
     "EVENT_FAILED",
     "EVENT_SKIPPED",
     "EVENT_STARTED",
     "NO_ACK_RESULT",
     "PushOutboxWorker",
     "build_command_event",
+    "build_env_alert_event",
     "enqueue",
     "build_skipped_event",
     "enqueue_command_failure",
+    "enqueue_env_alert",
+    "env_alerts_push_enabled",
     "enqueue_skipped_event",
     "reset_span_cache",
     "send_pending",
