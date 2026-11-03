@@ -46,6 +46,8 @@ Supabase 에 적용한 마이그레이션 기록(SOT). `migrations/*.sql` 을 SQ
 | ✅ | `2026-10-06_hub_link.sql` | 2026-10-07 | `cameras.device_id` UUID FK → devices — Terra Hub(카메라+센서 통합) 짝 행 링크(Stage K). 코드(90ac2fe)보다 먼저 적용됨 |
 | ✅ | `2026-10-20_live_recordings.sql` | 2026-10-20 | `live_recordings` 테이블 + RLS(SELECT 본인) + `has_thumbnail` 생성 컬럼 — 라이브 직접 녹화(Stage L, #20). **코드 배포가 먼저 나가 적용 전까지 `/recordings` 가 PGRST205(테이블 없음)** — 앱 미연동이라 영향 없었음. 적용 후 service_role 로 전 컬럼 SELECT 확인 |
 | ✅ | `2026-10-20_camera_ops_reboots.sql` | 2026-10-20 | `camera_ops_reboots` 테이블(FK 없음) + RLS 정책 없음 + anon/authenticated REVOKE = service_role 전용 — 운영 카메라 재부팅 기록·2시간 쿨다운(Stage M, #22). 코드(d6f2bde) 서버 배포 **전** 적용. 미적용 상태면 `POST /ops/cameras/{id}/reboot` 가 503(fail-closed) |
+| ✅ | `2026-11-02_env_daily_reports.sql` | 2026-11-02 | `env_daily_reports` 테이블 + RLS(본인 기기 SELECT만) + Realtime — v4 일일 분석 카드(Stage P). 코드 배포 **전** 적용. 확인: 정책·publication 조회, 롤백 트랜잭션 안에서 service 쓰기 ok / 소유자 SELECT 1행 / 타인 0행 / authenticated INSERT 42501 거부, 적용 후 0행. 사전 확인: `alerts` 에 CHECK 제약 없음, `push_outbox.event_id` UNIQUE (Stage N 전제) |
+| ✅ | `2026-11-02_env_weekly_reports.sql` | 2026-11-02 | `env_weekly_reports` 테이블(`notices` JSONB) + RLS(본인 기기 SELECT만) + Realtime — v4 주간 분석(Stage Q). 위와 같은 실행·같은 확인 |
 
 ## 규칙
 - 새 마이그레이션은 `migrations/YYYY-MM-DD_설명.sql` 로 추가하고, 적용 후 이 표에 행 추가.

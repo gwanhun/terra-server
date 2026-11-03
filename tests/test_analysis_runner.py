@@ -70,7 +70,8 @@ class ExplodingSB:
 def enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ALERTS_V4_ENABLED", "true")
     monkeypatch.setenv("ENV_REPORTS_ENABLED", "true")
-    monkeypatch.setenv("ALERTS_V4_SINCE", "2026-10-01T00:00:00+09:00")
+    # 10/27: 일일 테스트 날짜(11/2~11/4)의 주간 대상(10/26 주)은 since 이전이라 주간이 섞이지 않는다
+    monkeypatch.setenv("ALERTS_V4_SINCE", "2026-10-27T00:00:00+09:00")
     monkeypatch.delenv("HUMID_CYCLES_ENABLED", raising=False)
 
 
@@ -342,6 +343,217 @@ def test_humid_cycles_flag_on_queried(enabled: None, monkeypatch: pytest.MonkeyP
     humid = report(sb)["humid_card"]
     assert humid["title"] == "건습 사이클이 건강하게 유지됐어요"
     assert humid["lines"] == ["습기 2번 , 건기 1번이 기록됐어요"]
+
+
+# ---------- 주간 (Stage Q Task 3) ----------
+# 기준 주: week_start = 2026-11-02(월), 구간 11/2 08:00 ~ 11/9 08:00 KST. 11/9 은 월요일.
+
+WEEK = "2026-11-02"
+WEEK_START_UTC = datetime(2026, 11, 1, 23, 0, tzinfo=UTC)
+WEEK_END_UTC = datetime(2026, 11, 8, 23, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def weekly(enabled: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 10/26 주까지 since 이후 — "지지난 주 행이 있어서 안 만든다"를 since 가 아니라 행으로 확인하려고
+    monkeypatch.setenv("ALERTS_V4_SINCE", "2026-10-19T00:00:00+09:00")
+
+
+def wreport(sb: FakeSB, week_start: str = WEEK, device_id: str = "dev-0001") -> dict[str, Any] | None:
+    return sb.one("env_weekly_reports", device_id=device_id, week_start=week_start)
+
+
+def full_buckets(device_id: str, start: datetime, days: int, t_avg: float) -> list[dict[str, Any]]:
+    out = []
+    t = start
+    while t < start + timedelta(days=days):
+        out.append({"device_id": device_id, "bucket": t.isoformat(),
+                    "t_a_avg": t_avg, "t_a_count": 600, "h_a_avg": 70.0, "h_a_count": 600})
+        t += timedelta(minutes=30)
+    return out
+
+
+def test_weekly_monday_after_8(weekly: None) -> None:
+    prior = {"device_id": "dev-0001", "week_start": "2026-10-26", "temp_card": None,
+             "humid_card": None, "notices": [], "generated_at": "2026-10-26T23:01:00+00:00"}
+    sb = FakeSB(devices=[dev(1)], env_weekly_reports=[prior])
+    runner = AnalysisRunner(sb=sb)
+    runner.tick(kst(7, 59, day=9))               # 월 07:59 — 대상은 지지난 주(10/26), 이미 있음
+    assert len(sb.rows("env_weekly_reports")) == 1
+    assert wreport(sb) is None
+    runner.tick(kst(8, 1, day=9))                # 월 08:01 — 소급 이벤트를 기다리느라 아직
+    assert wreport(sb) is None
+    runner.tick(kst(9, 6, day=9))                # 월 09:06 — 지난주(11/2) 생성 (일일 2차와 같은 시각)
+    row = wreport(sb)
+    assert row is not None
+    assert row["window_start"] == WEEK_START_UTC.isoformat()
+    assert row["window_end"] == WEEK_END_UTC.isoformat()
+    assert row["generated_at"] == iso(kst(9, 6, day=9))
+    assert row["temp_card"] is None and row["humid_card"] is None
+    assert {n["code"] for n in row["notices"]} == {"ERR_NO_DATA"}   # 데이터 없음 → 지표별 안내
+
+
+def test_weekly_recovery_tuesday(weekly: None) -> None:
+    sb = FakeSB(devices=[dev(1), dev(2)])
+    AnalysisRunner(sb=sb).tick(kst(10, 0, day=10))   # 월요일 tick 없음 → 화 10:00
+    assert wreport(sb, device_id="dev-0001") is not None
+    assert wreport(sb, device_id="dev-0002") is not None
+    assert {r["week_start"] for r in sb.rows("env_weekly_reports")} == {WEEK}
+
+
+def test_weekly_no_older_backfill(weekly: None) -> None:
+    sb = FakeSB(devices=[dev(1)])
+    AnalysisRunner(sb=sb).tick(kst(9, 6, day=16))    # 11/16(월) 09:05 이후 — 대상 11/9 주. 11/2 주는 없어도 소급 안 함
+    assert wreport(sb, "2026-11-09") is not None
+    assert wreport(sb) is None
+    assert len(sb.rows("env_weekly_reports")) == 1
+
+
+def test_weekly_idempotent(weekly: None) -> None:
+    sb = FakeSB(devices=[dev(1)])
+    runner = AnalysisRunner(sb=sb)
+    runner.tick(kst(7, 0, day=10))
+    first = dict(wreport(sb))
+    runner.tick(kst(7, 5, day=10))
+    AnalysisRunner(sb=sb).tick(kst(7, 10, day=10))   # 재시작(상태 없음)해도 행이 있으면 안 씀
+    assert len(sb.rows("env_weekly_reports")) == 1
+    assert wreport(sb)["generated_at"] == first["generated_at"]
+
+
+def test_weekly_since_gate(weekly: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    # v4 를 주 도중에 켰으면 그 주는 켜기 전 날들이 "이벤트 없음"으로 잡히므로 만들지 않는다
+    monkeypatch.setenv("ALERTS_V4_SINCE", "2026-11-04T00:00:00+09:00")
+    assert AnalysisRunner(sb=ExplodingSB()).tick(kst(7, 0, day=10)) == 0   # 일일은 08시 전, 주간은 since 전
+    monkeypatch.setenv("ALERTS_V4_SINCE", "2026-11-02T08:00:00+09:00")    # 구간 시작과 같음
+    sb = FakeSB(devices=[dev(1)])
+    assert AnalysisRunner(sb=sb).tick(kst(7, 0, day=10)) == 1
+    assert wreport(sb) is not None
+
+
+def test_weekly_done_week_skips_queries(weekly: None) -> None:
+    sb = RecordingSB(devices=[dev(1), dev(2)])
+    runner = AnalysisRunner(sb=sb)
+    assert runner.tick(kst(7, 0, day=10)) == 2     # 화 07:00 — 일일은 쉬고 주간만
+    sb.touched.clear()
+    assert runner.tick(kst(7, 5, day=10)) == 0
+    assert runner.tick(kst(7, 59, day=16)) == 0    # 다음 주 월 09:05 전까지 같은 주 → 조회 없음
+    assert sb.touched == []
+    runner.tick(kst(9, 6, day=16))                 # 새 주(11/9)는 다시
+    assert wreport(sb, "2026-11-09") is not None
+
+
+def test_weekly_done_waits_for_full_cycle(weekly: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """배치가 여러 개면 한 바퀴를 다 돌아야 완료 — 앞 배치만 보고 쉬지 않는다."""
+    monkeypatch.setattr(analysis_runner, "BATCH_SIZE", 2)
+    sb = FakeSB(devices=[dev(i) for i in range(1, 4)])
+    runner = AnalysisRunner(sb=sb)
+    assert runner.tick(kst(7, 0, day=10)) == 2
+    assert runner.tick(kst(7, 5, day=10)) == 1
+    assert len(sb.rows("env_weekly_reports")) == 3
+
+
+def test_weekly_and_daily_share_batch(weekly: None) -> None:
+    sb = RecordingSB(devices=[dev(1), dev(2)])
+    assert AnalysisRunner(sb=sb).tick(kst(9, 6, day=9)) == 4    # 일일 2 + 주간 2
+    assert sb.touched.count("devices") == 1                     # 대상 조회는 한 번
+    assert len(sb.rows("env_daily_reports")) == 2
+    assert len(sb.rows("env_weekly_reports")) == 2
+
+
+def test_weekly_device_error_isolated(weekly: None, monkeypatch: pytest.MonkeyPatch,
+                                      caplog: pytest.LogCaptureFixture) -> None:
+    sb = FakeSB(devices=[dev(1), dev(2), dev(3)])
+    real = analysis_runner.generate_weekly
+
+    def flaky(sb_: Any, device: dict[str, Any], *a: Any, **k: Any) -> bool:
+        if device["id"] == "dev-0002":
+            raise RuntimeError("주간 실패")
+        return real(sb_, device, *a, **k)
+
+    monkeypatch.setattr(analysis_runner, "generate_weekly", flaky)
+    runner = AnalysisRunner(sb=sb)
+    with caplog.at_level(logging.ERROR, logger="backend.analysis_runner"):
+        assert runner.tick(kst(7, 0, day=10)) == 2
+    assert {r["device_id"] for r in sb.rows("env_weekly_reports")} == {"dev-0001", "dev-0003"}
+    assert any("dev-0002" in r.getMessage() for r in caplog.records)
+    monkeypatch.setattr(analysis_runner, "generate_weekly", real)
+    assert runner.tick(kst(7, 5, day=10)) == 1     # 실패 기기는 완료로 치지 않고 다음 바퀴에 재시도
+
+
+def test_weekly_includes_monday_backdated_event(weekly: None) -> None:
+    # 월 07:10 시작 건조 주의가 08:10 에 소급 기록돼도 주간(09:05 이후 생성)에 들어간다
+    buckets = full_buckets("dev-0001", WEEK_START_UTC, 7, 24.0)
+    early = [{"id": f"h-{d}", **alert("dev-0001", "env_humid_low", kst(10, 0, day=d), kst(11, 0, day=d),
+                                       peak_diff=8, threshold=40)} for d in (3, 5)]
+    sb = FakeSB(devices=[dev(1, created_at="2026-10-01T00:00:00+00:00")], telemetry_30m=buckets,
+                alerts=early)
+    runner = AnalysisRunner(sb=sb)
+    runner.tick(kst(8, 5, day=9))
+    sb.rows("alerts").append({"id": "h-mon", **alert("dev-0001", "env_humid_low", kst(7, 10, day=9),
+                                                      kst(7, 50, day=9), peak_diff=9, threshold=40)})
+    runner.tick(kst(9, 6, day=9))
+    humid = wreport(sb)["humid_card"]
+    assert humid["code"] == "HUM_DRY"
+    assert humid["lines"] == ["총 3회 건조 주의가 발생. 사육장에 수분을 보충해 주세요"]
+
+
+def test_failing_device_given_up_after_3(weekly: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    # 계속 실패하는 기기 하나 때문에 일주일·하루 내내 재시도하지 않는다
+    sb = RecordingSB(devices=[dev(1), dev(2)])
+    real_w, real_d = analysis_runner.generate_weekly, analysis_runner.generate_daily
+
+    def bad_w(sb_: Any, device: dict[str, Any], *a: Any, **k: Any) -> bool:
+        if device["id"] == "dev-0002":
+            raise RuntimeError("주간 계속 실패")
+        return real_w(sb_, device, *a, **k)
+
+    def bad_d(sb_: Any, device: dict[str, Any], *a: Any, **k: Any) -> bool:
+        if device["id"] == "dev-0002":
+            raise RuntimeError("일일 계속 실패")
+        return real_d(sb_, device, *a, **k)
+
+    monkeypatch.setattr(analysis_runner, "generate_weekly", bad_w)
+    monkeypatch.setattr(analysis_runner, "generate_daily", bad_d)
+    runner = AnalysisRunner(sb=sb)
+    for m in (6, 11, 16):                          # 3번째 실패에서 포기 → 그 바퀴로 완료
+        runner.tick(kst(9, m, day=10))
+    sb.touched.clear()
+    assert runner.tick(kst(9, 21, day=10)) == 0
+    assert sb.touched == []                        # 일일·주간 모두 완료 — 조회 없음
+    assert wreport(sb, device_id="dev-0002") is None
+
+
+def test_weekly_prev_week_buckets_temp_diff_high(weekly: None) -> None:
+    prev_start = WEEK_START_UTC - timedelta(days=7)
+    buckets = [*full_buckets("dev-0001", prev_start, 7, 21.8),
+               *full_buckets("dev-0001", WEEK_START_UTC, 7, 25.0)]
+    sb = FakeSB(devices=[dev(1, created_at="2026-10-01T00:00:00+00:00")], telemetry_30m=buckets)
+    AnalysisRunner(sb=sb).tick(kst(7, 0, day=10))
+    row = wreport(sb)
+    temp = row["temp_card"]
+    assert temp["code"] == "TEMP_DIFF_HIGH"
+    assert temp["title"] == "지난주보다 평균 온도가 높아졌어요"
+    assert temp["lines"] == ["지난주 대비 평균 온도가 3.2℃ 상승했어요"]
+    assert row["notices"] == []
+
+
+def test_weekly_inputs_events_and_registration(weekly: None) -> None:
+    """이벤트(겹침·chain)와 devices.created_at(누락률) 이 주간 계산에 들어간다."""
+    buckets = full_buckets("dev-0001", WEEK_START_UTC + timedelta(days=3), 4, 24.0)   # 목 08:00 이후만
+    events = [
+        {"id": "w-1", **alert("dev-0001", "env_temp_high", kst(14, 0, day=5), kst(15, 0, day=5),
+                              level="danger", peak_value=30.1, threshold=26, user_max=26)},
+        {"id": "w-old", **alert("dev-0001", "env_temp_high", kst(14, 0, day=1), kst(15, 0, day=1),
+                                level="danger", peak_value=33.0, threshold=26, user_max=26)},   # 지난주
+    ]
+    reg = iso(kst(8, 0, day=5))   # 목 08:00 등록 → 그 뒤 표본이 꽉 차 있으니 누락률 0
+    sb = FakeSB(devices=[dev(1, created_at=reg)], telemetry_30m=buckets, alerts=events)
+    AnalysisRunner(sb=sb).tick(kst(7, 0, day=10))
+    row = wreport(sb)
+    assert row["temp_card"]["code"] == "TEMP_DANGER"
+    assert row["temp_card"]["data"]["n_danger"] == 1
+    assert row["temp_card"]["data"]["missing_rate"] == 0.0
+    assert row["notices"] == []
 
 
 # ---------- 스레드 ----------
