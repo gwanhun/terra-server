@@ -154,18 +154,39 @@ def test_err_no_data_per_metric():
     assert r.humid_card is not None and r.humid_card.code == "HUM_DRY"
 
 
-def test_err_disconnect_alongside():
-    # 유효 4일, 하루 23,040(80%) → 누락률 1 − 92160/201600 ≈ 0.543
-    buckets = week_buckets(days=range(4), t_count=480)
-    assert missing_rate(buckets, W, "t_a", REG) == pytest.approx(1 - 92160 / 201600)
-    r = run(buckets=buckets)
-    assert r.temp_card is not None and r.temp_card.code == "TEMP_NORMAL"
+DISCONNECTED = week_buckets(days=range(4), t_count=480)   # 유효 4일, 하루 80% → 누락률 ≈ 0.543
+
+
+def test_err_disconnect_without_events_notice_only():
+    # 이벤트 없는 끊김 주 → 그 지표 카드 없이 안내만 (Q4 r2, 기획자 답 2026-11-03)
+    assert missing_rate(DISCONNECTED, W, "t_a", REG) == pytest.approx(1 - 92160 / 201600)
+    r = run(buckets=DISCONNECTED)
+    assert r.temp_card is None and r.humid_card is None
     codes = [(n["code"], n["metric"]) for n in r.notices]
-    assert ("ERR_DISCONNECT", "t_a") in codes and ("ERR_DISCONNECT", "h_a") in codes
-    n = next(n for n in r.notices if n["metric"] == "t_a")
+    assert codes == [("ERR_DISCONNECT", "t_a"), ("ERR_DISCONNECT", "h_a")]
+    n = r.notices[0]
     assert n["title"] == "주간 데이터 수집이 원활하지 않았어요"
     assert n["body"] == "센서 전원과 Wi-Fi 연결 상태를 확인해 주세요"
     assert run().notices == []
+
+
+def test_err_disconnect_with_events_card_only():
+    # 주의·경고 이벤트가 있던 지표는 안내 없이 카드만, 없는 지표는 안내만
+    r = run([danger("d1", kst(3, 14), kst(3, 15))], DISCONNECTED)
+    assert r.temp_card is not None and r.temp_card.code == "TEMP_DANGER"
+    assert r.humid_card is None
+    assert [(n["code"], n["metric"]) for n in r.notices] == [("ERR_DISCONNECT", "h_a")]
+
+    r = run(humid("h", "env_humid_low", 3), DISCONNECTED)
+    assert r.humid_card is not None and r.humid_card.code == "HUM_DRY"
+    assert [(n["code"], n["metric"]) for n in r.notices] == [("ERR_DISCONNECT", "t_a")]
+
+
+def test_err_disconnect_events_below_card_rule_fall_back_to_notice():
+    # 습도 이탈 1회는 습도 카드 조건(≥3)에 못 미친다 → 빈칸 대신 안내
+    r = run(humid("h", "env_humid_low", 1), DISCONNECTED)
+    assert r.humid_card is None
+    assert ("ERR_DISCONNECT", "h_a") in [(n["code"], n["metric"]) for n in r.notices]
 
 
 # ---------- 온도: 경고 ----------
