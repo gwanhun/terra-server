@@ -49,6 +49,7 @@ Supabase 에 적용한 마이그레이션 기록(SOT). `migrations/*.sql` 을 SQ
 | ✅ | `2026-10-28_devices_lcd_saver.sql` | 2026-11-03 | `devices.lcd_power`/`lcd_quiet_start`/`lcd_quiet_end`/`lcd_saver`/`lcd_image_key`/`lcd_image_set_at`/`lcd_updated_at` — Stage N LCD 화면보호기(컬러 사진)·전원·소등 시간대. 코드(PR #32, 실기 검증 전) 배포 **전** 적용 완료. 미적용 상태였다면 ack 때 lcd_* UPDATE 만 실패·로그, `GET /devices/{id}/lcd` 는 postgrest APIError → 500 |
 | ✅ | `2026-11-02_env_daily_reports.sql` | 2026-11-02 | `env_daily_reports` 테이블 + RLS(본인 기기 SELECT만) + Realtime — v4 일일 분석 카드(Stage P). 코드 배포 **전** 적용. 확인: 정책·publication 조회, 롤백 트랜잭션 안에서 service 쓰기 ok / 소유자 SELECT 1행 / 타인 0행 / authenticated INSERT 42501 거부, 적용 후 0행. 사전 확인: `alerts` 에 CHECK 제약 없음, `push_outbox.event_id` UNIQUE (Stage N 전제) |
 | ✅ | `2026-11-02_env_weekly_reports.sql` | 2026-11-02 | `env_weekly_reports` 테이블(`notices` JSONB) + RLS(본인 기기 SELECT만) + Realtime — v4 주간 분석(Stage Q). 위와 같은 실행·같은 확인 |
+| ✅ | `2026-11-03_humid_cycles.sql` | 2026-11-03 | `humid_cycles` 테이블(UNIQUE(device_id, started_at), status·ended_by CHECK, alerts FK 2개 on delete set null) + RLS(본인 기기 SELECT만), Realtime 없음 — v4 습기 사이클(Stage O). 코드 배포 **전** 적용. 사전: 테이블 없음, `alerts` CHECK 0개. 확인(DO 블록 끝 예외로 전부 롤백): service 쓰기 ok / 소유자 SELECT 1행 / 타인 0행 / authenticated INSERT 42501, 정책 1·인덱스 3·publication 0, 적용 후 0행 |
 
 ## 규칙
 - 새 마이그레이션은 `migrations/YYYY-MM-DD_설명.sql` 로 추가하고, 적용 후 이 표에 행 추가.
