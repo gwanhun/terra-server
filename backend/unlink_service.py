@@ -35,7 +35,7 @@ from typing import Any, Literal
 
 from fastapi import HTTPException
 
-from backend import alerts
+from backend import alerts, humid_cycle_store
 from backend.mqtt import registry
 
 logger = logging.getLogger(__name__)
@@ -59,6 +59,7 @@ def _close_env_alerts(sb: Any, device_uuid: str) -> None:
         now = _now_iso()
         for row in alerts.select_active_v4_rows(sb, device_uuid):
             alerts.close_v4_row(sb, row, now)
+        humid_cycle_store.close_device(sb, device_uuid, now, "unlinked")   # Stage O 알림·사이클
     except Exception:  # noqa: BLE001
         logger.exception("unlink: v4 알림 종료 실패 (device=%s)", device_uuid)
 
