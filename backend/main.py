@@ -100,7 +100,7 @@ tags_metadata = [
     {"name": "cameras", "description": "카메라 워커 (ESP32-P4 / RPi) 페어링 + CRUD."},
     {"name": "webrtc", "description": "카메라 라이브 스트리밍 WebRTC 시그널링."},
     {"name": "commands", "description": "액추에이터 명령 (물분무 등). 서버 검증 후 commands 큐잉."},
-    {"name": "lcd", "description": "LCD 커스텀 텍스트. 서버가 비트맵 렌더 후 디바이스로 전송."},
+    {"name": "lcd", "description": "LCD 커스텀 텍스트(서버 비트맵 렌더) + 화면보호기 이미지·전원·소등 시간대(Stage N)."},
     {"name": "schedules", "description": "예약 타이머 (daily/weekly). runner 가 due 시 명령 발행."},
     {
         "name": "clips",

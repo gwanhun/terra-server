@@ -22,8 +22,9 @@ from __future__ import annotations
 import base64
 import logging
 import os
+from io import BytesIO
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 
 logger = logging.getLogger(__name__)
 
@@ -102,10 +103,82 @@ def build_lcd_payload(text: str) -> dict:
     }
 
 
+# ---- Stage N: 화면보호기 컬러 이미지 (전체 화면 160×128, RGB565) ----
+#
+# 서버가 사진을 160×128 RGB565(픽셀당 2바이트, big-endian) 로 깎아 R2 에 두고, 기기는 HTTP 로 받아
+# 파티션 밖 raw 플래시에 저장한다(40,960B — nano NVS 24KB 엔 못 넣고, MQTT 2048 버퍼로도 못 보냄).
+# big-endian 인 이유: ST7735 가 SPI 로 받는 바이트 순서 그대로라 펌웨어가 변환 없이 플래시→SPI 로 흘린다.
+LCD_SCREEN_W = 160
+LCD_SCREEN_H = 128
+LCD_IMAGE_BYTES = LCD_SCREEN_W * LCD_SCREEN_H * 2   # 40960
+MAX_IMAGE_BYTES = 5 * 1024 * 1024                    # 업로드 원본 상한 (폰 사진 2~4MB)
+
+
+class InvalidImage(ValueError):
+    """이미지 디코드/검증 실패 — 라우터에서 400 으로 변환."""
+
+
+def _open_fitted(data: bytes) -> Image.Image:
+    """업로드 원본 → EXIF 회전 반영 → 투명은 검정 위에 합성 → cover-fit(중앙 크롭) 160×128 RGB."""
+    if len(data) > MAX_IMAGE_BYTES:
+        raise InvalidImage(f"이미지가 너무 큼 ({len(data)} B > {MAX_IMAGE_BYTES} B)")
+    try:
+        img = Image.open(BytesIO(data))
+        img.load()
+        img = ImageOps.exif_transpose(img) or img
+        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+            rgba = img.convert("RGBA")
+            base = Image.new("RGBA", rgba.size, (0, 0, 0, 255))
+            img = Image.alpha_composite(base, rgba).convert("RGB")
+        else:
+            img = img.convert("RGB")
+        return ImageOps.fit(img, (LCD_SCREEN_W, LCD_SCREEN_H), Image.LANCZOS)
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as e:
+        raise InvalidImage(f"이미지를 읽을 수 없음: {e}") from e
+
+
+def rgb_to_rgb565(r: int, g: int, b: int) -> int:
+    """8비트 RGB → RGB565 (펌웨어 ST7735_RGB 매크로와 같은 비트 배치)."""
+    return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
+
+
+def render_image_rgb565(data: bytes) -> tuple[bytes, bytes]:
+    """업로드 원본 → (RGB565 big-endian 40,960B, 미리보기 PNG 160×128).
+
+    미리보기는 RGB565 로 양자화한 뒤 다시 펼친 색이라 기기 화면과 같은 색 깊이다.
+    """
+    fitted = _open_fitted(data)
+    out = bytearray(LCD_IMAGE_BYTES)
+    preview = Image.new("RGB", (LCD_SCREEN_W, LCD_SCREEN_H))
+    px = fitted.load()
+    pv = preview.load()
+    i = 0
+    for y in range(LCD_SCREEN_H):
+        for x in range(LCD_SCREEN_W):
+            r, g, b = px[x, y]
+            v = rgb_to_rgb565(r, g, b)
+            out[i] = v >> 8          # big-endian
+            out[i + 1] = v & 0xFF
+            i += 2
+            # 565 → 888 복원 (하위 비트 확장) — 기기에서 보이는 색
+            r5, g6, b5 = (v >> 11) & 0x1F, (v >> 5) & 0x3F, v & 0x1F
+            pv[x, y] = ((r5 << 3) | (r5 >> 2), (g6 << 2) | (g6 >> 4), (b5 << 3) | (b5 >> 2))
+    buf = BytesIO()
+    preview.save(buf, format="PNG")
+    return bytes(out), buf.getvalue()
+
+
 __all__ = [
+    "InvalidImage",
     "LCD_BAND_HEIGHT",
+    "LCD_IMAGE_BYTES",
+    "LCD_SCREEN_H",
+    "LCD_SCREEN_W",
     "LCD_WIDTH",
+    "MAX_IMAGE_BYTES",
     "MAX_TEXT_LEN",
     "build_lcd_payload",
+    "render_image_rgb565",
     "render_text_bitmap",
+    "rgb_to_rgb565",
 ]

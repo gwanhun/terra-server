@@ -77,6 +77,7 @@
 - `capabilities` (2026-09-23+): 페어링 body 와 같은 보드 능력 플래그를 telemetry 에도 싣는다. 서버는 `devices.capabilities` 와
   다를 때만 UPDATE(프로세스 캐시). 베타 기기는 페어링을 호출하지 않아 이 경로가 유일하다. `mist_max_ms` = 분무 1회 상한(ms)
   Terra Hub(2026-10-06+)는 `hub: true` 와 `lcd: true|false`(ST7735 빌드 여부 — false 면 `lcd_*` 가 `unknown_action`)를 더 싣는다
+  `lcd_saver: true` (2026-10-28+, nano·supermini·hub LCD 빌드) = Stage N `lcd_power/lcd_quiet/lcd_saver/lcd_image` 지원
 - `hw_id` (2026-09-21+): 보드 불변 하드웨어 ID(efuse base MAC 12자리 hex). 페어링에서 이미
   저장되지만, 구 펌웨어로 등록돼 `devices.hw_id` 가 NULL 인 행은 새 펌웨어의 첫 telemetry 에서
   채워진다. 디바이스 telemetry 는 3초 주기라 프로세스당 1회만 UPDATE 한다. 용도는 **이미 생겨버린
@@ -155,6 +156,17 @@
       요청은 서버가 상한 단위로 나눠 보낸다**(10초 = 5000 발행 + 5000 을 `source=timer` 후속 명령으로 ~6.5초 뒤 예약 발행).
       후속 명령은 `commands.issued_at` 이 미래인 pending 행이며 dispatcher 가 그 시각까지 발행하지 않는다
   - `lcd_bitmap` / `lcd_clear`
+  - **Stage N LCD (2026-10-28+, `capabilities.lcd_saver` 기기만)** — 규칙은 기기 NVS 가 진실, ack ok 때 서버가 `devices.lcd_*` 에 확정:
+    - `lcd_power` (`on`: bool) — 백라이트 수동 on/off. ack `state="LCD_ON"|"LCD_OFF"`. off 는 소등 창과 무관하게 유지
+    - `lcd_quiet` (`start_min`, `end_min`: 0~1439 로컬 분, `tz_offset_min`: 기본 540=KST) — 소등 시간대. 기기 로컬 시각으로
+      3초마다 판정(SNTP 미동기면 켜둠). `start>end` 면 자정 넘는 구간. ack `state="LCD_QUIET"` / `lcd_quiet_clear` → `"LCD_QUIET_CLR"`
+    - `lcd_saver` (`enabled`: bool, `mode`: "rotate"|"image" 기본 rotate, `image_sec` 5~300, `info_sec` 3~300, `show_offline_icon`: bool) — rotate=사진↔온습도 교대, image=사진만. 모르는 mode → `bad_request`. ack `"LCD_SAVER"`
+    - `lcd_image` (`url`, `size`:40960, `sha256`, `w`:160, `h`:128, `enc`:"rgb565", `slot`:0) — 화면보호기 컬러 사진.
+      40KB 라 MQTT 로 안 보내고 **기기가 `url` 을 HTTP GET(Bearer 기기 토큰, OTA 와 같은 경로)** 해 파티션 밖 raw 플래시에
+      저장 → sha256 검증 → ack. **다운로드·기록이 끝난 뒤 ack**(보통 1~3초, 30초 no_ack 안). 같은 sha 가 이미 플래시에 있으면
+      다운로드 생략·즉시 ok. ack `state="LCD_IMG"`, 실패 result: `dl_connect` / `dl_read` / `http_NNN` / `sha_mismatch` /
+      `flash_write` / `busy`(다운로드 중) / `no_token`. `lcd_image_clear` → `"LCD_IMG_CLR"` (기기 NVS 메타만 삭제)
+    - 범위 밖/타입 오류 → `result="bad_request"`. 구 펌웨어 → `unknown_action` (서버는 플래그 없는 기기에 API 400 으로 선거절)
   - `set_temp_offset` (`offset_c`: -10.0~10.0) — 온도 보정 오프셋. 기기가 NVS(`terra/t_off`)에 저장하고
     센서 읽기 직후 적용해 **LCD·telemetry·HTTP 가 모두 같은 보정값**을 쓴다. ack `state="CALIB"`,
     범위 밖/숫자 아님은 `result="bad_request"`. 구 펌웨어는 `unknown_action`.
@@ -328,3 +340,4 @@ topic read  esp32/picam-b2c3d4e5/command
 | 2026-10-01 | 0.6.2 | IoT telemetry `temp_offset_c`(지금 적용 중인 온도 보정) → `devices.temp_offset_c`. 콘솔 온도 셀·보정 입력칸에 현재값 표시, 구 펌웨어는 commands 마지막 `set_temp_offset` 값으로 폴백 |
 | 2026-10-06 | 0.7.0 | **Terra Hub**(`p4hub-`): 카메라+기기 통합 보드. 한 계정·같은 토픽, payload 모양(`dht22_a`)으로 기기/카메라 경로 분기, ack 는 commands 매칭 여부로 분기. 기기 ack 에 `state`·`ts` 포함(terra-iot 와 동일) |
 | 2026-10-07 | 0.7.1 | **Stage J OTA**: `ota_prepare` / `ota_apply` action(카메라·기기 공통), §3-b `ota` 블록 ack, IoT telemetry `fw` → `devices.firmware_ver`, `capabilities.ota` 게이트 |
+| 2026-10-28 | 0.8.0 | **Stage N LCD**: `lcd_power` / `lcd_quiet(_clear)` / `lcd_saver` / `lcd_image(_clear)` action, `capabilities.lcd_saver` 게이트. `lcd_image` 는 HTTP 다운로드(기기 토큰) + 지연 ack |

@@ -211,6 +211,55 @@
     </div>
   </div>
 
+  <!-- LCD 화면보호기 / 전원 / 소등 시간대 (Stage N) — 대상 디바이스는 위 LCD 패널의 선택을 공유 -->
+  <div class="panel">
+    <div class="row">
+      <h2 style="margin:0">🖼 LCD 화면보호기 · 전원 (Stage N)</h2>
+      <button onclick="lcdLoadState()" style="margin-left:auto">상태 조회</button>
+    </div>
+    <small class="muted">위 패널에서 고른 디바이스 대상. 규칙은 기기 NVS 에 저장돼 재부팅·오프라인 무관. 펌웨어가 <code>capabilities.lcd_saver</code> 를 보고해야 함(아니면 400).</small>
+    <div id="lcdn-state" class="muted" style="font-size:12px;margin-top:6px"></div>
+    <div class="row" style="margin-top:8px;gap:6px;align-items:center">
+      <b style="min-width:70px">전원</b>
+      <button onclick="lcdPower(true)">켜기</button>
+      <button onclick="lcdPower(false)">끄기</button>
+      <span class="muted" style="font-size:11px">끄기는 소등 시간과 무관하게 유지(sticky)</span>
+    </div>
+    <div class="row" style="margin-top:6px;gap:6px;align-items:center">
+      <b style="min-width:70px">소등 시간</b>
+      <input id="lcdn-quiet-start" type="time" value="23:00" style="width:110px">
+      <span>~</span>
+      <input id="lcdn-quiet-end" type="time" value="07:00" style="width:110px">
+      <button onclick="lcdQuietSet()">설정</button>
+      <button onclick="lcdQuietClear()">해제</button>
+      <span class="muted" style="font-size:11px">KST. 시작&gt;끝이면 자정 넘는 구간</span>
+    </div>
+    <div class="row" style="margin-top:6px;gap:6px;align-items:center">
+      <b style="min-width:70px">화면보호기</b>
+      <label><input id="lcdn-saver-on" type="checkbox"> 사용</label>
+      <select id="lcdn-saver-mode" title="모드">
+        <option value="rotate">사진↔온습도 교대</option>
+        <option value="image">사진만</option>
+      </select>
+      <span>이미지</span><input id="lcdn-saver-img" type="number" min="5" max="300" value="20" style="width:60px"><span>초</span>
+      <span>온습도</span><input id="lcdn-saver-info" type="number" min="3" max="300" value="10" style="width:60px"><span>초</span>
+      <label><input id="lcdn-saver-icon" type="checkbox" checked> 끊김 아이콘</label>
+      <button onclick="lcdSaverSet()">적용</button>
+    </div>
+    <div class="row" style="margin-top:6px;gap:6px;align-items:center;flex-wrap:wrap">
+      <b style="min-width:70px">사진</b>
+      <input id="lcdn-img-file" type="file" accept="image/*" style="max-width:260px">
+      <button onclick="lcdImageUpload()">업로드</button>
+      <button onclick="lcdImageClear()">삭제</button>
+      <span class="muted" style="font-size:11px">≤5MB. 서버가 160×128 컬러(RGB565)로 깎아 R2 에 두고 기기가 HTTP 로 받아 플래시 저장</span>
+    </div>
+    <div class="row" style="margin-top:6px;gap:10px;align-items:center">
+      <img id="lcdn-img-preview" alt="" width="320" height="256"
+           style="display:none;image-rendering:pixelated;border:1px solid #444;background:#000">
+      <small id="lcdn-img-hint" class="muted">업로드하면 기기 화면과 같은 색(160×128) 미리보기가 여기 뜸. 상태 조회 시 확정된 사진도 표시</small>
+    </div>
+  </div>
+
   <!-- 실시간 텔레메트리 -->
   <div class="panel">
     <div class="row">
@@ -466,6 +515,7 @@ async function api(path, opts = {}) {
     'Content-Type': 'application/json',
     ...(opts.headers || {}),
   };
+  if (headers['Content-Type'] === undefined) delete headers['Content-Type'];   // FormData: 브라우저가 boundary 포함해 설정
   if (session?.access_token) {
     headers['Authorization'] = 'Bearer ' + session.access_token;
   }
@@ -1064,6 +1114,101 @@ async function clearLcdText() {
   if (!deviceId) return toast('디바이스 선택', 'bad');
   const r = await api(`/devices/${deviceId}/lcd/clear`, { method: 'POST' });
   if (r) { toast('🖥 LCD 초기화', 'good'); setTimeout(loadRecentCommands, 1500); }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// LCD 화면보호기 / 전원 / 소등 시간대 (Stage N) — REST /devices/{id}/lcd/{power,quiet,saver,image}
+// 대상 디바이스는 Stage I 패널의 #lcd-device 를 공유한다.
+// ─────────────────────────────────────────────────────────────────────────
+function lcdnDevice() {
+  const id = document.getElementById('lcd-device').value;
+  if (!id) toast('디바이스 선택', 'bad');
+  return id;
+}
+
+async function lcdLoadState() {
+  const id = lcdnDevice(); if (!id) return;
+  const r = await api(`/devices/${id}/lcd`);
+  const el = document.getElementById('lcdn-state');
+  if (!r) { el.textContent = ''; return; }
+  const q = r.lcd_quiet_start ? `${r.lcd_quiet_start.slice(0,5)}~${r.lcd_quiet_end.slice(0,5)}` : '없음';
+  const sv = r.lcd_saver ? `${r.lcd_saver.enabled ? '켬' : '끔'} (${r.lcd_saver.mode === 'image' ? '사진만' : `사진 ${r.lcd_saver.image_sec}s / 온습도 ${r.lcd_saver.info_sec}s`})` : '미설정';
+  el.textContent = `서버 확인값 — 전원: ${r.lcd_power ? 'ON' : 'OFF'} · 소등: ${q} · 보호기: ${sv} · 사진: ${r.lcd_image_key ? '있음' : '없음'} · 문구: ${r.lcd_text ?? '(기본)'} · 갱신 ${r.lcd_updated_at ? new Date(r.lcd_updated_at).toLocaleString() : '-'}`;
+  const img = document.getElementById('lcdn-img-preview');
+  if (r.preview_url) { img.src = r.preview_url; img.style.display = ''; }
+  else { img.style.display = 'none'; }
+  if (r.lcd_quiet_start) {
+    document.getElementById('lcdn-quiet-start').value = r.lcd_quiet_start.slice(0, 5);
+    document.getElementById('lcdn-quiet-end').value = r.lcd_quiet_end.slice(0, 5);
+  }
+  if (r.lcd_saver) {
+    document.getElementById('lcdn-saver-on').checked = !!r.lcd_saver.enabled;
+    document.getElementById('lcdn-saver-mode').value = r.lcd_saver.mode || 'rotate';
+    document.getElementById('lcdn-saver-img').value = r.lcd_saver.image_sec ?? 20;
+    document.getElementById('lcdn-saver-info').value = r.lcd_saver.info_sec ?? 10;
+    document.getElementById('lcdn-saver-icon').checked = r.lcd_saver.show_offline_icon !== false;
+  }
+}
+
+async function lcdPower(on) {
+  const id = lcdnDevice(); if (!id) return;
+  const r = await api(`/devices/${id}/lcd/power`, { method: 'PUT', body: JSON.stringify({ on }) });
+  if (r) { toast(on ? '🖥 LCD 켜기 전송' : '🖥 LCD 끄기 전송', 'good'); setTimeout(loadRecentCommands, 1500); }
+}
+
+async function lcdQuietSet() {
+  const id = lcdnDevice(); if (!id) return;
+  const start = document.getElementById('lcdn-quiet-start').value;
+  const end = document.getElementById('lcdn-quiet-end').value;
+  if (!start || !end) return toast('시작/끝 시각 입력', 'bad');
+  const r = await api(`/devices/${id}/lcd/quiet`, { method: 'PUT', body: JSON.stringify({ start, end }) });
+  if (r) { toast(`🌙 소등 ${start}~${end} 전송`, 'good'); setTimeout(loadRecentCommands, 1500); }
+}
+
+async function lcdQuietClear() {
+  const id = lcdnDevice(); if (!id) return;
+  const r = await api(`/devices/${id}/lcd/quiet`, { method: 'DELETE' });
+  if (r) { toast('🌙 소등 해제 전송', 'good'); setTimeout(loadRecentCommands, 1500); }
+}
+
+async function lcdSaverSet() {
+  const id = lcdnDevice(); if (!id) return;
+  const body = {
+    enabled: document.getElementById('lcdn-saver-on').checked,
+    mode: document.getElementById('lcdn-saver-mode').value,
+    image_sec: Number(document.getElementById('lcdn-saver-img').value),
+    info_sec: Number(document.getElementById('lcdn-saver-info').value),
+    show_offline_icon: document.getElementById('lcdn-saver-icon').checked,
+  };
+  const r = await api(`/devices/${id}/lcd/saver`, { method: 'PUT', body: JSON.stringify(body) });
+  if (r) { toast('🖼 화면보호기 설정 전송', 'good'); setTimeout(loadRecentCommands, 1500); }
+}
+
+async function lcdImageUpload() {
+  const id = lcdnDevice(); if (!id) return;
+  const f = document.getElementById('lcdn-img-file').files[0];
+  if (!f) return toast('사진 파일 선택', 'bad');
+  if (f.size > 5 * 1024 * 1024) return toast('5MB 이하만', 'bad');
+  // multipart — api() 의 JSON Content-Type 을 비워 브라우저가 boundary 를 붙이게 한다.
+  const fd = new FormData();
+  fd.append('file', f, f.name);
+  const r = await api(`/devices/${id}/lcd/image`, { method: 'POST', body: fd, headers: { 'Content-Type': undefined } });
+  if (r) {
+    const img = document.getElementById('lcdn-img-preview');
+    img.src = r.preview_url;
+    img.style.display = '';
+    document.getElementById('lcdn-img-hint').textContent = '← 기기 화면과 같은 색 (2배 확대). 기기가 받아 저장하면 ack ok';
+    toast('🖼 사진 전송 (기기 다운로드 중)', 'good'); setTimeout(loadRecentCommands, 4000);
+  }
+}
+
+async function lcdImageClear() {
+  const id = lcdnDevice(); if (!id) return;
+  const r = await api(`/devices/${id}/lcd/image`, { method: 'DELETE' });
+  if (r) {
+    document.getElementById('lcdn-img-preview').style.display = 'none';
+    toast('🖼 이미지 삭제 전송', 'good'); setTimeout(loadRecentCommands, 1500);
+  }
 }
 
 async function pairDevice() {

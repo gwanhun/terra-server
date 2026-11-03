@@ -14,10 +14,13 @@ from fastapi import HTTPException
 
 
 def require_active_device(sb: Any, device_uuid: str, user_id: str) -> dict[str, Any]:
-    """본인 소유 + 활성(unlinked_at IS NULL) device 행 반환. 아니면 404."""
+    """본인 소유 + 활성(unlinked_at IS NULL) device 행 반환. 아니면 404.
+
+    capabilities 도 같이 돌려준다 — lcd 라우터가 펌웨어 지원 여부(lcd_saver)를 추가 쿼리 없이 본다.
+    """
     res = (
         sb.table("devices")
-        .select("id, owner_id, device_id, unlinked_at")
+        .select("id, owner_id, device_id, unlinked_at, capabilities")
         .eq("id", device_uuid)
         .limit(1)
         .execute()
