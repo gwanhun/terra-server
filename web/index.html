@@ -196,75 +196,6 @@
     </div>
   </div>
 
-  <!-- LCD 커스텀 텍스트 (Stage I) -->
-  <div class="panel">
-    <div class="row">
-      <h2 style="margin:0">🖥 LCD 커스텀 텍스트 (Stage I)</h2>
-    </div>
-    <small class="muted">디바이스 LCD 상단에 텍스트 표시(한글 가능). 서버가 비트맵 렌더 → NVS 저장(재부팅 유지). 권장: <b>한글 ~8자 / 영문 ~12자</b> (넘으면 자동 축소).</small>
-    <div class="row" style="margin-top:8px;gap:6px">
-      <select id="lcd-device" title="대상 디바이스" style="max-width:160px"></select>
-      <input id="lcd-text" type="text" placeholder="예: 밥 6시 (한글 ~8자)" maxlength="64" oninput="lcdCharHint()" style="flex:1">
-      <span id="lcd-count" class="muted" style="font-size:11px;min-width:32px;text-align:right">0</span>
-      <button onclick="sendLcdText()">표시</button>
-      <button onclick="clearLcdText()">초기화</button>
-    </div>
-  </div>
-
-  <!-- LCD 화면보호기 / 전원 / 소등 시간대 (Stage N) — 대상 디바이스는 위 LCD 패널의 선택을 공유 -->
-  <div class="panel">
-    <div class="row">
-      <h2 style="margin:0">🖼 LCD 화면보호기 · 전원 (Stage N)</h2>
-      <button onclick="lcdLoadState()" style="margin-left:auto">상태 조회</button>
-    </div>
-    <small class="muted">사육장(디바이스)별 설정. 규칙은 기기 NVS 에 저장돼 재부팅·오프라인 무관. 펌웨어가 <code>capabilities.lcd_saver</code> 를 보고해야 함(아니면 400).</small>
-    <div class="row" style="margin-top:8px;gap:6px;align-items:center">
-      <b style="min-width:70px">대상</b>
-      <select id="lcdn-device" title="사육장 · 디바이스" onchange="lcdnOnDeviceChange()" style="max-width:320px"></select>
-      <span id="lcdn-caps" class="muted" style="font-size:11px"></span>
-    </div>
-    <div id="lcdn-state" class="muted" style="font-size:12px;margin-top:6px"></div>
-    <div class="row" style="margin-top:8px;gap:6px;align-items:center">
-      <b style="min-width:70px">전원</b>
-      <button onclick="lcdPower(true)">켜기</button>
-      <button onclick="lcdPower(false)">끄기</button>
-      <span class="muted" style="font-size:11px">끄기는 소등 시간과 무관하게 유지(sticky)</span>
-    </div>
-    <div class="row" style="margin-top:6px;gap:6px;align-items:center">
-      <b style="min-width:70px">소등 시간</b>
-      <input id="lcdn-quiet-start" type="time" value="23:00" style="width:110px">
-      <span>~</span>
-      <input id="lcdn-quiet-end" type="time" value="07:00" style="width:110px">
-      <button onclick="lcdQuietSet()">설정</button>
-      <button onclick="lcdQuietClear()">해제</button>
-      <span class="muted" style="font-size:11px">KST. 시작&gt;끝이면 자정 넘는 구간</span>
-    </div>
-    <div class="row" style="margin-top:6px;gap:6px;align-items:center">
-      <b style="min-width:70px">화면보호기</b>
-      <label><input id="lcdn-saver-on" type="checkbox"> 사용</label>
-      <select id="lcdn-saver-mode" title="모드">
-        <option value="rotate">사진↔온습도 교대</option>
-        <option value="image">사진만</option>
-      </select>
-      <span>이미지</span><input id="lcdn-saver-img" type="number" min="5" max="300" value="20" style="width:60px"><span>초</span>
-      <span>온습도</span><input id="lcdn-saver-info" type="number" min="3" max="300" value="10" style="width:60px"><span>초</span>
-      <label><input id="lcdn-saver-icon" type="checkbox" checked> 끊김 아이콘</label>
-      <button onclick="lcdSaverSet()">적용</button>
-    </div>
-    <div class="row" style="margin-top:6px;gap:6px;align-items:center;flex-wrap:wrap">
-      <b style="min-width:70px">사진</b>
-      <input id="lcdn-img-file" type="file" accept="image/*" style="max-width:260px">
-      <button onclick="lcdImageUpload()">업로드</button>
-      <button onclick="lcdImageClear()">삭제</button>
-      <span class="muted" style="font-size:11px">≤5MB. 서버가 160×128 컬러(RGB565)로 깎아 R2 에 두고 기기가 HTTP 로 받아 플래시 저장</span>
-    </div>
-    <div class="row" style="margin-top:6px;gap:10px;align-items:center">
-      <img id="lcdn-img-preview" alt="" width="320" height="256"
-           style="display:none;image-rendering:pixelated;border:1px solid #444;background:#000">
-      <small id="lcdn-img-hint" class="muted">업로드하면 기기 화면과 같은 색(160×128) 미리보기가 여기 뜸. 상태 조회 시 확정된 사진도 표시</small>
-    </div>
-  </div>
-
   <!-- 실시간 텔레메트리 -->
   <div class="panel">
     <div class="row">
@@ -748,13 +679,13 @@ async function loadDevices() {
   DEVICES = rows || [];             // 예약/LCD/설정 패널 디바이스 드롭다운용 캐시
   await loadLastTempOffsetCmds(DEVICES.map(r => r.id));
   refreshScheduleDeviceOptions();
-  refreshLcdDeviceOptions();
   refreshSettingsDeviceOptions();
   const tbody = document.querySelector('#dev-table tbody');
   tbody.innerHTML = '';
   (rows || []).forEach(r => {
     DEV_LABEL[r.id] = r.device_id;   // 텔레메트리/알림 라벨 캐시 갱신
     const tr = document.createElement('tr');
+    tr.dataset.id = r.id;            // LCD 인라인 행(toggleDeviceLcd) 앵커
     tr.innerHTML = `
       <td class="nw"><code>${esc(r.device_id)}</code></td>
       <td class="nw">${esc(r.name)}</td>
@@ -769,6 +700,7 @@ async function loadDevices() {
       <td class="actions-cell">
         <div class="act-group">${quickCmdButtons(r.id, r.is_online)} ${mistButtons(r.id, r.is_online)} ${ledSlider(r)}</div>
         <div class="act-group">
+          <button class="sm" onclick="toggleDeviceLcd('${r.id}')" title="LCD 설정 — 문구·전원·소등 시간·화면보호기·사진 (행 아래 펼침, 다시 누르면 닫힘)">🖥 LCD</button>
           <button class="sm" onclick="openTrend('${r.id}')" title="온도 추이 — 30분 집계(telemetry_30m), 최근 30일까지">📈추이</button>
           <button class="sm" onclick="rebootDevice('${r.id}','${esc(r.device_id)}')" title="MQTT reboot 명령 1회 큐잉 — 2026-09-28+ 펌웨어만 반응, 구 펌웨어는 unknown_action">재부팅</button>
           <button class="sm" onclick="otaEntity('devices','${r.id}','${esc(r.device_id)}','device_nano')" title="OTA (Stage J, nano 만) — prepare → ready 면 다시 눌러 apply. commands 큐잉">OTA</button>
@@ -1081,168 +1013,149 @@ async function deleteSchedule(id) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// LCD 커스텀 텍스트 (Stage I) — REST /devices/{id}/lcd , /lcd/clear
+// LCD 설정 — 디바이스 목록 행 아래 인라인 (Stage I 문구 + Stage N 전원/소등/화면보호기/사진)
+// REST /devices/{id}/lcd, /lcd/clear, /lcd/power, /lcd/quiet, /lcd/saver, /lcd/image
+// 별도 패널로 두니 "목록에서 고르고 패널로 내려가는" 왕복이 불편해(2026-11-03) 행 안에서 끝내게 했다.
 // ─────────────────────────────────────────────────────────────────────────
-function refreshLcdDeviceOptions() {
-  const sel = document.getElementById('lcd-device');
-  if (sel) {
-    const prev = sel.value;
-    sel.innerHTML = DEVICES.map(d =>
-      `<option value="${d.id}">${esc(d.device_id)} · ${esc(d.name)}</option>`).join('');
-    if (prev && DEVICES.some(d => d.id === prev)) sel.value = prev;
-  }
-  // Stage N 패널 — 사육장(그룹) 이름을 앞에 붙여 사육장별로 고르게. 사육장 순으로 정렬, 미배정은 뒤.
-  const sel2 = document.getElementById('lcdn-device');
-  if (sel2) {
-    const prev2 = sel2.value;
-    const encName = id => (ENCLOSURES.find(e => e.id === id) || {}).name || '';
-    const rows = [...DEVICES].sort((a, b) =>
-      (encName(a.enclosure_id) || '~').localeCompare(encName(b.enclosure_id) || '~', 'ko'));
-    sel2.innerHTML = rows.map(d => {
-      const en = encName(d.enclosure_id);
-      const ok = !!(d.capabilities && d.capabilities.lcd_saver);
-      return `<option value="${d.id}">${esc(en ? `🏠 ${en}` : '(사육장 미배정)')} · ${esc(d.name)} · ${esc(d.device_id)}${ok ? '' : ' · ⚠ 펌웨어 미지원'}</option>`;
-    }).join('');
-    if (prev2 && DEVICES.some(d => d.id === prev2)) sel2.value = prev2;
-    lcdnOnDeviceChange();
-  }
-}
-
-function lcdnOnDeviceChange() {
-  const sel = document.getElementById('lcdn-device');
-  const caps = document.getElementById('lcdn-caps');
-  const d = DEVICES.find(x => x.id === sel.value);
-  if (!d) { caps.textContent = ''; return; }
+function toggleDeviceLcd(id) {
+  const tr = document.querySelector(`#dev-table tr[data-id="${id}"]`);
+  if (!tr) return;
+  const open = tr.nextElementSibling;
+  if (open && open.classList.contains('dev-lcd-row')) { open.remove(); return; }
+  const d = DEVICES.find(x => x.id === id) || {};
   const ok = !!(d.capabilities && d.capabilities.lcd_saver);
-  caps.textContent = ok ? `fw ${d.firmware_ver || '?'} · lcd_saver 지원` : `fw ${d.firmware_ver || '?'} · lcd_saver 미보고 — 1.2.0 으로 OTA/USB 플래시 필요`;
-  caps.style.color = ok ? '' : '#fc9';
-  document.getElementById('lcdn-state').textContent = '';
-  document.getElementById('lcdn-img-preview').style.display = 'none';
-  if (ok) lcdLoadState();
+  const row = document.createElement('tr'); row.className = 'dev-lcd-row'; row.dataset.id = id;
+  const td = document.createElement('td'); td.colSpan = tr.children.length; td.style.padding = '6px 8px 10px 24px';
+  const note = ok ? `<span class="muted">fw ${esc(d.firmware_ver || '?')} · lcd_saver 지원</span>`
+                  : `<span style="color:#fc9">fw ${esc(d.firmware_ver || '?')} · lcd_saver 미보고 — 전원/소등/보호기/사진은 1.2.0 으로 OTA/USB 플래시 후</span>`;
+  const dis = ok ? '' : 'disabled';
+  td.innerHTML = `
+    <div class="row" style="gap:8px;align-items:center;font-size:12px">
+      <b>🖥 LCD — ${esc(d.name || '')} <code>${esc(d.device_id || '')}</code></b> ${note}
+      <button class="sm" onclick="lcdRowLoad('${id}')">상태 조회</button>
+      <button class="sm" onclick="this.closest('tr').remove()">닫기</button>
+    </div>
+    <div data-f="state" class="muted" style="font-size:11px;margin:4px 0"></div>
+    <div class="row" style="gap:6px;align-items:center;margin-top:4px">
+      <b style="min-width:64px">문구</b>
+      <input data-f="text" type="text" placeholder="예: 밥 6시 (한글 ~8자)" maxlength="64" style="width:200px">
+      <button class="sm" onclick="lcdRowText('${id}')">표시</button>
+      <button class="sm" onclick="lcdRowTextClear('${id}')">초기화</button>
+      <span class="muted" style="font-size:11px">상단 밴드, 한글 가능</span>
+    </div>
+    <div class="row" style="gap:6px;align-items:center;margin-top:4px">
+      <b style="min-width:64px">전원</b>
+      <button class="sm" ${dis} onclick="lcdRowPower('${id}',true)">켜기</button>
+      <button class="sm" ${dis} onclick="lcdRowPower('${id}',false)">끄기</button>
+      <span class="muted" style="font-size:11px">끄기는 소등 시간과 무관하게 유지(sticky)</span>
+    </div>
+    <div class="row" style="gap:6px;align-items:center;margin-top:4px">
+      <b style="min-width:64px">소등 시간</b>
+      <input data-f="qs" type="time" value="23:00" ${dis} style="width:105px"> <span>~</span>
+      <input data-f="qe" type="time" value="07:00" ${dis} style="width:105px">
+      <button class="sm" ${dis} onclick="lcdRowQuiet('${id}')">설정</button>
+      <button class="sm" ${dis} onclick="lcdRowQuietClear('${id}')">해제</button>
+      <span class="muted" style="font-size:11px">KST. 시작&gt;끝이면 자정 넘는 구간</span>
+    </div>
+    <div class="row" style="gap:6px;align-items:center;margin-top:4px">
+      <b style="min-width:64px">화면보호기</b>
+      <label><input data-f="son" type="checkbox" ${dis}> 사용</label>
+      <select data-f="smode" ${dis}><option value="rotate">사진↔온습도 교대</option><option value="image">사진만</option></select>
+      <span>사진</span><input data-f="simg" type="number" min="5" max="300" value="20" ${dis} style="width:56px"><span>초</span>
+      <span>온습도</span><input data-f="sinfo" type="number" min="3" max="300" value="10" ${dis} style="width:56px"><span>초</span>
+      <label><input data-f="sicon" type="checkbox" checked ${dis}> 끊김 아이콘</label>
+      <button class="sm" ${dis} onclick="lcdRowSaver('${id}')">적용</button>
+    </div>
+    <div class="row" style="gap:6px;align-items:center;margin-top:4px;flex-wrap:wrap">
+      <b style="min-width:64px">사진</b>
+      <input data-f="file" type="file" accept="image/*" ${dis} style="max-width:240px">
+      <button class="sm" ${dis} onclick="lcdRowImage('${id}')">업로드</button>
+      <button class="sm" ${dis} onclick="lcdRowImageClear('${id}')">삭제</button>
+      <span class="muted" style="font-size:11px">≤5MB · 160×128 컬러로 깎여 기기 플래시에 저장. 세로 사진은 가운데만 남음</span>
+    </div>
+    <div class="row" style="gap:10px;align-items:center;margin-top:4px">
+      <img data-f="preview" alt="" width="240" height="192" style="display:none;image-rendering:pixelated;border:1px solid #444;background:#000">
+      <small data-f="hint" class="muted">업로드하면 기기 화면과 같은 미리보기가 여기 뜸</small>
+    </div>`;
+  row.appendChild(td);
+  tr.after(row);
+  if (ok) lcdRowLoad(id);
 }
 
-// 입력 글자수 표시 — 한글 포함 시 폭이 크므로 한글은 1.6배 가중치로 대략 경고.
-function lcdCharHint() {
-  const el = document.getElementById('lcd-text');
-  const c = document.getElementById('lcd-count');
-  if (!el || !c) return;
-  const s = el.value;
-  const hangul = (s.match(/[ㄱ-힝]/g) || []).length;
-  const weight = s.length + hangul * 0.6;   // 한글 1자 ≈ 영문 1.6자 폭
-  c.textContent = String(s.length);
-  c.style.color = weight > 12 ? '#f66' : weight > 9 ? '#fc9' : '';
-}
+function lcdRow(id) { return document.querySelector(`tr.dev-lcd-row[data-id="${id}"]`); }
+function lcdF(id, f) { const r = lcdRow(id); return r ? r.querySelector(`[data-f="${f}"]`) : null; }
 
-async function sendLcdText() {
-  const deviceId = document.getElementById('lcd-device').value;
-  if (!deviceId) return toast('디바이스 선택', 'bad');
-  const text = document.getElementById('lcd-text').value;
-  const r = await api(`/devices/${deviceId}/lcd`, {
-    method: 'POST', body: JSON.stringify({ text }),
-  });
-  if (r) { toast('🖥 LCD 전송', 'good'); setTimeout(loadRecentCommands, 1500); }
-}
-
-async function clearLcdText() {
-  const deviceId = document.getElementById('lcd-device').value;
-  if (!deviceId) return toast('디바이스 선택', 'bad');
-  const r = await api(`/devices/${deviceId}/lcd/clear`, { method: 'POST' });
-  if (r) { toast('🖥 LCD 초기화', 'good'); setTimeout(loadRecentCommands, 1500); }
-}
-
-// ─────────────────────────────────────────────────────────────────────────
-// LCD 화면보호기 / 전원 / 소등 시간대 (Stage N) — REST /devices/{id}/lcd/{power,quiet,saver,image}
-// 대상 디바이스는 Stage I 패널의 #lcd-device 를 공유한다.
-// ─────────────────────────────────────────────────────────────────────────
-function lcdnDevice() {
-  const id = document.getElementById('lcdn-device').value;
-  if (!id) toast('디바이스 선택', 'bad');
-  return id;
-}
-
-async function lcdLoadState() {
-  const id = lcdnDevice(); if (!id) return;
+async function lcdRowLoad(id) {
   const r = await api(`/devices/${id}/lcd`);
-  const el = document.getElementById('lcdn-state');
+  const el = lcdF(id, 'state'); if (!el) return;
   if (!r) { el.textContent = ''; return; }
   const q = r.lcd_quiet_start ? `${r.lcd_quiet_start.slice(0,5)}~${r.lcd_quiet_end.slice(0,5)}` : '없음';
   const sv = r.lcd_saver ? `${r.lcd_saver.enabled ? '켬' : '끔'} (${r.lcd_saver.mode === 'image' ? '사진만' : `사진 ${r.lcd_saver.image_sec}s / 온습도 ${r.lcd_saver.info_sec}s`})` : '미설정';
-  el.textContent = `서버 확인값 — 전원: ${r.lcd_power ? 'ON' : 'OFF'} · 소등: ${q} · 보호기: ${sv} · 사진: ${r.lcd_image_key ? '있음' : '없음'} · 문구: ${r.lcd_text ?? '(기본)'} · 갱신 ${r.lcd_updated_at ? new Date(r.lcd_updated_at).toLocaleString() : '-'}`;
-  const img = document.getElementById('lcdn-img-preview');
-  if (r.preview_url) { img.src = r.preview_url; img.style.display = ''; }
-  else { img.style.display = 'none'; }
-  if (r.lcd_quiet_start) {
-    document.getElementById('lcdn-quiet-start').value = r.lcd_quiet_start.slice(0, 5);
-    document.getElementById('lcdn-quiet-end').value = r.lcd_quiet_end.slice(0, 5);
-  }
+  el.textContent = `서버 확인값 — 문구: ${r.lcd_text ?? '(기본)'} · 전원: ${r.lcd_power ? 'ON' : 'OFF'} · 소등: ${q} · 보호기: ${sv} · 사진: ${r.lcd_image_key ? '있음' : '없음'} · 갱신 ${r.lcd_updated_at ? new Date(r.lcd_updated_at).toLocaleString() : '-'}`;
+  if (r.lcd_text) lcdF(id, 'text').value = r.lcd_text;
+  if (r.lcd_quiet_start) { lcdF(id, 'qs').value = r.lcd_quiet_start.slice(0, 5); lcdF(id, 'qe').value = r.lcd_quiet_end.slice(0, 5); }
   if (r.lcd_saver) {
-    document.getElementById('lcdn-saver-on').checked = !!r.lcd_saver.enabled;
-    document.getElementById('lcdn-saver-mode').value = r.lcd_saver.mode || 'rotate';
-    document.getElementById('lcdn-saver-img').value = r.lcd_saver.image_sec ?? 20;
-    document.getElementById('lcdn-saver-info').value = r.lcd_saver.info_sec ?? 10;
-    document.getElementById('lcdn-saver-icon').checked = r.lcd_saver.show_offline_icon !== false;
+    lcdF(id, 'son').checked = !!r.lcd_saver.enabled;
+    lcdF(id, 'smode').value = r.lcd_saver.mode || 'rotate';
+    lcdF(id, 'simg').value = r.lcd_saver.image_sec ?? 20;
+    lcdF(id, 'sinfo').value = r.lcd_saver.info_sec ?? 10;
+    lcdF(id, 'sicon').checked = r.lcd_saver.show_offline_icon !== false;
   }
+  const img = lcdF(id, 'preview');
+  if (r.preview_url) { img.src = r.preview_url; img.style.display = ''; lcdF(id, 'hint').textContent = '← 지금 기기에 있는 사진 (서버 확정값)'; }
+  else { img.style.display = 'none'; }
 }
 
-async function lcdPower(on) {
-  const id = lcdnDevice(); if (!id) return;
+async function lcdRowText(id) {
+  const text = lcdF(id, 'text').value;
+  const r = await api(`/devices/${id}/lcd`, { method: 'POST', body: JSON.stringify({ text }) });
+  if (r) { toast('🖥 LCD 문구 전송', 'good'); setTimeout(loadRecentCommands, 1500); }
+}
+async function lcdRowTextClear(id) {
+  const r = await api(`/devices/${id}/lcd/clear`, { method: 'POST' });
+  if (r) { toast('🖥 LCD 문구 초기화', 'good'); setTimeout(loadRecentCommands, 1500); }
+}
+async function lcdRowPower(id, on) {
   const r = await api(`/devices/${id}/lcd/power`, { method: 'PUT', body: JSON.stringify({ on }) });
   if (r) { toast(on ? '🖥 LCD 켜기 전송' : '🖥 LCD 끄기 전송', 'good'); setTimeout(loadRecentCommands, 1500); }
 }
-
-async function lcdQuietSet() {
-  const id = lcdnDevice(); if (!id) return;
-  const start = document.getElementById('lcdn-quiet-start').value;
-  const end = document.getElementById('lcdn-quiet-end').value;
+async function lcdRowQuiet(id) {
+  const start = lcdF(id, 'qs').value, end = lcdF(id, 'qe').value;
   if (!start || !end) return toast('시작/끝 시각 입력', 'bad');
   const r = await api(`/devices/${id}/lcd/quiet`, { method: 'PUT', body: JSON.stringify({ start, end }) });
   if (r) { toast(`🌙 소등 ${start}~${end} 전송`, 'good'); setTimeout(loadRecentCommands, 1500); }
 }
-
-async function lcdQuietClear() {
-  const id = lcdnDevice(); if (!id) return;
+async function lcdRowQuietClear(id) {
   const r = await api(`/devices/${id}/lcd/quiet`, { method: 'DELETE' });
   if (r) { toast('🌙 소등 해제 전송', 'good'); setTimeout(loadRecentCommands, 1500); }
 }
-
-async function lcdSaverSet() {
-  const id = lcdnDevice(); if (!id) return;
+async function lcdRowSaver(id) {
   const body = {
-    enabled: document.getElementById('lcdn-saver-on').checked,
-    mode: document.getElementById('lcdn-saver-mode').value,
-    image_sec: Number(document.getElementById('lcdn-saver-img').value),
-    info_sec: Number(document.getElementById('lcdn-saver-info').value),
-    show_offline_icon: document.getElementById('lcdn-saver-icon').checked,
+    enabled: lcdF(id, 'son').checked,
+    mode: lcdF(id, 'smode').value,
+    image_sec: Number(lcdF(id, 'simg').value),
+    info_sec: Number(lcdF(id, 'sinfo').value),
+    show_offline_icon: lcdF(id, 'sicon').checked,
   };
   const r = await api(`/devices/${id}/lcd/saver`, { method: 'PUT', body: JSON.stringify(body) });
   if (r) { toast('🖼 화면보호기 설정 전송', 'good'); setTimeout(loadRecentCommands, 1500); }
 }
-
-async function lcdImageUpload() {
-  const id = lcdnDevice(); if (!id) return;
-  const f = document.getElementById('lcdn-img-file').files[0];
+async function lcdRowImage(id) {
+  const f = lcdF(id, 'file').files[0];
   if (!f) return toast('사진 파일 선택', 'bad');
   if (f.size > 5 * 1024 * 1024) return toast('5MB 이하만', 'bad');
+  const fd = new FormData(); fd.append('file', f, f.name);
   // multipart — api() 의 JSON Content-Type 을 비워 브라우저가 boundary 를 붙이게 한다.
-  const fd = new FormData();
-  fd.append('file', f, f.name);
   const r = await api(`/devices/${id}/lcd/image`, { method: 'POST', body: fd, headers: { 'Content-Type': undefined } });
   if (r) {
-    const img = document.getElementById('lcdn-img-preview');
-    img.src = r.preview_url;
-    img.style.display = '';
-    document.getElementById('lcdn-img-hint').textContent = '← 기기 화면과 같은 색 (2배 확대). 기기가 받아 저장하면 ack ok';
+    const img = lcdF(id, 'preview'); img.src = r.preview_url; img.style.display = '';
+    lcdF(id, 'hint').textContent = '← 기기 화면과 같은 색. 기기가 받아 저장하면 ack ok (1~3초)';
     toast('🖼 사진 전송 (기기 다운로드 중)', 'good'); setTimeout(loadRecentCommands, 4000);
   }
 }
-
-async function lcdImageClear() {
-  const id = lcdnDevice(); if (!id) return;
+async function lcdRowImageClear(id) {
   const r = await api(`/devices/${id}/lcd/image`, { method: 'DELETE' });
-  if (r) {
-    document.getElementById('lcdn-img-preview').style.display = 'none';
-    toast('🖼 이미지 삭제 전송', 'good'); setTimeout(loadRecentCommands, 1500);
-  }
+  if (r) { lcdF(id, 'preview').style.display = 'none'; toast('🖼 사진 삭제 전송', 'good'); setTimeout(loadRecentCommands, 1500); }
 }
 
 async function pairDevice() {
