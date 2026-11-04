@@ -44,6 +44,8 @@ from backend.supabase_client import get_supabase_client
 KST = ZoneInfo("Asia/Seoul")
 DEFAULT_DURATION_SEC = 60.0
 CAMERA_COLUMNS = "id,camera_id,owner_id,enclosure_id,unlinked_at"
+DB_PAGE = 1000            # PostgREST 기본 max-rows — 넘기면 조용히 잘린다 → range 로 페이지
+MIN_AGE_MIN_DEFAULT = 10  # 이보다 젊은 mp4 는 "업로드 진행 중" 으로 보고 건너뜀 (아래 split_in_flight)
 
 # backend/routers/clips.py 의 _KEY_RE 와 동일 계약
 KEY_RE = re.compile(
@@ -65,33 +67,62 @@ def default_range(days: int, today: date | None = None) -> tuple[date, date]:
     return until - timedelta(days=max(days, 1) - 1), until
 
 
-def list_objects(client, bucket: str, prefix: str) -> dict[str, int]:
-    """prefix 아래 key → size 매핑."""
-    out: dict[str, int] = {}
+def list_objects(client, bucket: str, prefix: str) -> dict[str, tuple[int, datetime]]:
+    """prefix 아래 key → (size, LastModified) 매핑."""
+    out: dict[str, tuple[int, datetime]] = {}
     paginator = client.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         for obj in page.get("Contents", []):
-            out[obj["Key"]] = obj["Size"]
+            out[obj["Key"]] = (obj["Size"], obj["LastModified"])
     return out
+
+
+def split_in_flight(
+    mp4s: dict[str, tuple[int, datetime]], now: datetime, min_age: timedelta,
+) -> tuple[dict[str, int], list[str]]:
+    """(충분히 오래된 key → size, 업로드 진행 중으로 볼 젊은 key 목록).
+
+    펌웨어 순서는 mp4 PUT → jpg PUT → meta POST 라 몇 초~수십 초 사이엔 "R2 엔 있고 DB 엔 없음"
+    이 정상이다. 그걸 등록해 버리면 뒤따르는 meta POST 가 23505 경로로 기존 행 id 만 받고
+    썸네일·motion_score 가 영영 빠진다. 그래서 LastModified 가 min_age 보다 젊으면 다음 주기로.
+    """
+    old: dict[str, int] = {}
+    young: list[str] = []
+    for key, (size, last_modified) in mp4s.items():
+        if now - last_modified < min_age:
+            young.append(key)
+        else:
+            old[key] = size
+    return old, young
 
 
 def registered_started_at_keys(sb, camera_uuid: str, since: date, until: date) -> set[str]:
-    """해당 카메라의 등록 클립 started_at 을 R2 키 형식(YYYY-MM-DD_HHMMSS, KST) 집합으로."""
+    """해당 카메라의 등록 클립 started_at 을 R2 키 형식(YYYY-MM-DD_HHMMSS, KST) 집합으로.
+
+    range 로 페이지 — 한 카메라가 9일에 1800건이라 1000행 캡에 잘리면 2b 필터가 구멍 난다.
+    """
     lo = datetime.combine(since, datetime.min.time(), tzinfo=KST)
     hi = datetime.combine(until + timedelta(days=1), datetime.min.time(), tzinfo=KST)
-    res = (
-        sb.table("motion_clips")
-        .select("started_at")
-        .eq("camera_id", camera_uuid)
-        .gte("started_at", lo.astimezone(timezone.utc).isoformat())
-        .lt("started_at", hi.astimezone(timezone.utc).isoformat())
-        .execute()
-    )
     out: set[str] = set()
-    for row in res.data or []:
-        ts = datetime.fromisoformat(row["started_at"].replace("Z", "+00:00")).astimezone(KST)
-        out.add(f"{ts:%Y-%m-%d}_{ts:%H%M%S}")
-    return out
+    offset = 0
+    while True:
+        res = (
+            sb.table("motion_clips")
+            .select("started_at")
+            .eq("camera_id", camera_uuid)
+            .gte("started_at", lo.astimezone(timezone.utc).isoformat())
+            .lt("started_at", hi.astimezone(timezone.utc).isoformat())
+            .order("started_at")
+            .range(offset, offset + DB_PAGE - 1)
+            .execute()
+        )
+        rows = list(res.data or [])
+        for row in rows:
+            ts = datetime.fromisoformat(row["started_at"].replace("Z", "+00:00")).astimezone(KST)
+            out.add(f"{ts:%Y-%m-%d}_{ts:%H%M%S}")
+        if len(rows) < DB_PAGE:
+            return out
+        offset += DB_PAGE
 
 
 def mvhd_duration_sec(client, bucket: str, key: str, size: int) -> float | None:
@@ -127,19 +158,23 @@ def mvhd_duration_sec(client, bucket: str, key: str, size: int) -> float | None:
 
 
 def reconcile_camera(
-    sb, client, bucket: str, camera: dict[str, Any], since: date, until: date, *, apply: bool,
+    sb, client, bucket: str, camera: dict[str, Any], since: date, until: date, *,
+    apply: bool, min_age: timedelta = timedelta(minutes=MIN_AGE_MIN_DEFAULT),
 ) -> tuple[int, int]:
     """카메라 하나를 처리하고 (등록 대상 수, 실제 INSERT 수) 를 돌려준다."""
     camera_text = camera["camera_id"]
 
     # 1) R2 스캔
-    objects: dict[str, int] = {}
+    objects: dict[str, tuple[int, datetime]] = {}
     for d in daterange(since, until):
         prefix = f"terra-clips/clips/{camera_text}/{d.isoformat()}/"
         objects.update(list_objects(client, bucket, prefix))
-    mp4s = {k: v for k, v in objects.items() if k.endswith(".mp4")}
+    all_mp4s = {k: v for k, v in objects.items() if k.endswith(".mp4")}
     jpgs = {k for k in objects if k.endswith(".jpg")}
-    print(f"R2 스캔: mp4 {len(mp4s)}건, jpg {len(jpgs)}건 ({since} ~ {until} KST)")
+    mp4s, in_flight = split_in_flight(all_mp4s, datetime.now(timezone.utc), min_age)
+    print(f"R2 스캔: mp4 {len(all_mp4s)}건, jpg {len(jpgs)}건 ({since} ~ {until} KST)")
+    if in_flight:
+        print(f"업로드 진행 중일 수 있는 {len(in_flight)}건(LastModified < {min_age}) 은 다음 주기로")
     if not mp4s:
         return 0, 0
 
@@ -237,6 +272,10 @@ def main() -> None:
     ap.add_argument("--since", help="시작 날짜 (KST, YYYY-MM-DD). 생략 시 --days 로 계산")
     ap.add_argument("--until", help="끝 날짜 (KST, YYYY-MM-DD, 포함). 생략 시 오늘")
     ap.add_argument("--days", type=int, default=2, help="--since/--until 생략 시 최근 N일 (기본 2)")
+    ap.add_argument(
+        "--min-age-min", type=int, default=MIN_AGE_MIN_DEFAULT,
+        help=f"이보다 젊은(분) mp4 는 업로드 진행 중으로 보고 건너뜀 (기본 {MIN_AGE_MIN_DEFAULT})",
+    )
     ap.add_argument("--apply", action="store_true", help="실제 INSERT (기본은 dry-run)")
     ap.add_argument(
         "--allow-unlinked", action="store_true",
@@ -256,12 +295,13 @@ def main() -> None:
 
     sb = get_supabase_client()
     if args.camera:
-        cam_res = (
-            sb.table("cameras").select(CAMERA_COLUMNS).eq("camera_id", args.camera).single().execute()
-        )
-        if not cam_res.data:
+        # .single() 은 0행에 PGRST116 예외라 친절한 메시지가 못 나간다(backend/db_helpers.py) → limit(1)
+        cam_rows = (
+            sb.table("cameras").select(CAMERA_COLUMNS).eq("camera_id", args.camera).limit(1).execute().data
+        ) or []
+        if not cam_rows:
             sys.exit(f"cameras 에 없는 camera_id: {args.camera}")
-        camera = cam_res.data
+        camera = cam_rows[0]
         if camera.get("unlinked_at"):
             print(f"! 해제된 카메라 (unlinked_at={camera['unlinked_at']}, enclosure_id="
                   f"{camera.get('enclosure_id')}) — 등록해도 앱 목록엔 안 보임")
@@ -278,18 +318,29 @@ def main() -> None:
 
     client = get_r2_client()
     bucket = get_r2_bucket()
+    min_age = timedelta(minutes=max(args.min_age_min, 0))
     total_candidates = total_inserted = 0
+    failed: list[str] = []
     for camera in cameras:
         if len(cameras) > 1:
             print(f"\n== {camera['camera_id']}")
-        c, i = reconcile_camera(sb, client, bucket, camera, since, until, apply=args.apply)
+        try:
+            c, i = reconcile_camera(
+                sb, client, bucket, camera, since, until, apply=args.apply, min_age=min_age,
+            )
+        except Exception as exc:  # noqa: BLE001 — 한 카메라의 R2/Supabase 오류가 나머지를 막으면 안 된다(cron)
+            failed.append(camera["camera_id"])
+            print(f"  ! 실패 — 다음 카메라로: {exc!r}")
+            continue
         total_candidates += c
         total_inserted += i
 
     if len(cameras) > 1:
-        print(f"\n합계: 등록 대상 {total_candidates}건, INSERT {total_inserted}건")
+        print(f"\n합계: 등록 대상 {total_candidates}건, INSERT {total_inserted}건, 실패 카메라 {len(failed)}대")
     if not args.apply and total_candidates:
         print("dry-run 완료 — 실제 등록은 --apply 로 재실행")
+    if failed:
+        sys.exit(f"실패 카메라: {', '.join(failed)} — 다음 주기에 같은 범위가 다시 스캔되게 --days 를 넉넉히")
 
 
 if __name__ == "__main__":

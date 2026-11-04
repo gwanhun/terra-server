@@ -27,7 +27,6 @@ import os
 import secrets
 from typing import Any
 
-from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -869,8 +868,16 @@ def _collect_clip_object_keys(sb: Any, camera_uuid: str, user_id: str) -> list[s
 
 
 def _delete_clip_objects_safe(keys: list[str], camera_uuid: str) -> None:
-    """BackgroundTasks 용 — 예외를 삼키고 경고만 남긴다(응답은 이미 나갔다)."""
+    """BackgroundTasks 용 — 예외를 삼키고 경고만 남긴다(응답은 이미 나갔다).
+
+    boto 오류뿐 아니라 R2NotConfigured(RuntimeError) 등 전부 잡는다 — DB 행은 이미 cascade 로
+    사라져 키 목록이 이 로그에만 남으므로, 어떤 예외든 "잔존" 경고를 반드시 찍어야 한다.
+    """
     try:
-        delete_objects(keys)
-    except (BotoCoreError, ClientError) as exc:
-        logger.warning("camera 삭제 뒤 R2 객체 삭제 실패 (camera=%s, %d개 잔존): %s", camera_uuid, len(keys), exc)
+        failed = delete_objects(keys)
+    except Exception as exc:  # noqa: BLE001 — 위 docstring
+        failed = keys
+        logger.warning("camera 삭제 뒤 R2 객체 삭제 실패 (camera=%s): %s", camera_uuid, exc)
+    if failed:
+        logger.warning("camera 삭제 뒤 R2 객체 %d/%d개 잔존 (camera=%s) keys=%s%s",
+                       len(failed), len(keys), camera_uuid, failed[:5], " …" if len(failed) > 5 else "")

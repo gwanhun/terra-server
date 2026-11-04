@@ -155,29 +155,34 @@ def delete_object(key: str) -> None:
 _DELETE_BATCH = 1000   # S3 DeleteObjects 한 요청 상한
 
 
-def delete_objects(keys: list[str]) -> int:
-    """여러 객체를 DeleteObjects(최대 1000개/요청) 로 삭제하고 삭제된 수를 돌려준다.
+def delete_objects(keys: list[str]) -> list[str]:
+    """여러 객체를 DeleteObjects(최대 1000개/요청) 로 삭제하고 **실패한 키 목록**을 돌려준다.
 
     cameras DELETE 가 소속 클립 영상·썸네일을 지울 때 사용 — 카메라 하나에 수천 개라
-    delete_object 반복은 느리다. 없는 키는 S3 규약상 성공으로 친다. 개별 오류는 경고만.
+    delete_object 반복은 느리다. 없는 키는 S3 규약상 성공으로 친다(2026-11-05 실버킷 확인).
+    개별 오류는 키별로 안 찍고 호출자가 건수·문맥과 함께 한 줄로 남긴다.
     """
     if not keys:
-        return 0
+        return []
     client = get_r2_client()
     bucket = get_r2_bucket()
-    deleted = 0
+    failed: list[str] = []
+    codes: set[str] = set()
     for i in range(0, len(keys), _DELETE_BATCH):
         chunk = keys[i : i + _DELETE_BATCH]
         resp = client.delete_objects(
             Bucket=bucket,
             Delete={"Objects": [{"Key": k} for k in chunk], "Quiet": True},
         )
-        errors = resp.get("Errors") or []
-        for err in errors:
-            logger.warning("r2 delete_objects 오류 key=%s code=%s", err.get("Key"), err.get("Code"))
-        deleted += len(chunk) - len(errors)
-    logger.info("r2 delete_objects ok: bucket=%s %d/%d", bucket, deleted, len(keys))
-    return deleted
+        for err in resp.get("Errors") or []:
+            failed.append(str(err.get("Key")))
+            codes.add(str(err.get("Code")))
+    if failed:
+        logger.warning("r2 delete_objects 부분 실패: bucket=%s %d/%d codes=%s",
+                       bucket, len(failed), len(keys), sorted(codes))
+    else:
+        logger.info("r2 delete_objects ok: bucket=%s %d건", bucket, len(keys))
+    return failed
 
 
 _MISSING_CODES = frozenset({"404", "NoSuchKey", "NotFound"})

@@ -384,6 +384,38 @@ def test_delete_clip_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
     assert res.status_code == 204
 
 
+def test_delete_clip_r2_failure_is_502_and_keeps_row(
+    app_client: TestClient, fake_sb: MagicMock, monkeypatch
+) -> None:
+    """R2 삭제 실패면 DB 행을 지우지 않고 502 — lifecycle 이 없어 고아가 영구 잔존·cron 이 되살리던 것(2026-11-05)."""
+    from botocore.exceptions import ClientError
+
+    from backend.routers import clips as clips_router
+
+    def _boom(key: str) -> None:
+        raise ClientError({"Error": {"Code": "InternalError", "Message": "x"}}, "DeleteObject")
+
+    monkeypatch.setattr(clips_router, "delete_object", _boom)
+    select_chain = MagicMock()
+    select_chain.execute.return_value.data = [{
+        "id": CLIP_ID, "camera_id": CAMERA_UUID, "owner_id": TEST_USER_ID,
+        "r2_key": f"test/{CAMERA_ID_TEXT}/2026-05-27/120000_{CLIP_ID}.mp4", "thumbnail_key": None,
+    }]
+    tables: list[MagicMock] = []
+
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        t.select.return_value.eq.return_value.eq.return_value.limit.return_value = select_chain
+        tables.append(t)
+        return t
+
+    fake_sb.table.side_effect = _table
+
+    res = app_client.delete(f"/clips/{CLIP_ID}")
+    assert res.status_code == 502
+    assert all(not t.delete.called for t in tables)
+
+
 def test_delete_clip_not_found_in_db(
     app_client: TestClient, fake_sb: MagicMock
 ) -> None:

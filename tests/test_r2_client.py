@@ -89,7 +89,7 @@ def test_delete_object_calls_client(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_delete_objects_batches_and_counts_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-    """1000개 단위로 DeleteObjects 호출, Errors 는 삭제 수에서 뺀다 (cameras DELETE 용, 2026-11-04)."""
+    """1000개 단위로 DeleteObjects 호출, Errors 의 키를 실패 목록으로 돌려준다 (cameras DELETE 용, 2026-11-04)."""
     calls: list[dict] = []
 
     class _FakeClient:
@@ -103,10 +103,10 @@ def test_delete_objects_batches_and_counts_errors(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(r2_client, "get_r2_client", lambda: _FakeClient())
     keys = [f"terra-clips/clips/cam/2026-11-01/{i:06d}_x.mp4" for i in range(1500)]
 
-    assert r2_client.delete_objects(keys) == 1499
+    assert r2_client.delete_objects(keys) == [keys[1000]]   # 실패 키만 돌려준다
     assert [len(c["Delete"]["Objects"]) for c in calls] == [1000, 500]
     assert all(c["Bucket"] == "test-bucket" and c["Delete"]["Quiet"] is True for c in calls)
-    assert r2_client.delete_objects([]) == 0 and len(calls) == 2
+    assert r2_client.delete_objects([]) == [] and len(calls) == 2
 
 
 # ---------- head_object_size (Stage L 녹화 complete 용) ----------

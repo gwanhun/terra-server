@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.conftest import TEST_USER_ID
@@ -313,7 +314,7 @@ def test_delete_camera_removes_r2_objects(
     from backend.routers import cameras as cameras_router
 
     deleted: list[list[str]] = []
-    monkeypatch.setattr(cameras_router, "delete_objects", lambda keys: deleted.append(list(keys)) or len(keys))
+    monkeypatch.setattr(cameras_router, "delete_objects", lambda keys: deleted.append(list(keys)) or [])
     _setup_delete_chains(fake_sb, [
         {"r2_key": "terra-clips/clips/p4cam-aabbccdd/2026-11-01/120000_a.mp4",
          "thumbnail_key": "terra-clips/clips/p4cam-aabbccdd/2026-11-01/120000_a.jpg"},
@@ -333,16 +334,19 @@ def test_delete_camera_removes_r2_objects(
     assert ("camera_id", CAMERA_UUID) in eq_calls
 
 
+@pytest.mark.parametrize("exc_factory", [
+    lambda: __import__("botocore.exceptions", fromlist=["ClientError"]).ClientError(
+        {"Error": {"Code": "AccessDenied", "Message": "x"}}, "DeleteObjects"),
+    lambda: __import__("backend.r2_client", fromlist=["R2NotConfigured"]).R2NotConfigured("R2 env 없음"),
+])
 def test_delete_camera_r2_failure_still_204(
-    app_client: TestClient, fake_sb: MagicMock, monkeypatch
+    app_client: TestClient, fake_sb: MagicMock, monkeypatch, exc_factory
 ) -> None:
-    """R2 삭제가 실패해도 응답은 이미 204 — 경고 로그만(사용자 관점 삭제 우선)."""
-    from botocore.exceptions import ClientError
-
+    """R2 삭제가 실패해도 응답은 이미 204 — boto 오류든 R2NotConfigured(RuntimeError) 든 경고 로그만."""
     from backend.routers import cameras as cameras_router
 
-    def _boom(keys: list[str]) -> int:
-        raise ClientError({"Error": {"Code": "AccessDenied", "Message": "x"}}, "DeleteObjects")
+    def _boom(keys: list[str]) -> list[str]:
+        raise exc_factory()
 
     monkeypatch.setattr(cameras_router, "delete_objects", _boom)
     _setup_delete_chains(fake_sb, [{"r2_key": "terra-clips/clips/p4cam-aabbccdd/2026-11-01/120000_a.mp4",

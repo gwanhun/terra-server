@@ -98,11 +98,12 @@ ESP32-CAM 모션 영상 저장용. S3 호환 API.
 
 #### 권장 R2 셋업
 
-1. Cloudflare 대시보드 > R2 > Create bucket: `terra-clips`
+1. Cloudflare 대시보드 > R2 > 버킷 = `R2_BUCKET`. **운영은 petcam-lab 과 공유하는 `petcam-clips`** 이고
+   terra 객체는 키 prefix `terra-clips/` 로 구분한다(`.env.example` 의 `terra-clips` 는 단독 버킷 예시).
 2. **버킷 비공개 유지** (Public Access OFF). 모든 접근은 presigned URL.
 3. Manage R2 API Tokens > Create API token
    - Permissions: Object Read & Write
-   - Specify bucket: `terra-clips` (보안 위해 한정)
+   - Specify bucket: `R2_BUCKET` 하나로 한정 (보안)
 4. 토큰 + Access Key ID + Secret 발급 → `.env` 에 기입
 5. ~~Lifecycle rule 추가 (Stage F2): `clips/` 30일 삭제~~ — **적용하지 않았고, 하면 안 된다**(2026-11-04).
    클립 보존은 사실상 무기한으로 운영돼 왔고 `motion_clips` 가 가리키는 정상 영상이 함께 사라진다.

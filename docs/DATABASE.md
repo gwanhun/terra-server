@@ -105,8 +105,9 @@ auth.users (Supabase Auth)
 ## 영상 보관 정책
 
 - **`motion_clips` 메타**: 영구 보관 (R2 키만 저장, 가벼움)
-- **R2 영상 파일**: **30일 lifecycle rule 로 자동 삭제** (Stage F2)
-  - DB row 도 동기 삭제 (cron 또는 r2 lifecycle 이벤트 webhook)
+- **R2 영상 파일**: 사실상 무기한 보관 — lifecycle 규칙 **없음**(2026-11-04 확정, docs/ENV.md 권장 셋업 5 참조).
+  삭제는 DELETE /clips(영상+썸네일 먼저, 실패 시 502) · DELETE /cameras(응답 뒤 일괄 삭제) 가 직접 한다.
+  고아(R2 에만 있는 mp4)는 `scripts/reconcile_r2_orphans.py` cron 이 등록으로 흡수(docs/OPERATIONS.md 1-2).
 - 사용자가 보존하고 싶은 클립은 별도 "favorite" 플래그 추가 (Stage F3)
 - **`live_recordings`**(2026-10-20): 무기한(사용자가 지울 때까지). R2 경로 `terra-clips/recordings/` 는 30일 lifecycle 대상이 **아니어야** 한다(배포 전 대시보드 확인 — 버킷을 petcam-lab 과 공유)
 
