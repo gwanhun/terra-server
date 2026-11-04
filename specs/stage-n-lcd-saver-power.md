@@ -215,8 +215,10 @@ APP_LCD_IMG_FLASH_ADDR (nano/supermini 0x3E0000, hub 0x830000) , APP_LCD_IMG_FLA
   override   = NVS override_until 이 있고 now < override_until  (경계 지나면 NVS 에서 지움)
   effective  = override ? override_on : (quiet 설정 ? !in_quiet : lcd_power)
   ```
-  `lcd_power` 수신 시: quiet 설정돼 있고 시각 유효 → `override_on = on`, `override_until = 다음 경계` 를 NVS 에 저장(`pwr` 는 그대로 둠).
-  quiet 없음 또는 시각 미동기 → 현행(`pwr` 저장, sticky).
+  `lcd_power` 수신 시: quiet 설정돼 있고 시각 유효 → `override_on = on`, `override_until = 다음 경계` 를 NVS `ovr` 에 저장.
+  `pwr` 도 **항상** 같이 저장(소등 창을 지우면 마지막 수동 의도로 돌아가게). quiet 없음 또는 시각 미동기 → 현행(sticky).
+  `lcd_quiet`/`lcd_quiet_clear` 는 override 를 지운다(새 예약 = 이전 수동 조작 무효). 경계를 지나면 tick 이 지운다(NVS 삭제 1회).
+  시각 미동기면 override 판정도 보류 → fail-safe ON. (구현 2026-11-04, terra-iot-nano `feat/lcd-override`)
 - telemetry 에 `lcd: {on: effective, override_until: ISO|null, image: sha8|null}` 매 건(3초). `image` 는 `lcd_image_store` 의
   present && NVS 메타 sha8, 아니면 null(다운로드 중 잠깐 null — 서버가 진행 중 명령을 보고 거른다).
 - `capabilities.lcd_override: true` 추가. ack 는 변화 없음(`LCD_ON`/`LCD_OFF`).
@@ -229,7 +231,7 @@ APP_LCD_IMG_FLASH_ADDR (nano/supermini 0x3E0000, hub 0x830000) , APP_LCD_IMG_FLA
 
 - [x] **backend** 컬럼·동기화·응답·문서 (2026-11-04)
 - [x] **마이그레이션 적용** `2026-11-04_devices_lcd_screen_state.sql` (2026-11-04, 코드 배포 전)
-- [ ] **firmware(nano)** override 규칙·NVS·telemetry `lcd` 블록·`capabilities.lcd_override`
+- [ ] **firmware(nano)** override 규칙·NVS·telemetry `lcd` 블록·`capabilities.lcd_override` — 코드 작성 완료(`feat/lcd-override`), 빌드·플래시·실기 전
 - [ ] 디자이너 결론("낮에 끈 경우") 반영
 - [ ] E2E: 21시 켬→08시 켜져 있음 / 21시 켬→22시 끔→08시 켜짐 / 23시 끔→변화 없음→08시 켜짐 / 재부팅 후 override 유지 / `lcd_screen_on` Realtime 반영 / erase_flash 뒤 `lcd_image_key` 비워짐
 
