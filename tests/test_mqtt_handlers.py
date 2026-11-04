@@ -1131,6 +1131,92 @@ def test_device_telemetry_syncs_capabilities_when_changed(fake_sb: MagicMock) ->
     assert len([u for u in updates if "last_seen_at" in u]) == 2
 
 
+# ---------- Stage N-4: telemetry `lcd` 블록 → devices.lcd_screen_on / lcd_override_until ----------
+
+def _device_lcd_table_factory(updates: list[dict], *, db_lcd: dict, inflight: bool = False) -> "callable":
+    """devices.select → lcd 상태 행, devices.update 캡처, commands.select(진행 중 lcd_image) 스텁."""
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        if name == "devices":
+            t.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+                {"id": DEVICE_UUID, "capabilities": None, **db_lcd}]
+            t._upd = MagicMock()
+            t._upd.eq.return_value.execute.return_value.data = [{"id": DEVICE_UUID}]
+            t.update.side_effect = lambda p: updates.append(p) or t._upd
+        elif name == "telemetry":
+            t.insert.return_value.execute.return_value.data = [{"device_id": DEVICE_UUID}]
+        elif name == "commands":
+            (t.select.return_value.eq.return_value.eq.return_value.in_.return_value.limit.return_value
+             .execute.return_value.data) = [{"id": "cmd-img"}] if inflight else []
+        return t
+    return _table
+
+
+def _lcd_writes(updates: list[dict]) -> list[dict]:
+    return [u for u in updates if "lcd_screen_on" in u or "lcd_override_until" in u or "lcd_image_key" in u]
+
+
+def test_device_telemetry_lcd_block_syncs_when_changed(fake_sb: MagicMock) -> None:
+    """lcd.on / override_until 이 DB 와 다르면 1회 반영, 같은 값 반복은 생략(3초마다 쓰지 않는다)."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _device_lcd_table_factory(
+        updates, db_lcd={"lcd_screen_on": None, "lcd_override_until": None, "lcd_image_key": None})
+    lcd = {"on": False, "override_until": "2026-11-04T20:00:00+09:00", "image": None}
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 1, "lcd": lcd})
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 2, "lcd": dict(lcd)})
+    assert _lcd_writes(updates) == [{"lcd_screen_on": False, "lcd_override_until": "2026-11-04T11:00:00+00:00"}]
+    # 경계가 지나 기기가 켜지고 override 가 풀림 → 다시 1회
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 3, "lcd": {"on": True, "override_until": None, "image": None}})
+    assert _lcd_writes(updates)[-1] == {"lcd_screen_on": True, "lcd_override_until": None}
+
+
+def test_device_telemetry_lcd_block_same_as_db_not_written(fake_sb: MagicMock) -> None:
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _device_lcd_table_factory(
+        updates, db_lcd={"lcd_screen_on": True, "lcd_override_until": "2026-11-04T11:00:00+00:00",
+                         "lcd_image_key": f"lcd/{DEVICE_UUID}/abababab"})
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 1, "lcd": {
+        "on": True, "override_until": "2026-11-04T20:00:00+09:00", "image": "abababab"}})   # 같은 시각, 다른 표기
+    assert _lcd_writes(updates) == []
+
+
+def test_device_telemetry_lcd_image_none_clears_stale_key(fake_sb: MagicMock) -> None:
+    """기기가 사진 없음(image: null)을 보고하고 진행 중 lcd_image 명령도 없으면 서버 key 를 비운다(erase_flash 등)."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _device_lcd_table_factory(
+        updates, db_lcd={"lcd_screen_on": True, "lcd_override_until": None,
+                         "lcd_image_key": f"lcd/{DEVICE_UUID}/abababab"})
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 1, "lcd": {"on": True, "override_until": None, "image": None}})
+    w = _lcd_writes(updates)
+    assert len(w) == 1 and w[0]["lcd_image_key"] is None and w[0]["lcd_image_set_at"] is None and w[0]["lcd_updated_at"]
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 2, "lcd": {"on": True, "override_until": None, "image": None}})
+    assert len(_lcd_writes(updates)) == 1                                   # 비운 뒤엔 반복 안 함
+
+
+def test_device_telemetry_lcd_image_none_keeps_key_while_download_inflight(fake_sb: MagicMock) -> None:
+    """다운로드 중엔 기기가 잠깐 사진 없음을 보고한다 — pending/sent lcd_image 가 있으면 key 를 건드리지 않는다."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _device_lcd_table_factory(
+        updates, db_lcd={"lcd_screen_on": True, "lcd_override_until": None,
+                         "lcd_image_key": f"lcd/{DEVICE_UUID}/abababab"}, inflight=True)
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 1, "lcd": {"on": True, "override_until": None, "image": None}})
+    assert _lcd_writes(updates) == []
+
+
+def test_device_telemetry_lcd_block_without_image_key_or_invalid_ignored(fake_sb: MagicMock) -> None:
+    """image 키가 없는 블록(구 블록)은 사진 상태를 모름으로 두고, on 이 bool 이 아니거나 시각이 깨진 블록은 통째로 무시."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _device_lcd_table_factory(
+        updates, db_lcd={"lcd_screen_on": None, "lcd_override_until": None,
+                         "lcd_image_key": f"lcd/{DEVICE_UUID}/abababab"})
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 1, "lcd": {"on": True}})
+    assert _lcd_writes(updates) == [{"lcd_screen_on": True}]                # key 는 그대로
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 2, "lcd": {"on": "yes"}})
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 3, "lcd": {"on": False, "override_until": "어제"}})
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 4, "lcd": "on"})
+    assert len(_lcd_writes(updates)) == 1
+
+
 def test_device_telemetry_capabilities_same_as_db_not_written(fake_sb: MagicMock) -> None:
     updates: list[dict] = []
     same = {"board": "mosfet", "led_dimmable": True}

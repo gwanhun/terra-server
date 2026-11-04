@@ -991,7 +991,7 @@ GET /devices/{device_uuid}/commands/{command_id}
 
 | 메서드 | 경로 | body | 명령 |
 |---|---|---|---|
-| GET | `/devices/{id}/lcd` | — | 확정값 `{device_id, lcd_text, lcd_text_updated_at, lcd_power, lcd_quiet_start, lcd_quiet_end, lcd_saver, lcd_image_key, lcd_image_set_at, lcd_updated_at, preview_url}` — `preview_url` 은 확정된 사진의 PNG presigned(있을 때) |
+| GET | `/devices/{id}/lcd` | — | 확정값 `{device_id, lcd_text, lcd_text_updated_at, lcd_power, lcd_quiet_start, lcd_quiet_end, lcd_saver, lcd_image_key, lcd_image_set_at, lcd_updated_at, lcd_screen_on, lcd_override_until, preview_url}` — `preview_url` 은 확정된 사진의 PNG presigned(있을 때). `lcd_screen_on`/`lcd_override_until`(2026-11-04) 은 기기가 telemetry 로 보고한 **실제** 화면 상태·override 끝 시각(`capabilities.lcd_override` 펌웨어만, 구 펌웨어 NULL) |
 | PUT | `/devices/{id}/lcd/power` | `{on: bool}` | `lcd_power`. off 는 소등 시간과 무관하게 유지(sticky), on 으로만 풀림 |
 | PUT | `/devices/{id}/lcd/quiet` | `{start:"23:00", end:"07:00"}` (KST `HH:MM`) | `lcd_quiet`. start>end 면 자정 넘는 구간. start==end 400 |
 | DELETE | `/devices/{id}/lcd/quiet` | — | `lcd_quiet_clear` |
@@ -1122,6 +1122,7 @@ supabase
 | 2026-05-27 | 0.2.0 | 카메라 페어링 흐름 RPi/QR 기반으로 변경 (prepare-pair + pair_token) |
 | 2026-05-27 | 0.3.0 | 메인 카메라 워커 ESP32-P4 로 변경 (BLE 페어링), Stage G(라이브 스트리밍) 엔드포인트 추가 |
 | 2026-05-27 | 0.4.0 | **Stage F 구현 완료** — enclosures/cameras/clips 라우터 + R2 presigned URL + Camera Token Bearer 인증 (44 tests passing). Swagger UI 메타데이터 보강 (`/docs` 즉시 사용 가능) |
+| 2026-11-04 | 0.15.0 | **LCD 실제 화면 상태(Stage N-4 서버 선행)** — `GET /devices/{id}/lcd` 에 `lcd_screen_on`·`lcd_override_until` 추가. 펌웨어가 telemetry `lcd` 블록 `{on, override_until, image}` 으로 보고하고 브리지가 바뀔 때만 `devices` 에 반영. `image: null` 이면 진행 중 `lcd_image` 명령이 없을 때 `lcd_image_key` 정리. `PUT …/lcd/power` 형식 불변 — override 규칙(소등 중 수동 조작은 다음 예약 경계까지)은 `capabilities.lcd_override` 펌웨어에서만, 구 펌웨어는 sticky 그대로 |
 | 2026-11-04 | 0.14.1 | **적정 온도 디폴트 상한 26 → 27℃** — `device_settings.target_temp_max` 가 없는(NULL·행 없음) 기기의 v4 판정 디폴트. 하한 18℃·습도 40~80% 그대로, 사용자가 저장한 값은 그대로. API 형식 변화 없음. 일일·주간 분석은 알림에 기록된 `context.threshold` 를 쓰므로 바뀐 뒤 열린 알림부터 27 기준 |
 | 2026-11-03 | 0.14.0 | **Stage N LCD** — `GET /devices/{id}/lcd`, `PUT …/lcd/power`, `PUT/DELETE …/lcd/quiet`, `PUT …/lcd/saver`, `POST/DELETE …/lcd/image`(multipart → R2, `preview_url`), `GET …/lcd/image/bin`(기기 토큰), `capabilities.lcd_saver` 게이트, `devices.lcd_*` ACK 확정 (§4.14) |
 | 2026-11-02 | 0.13.0 | **목표 온습도 MIN/MAX 검증을 기획 v4 범위로** — `PATCH /devices/{id}/settings` 의 `target_temp_min/max` 15~29℃·0.5 단위, `target_humid_min/max` 35~85%·5 단위, MIN < MAX(병합 결과, 같으면 400). 요청에 든 필드만 범위 검사(구 범위 저장값이 있어도 다른 필드 수정 가능). `target_temp_c`·`target_humidity_pct` 는 기존 -20~60 / 0~100 그대로. null = 미설정(판정은 디폴트 18~26℃ / 40~80%) |

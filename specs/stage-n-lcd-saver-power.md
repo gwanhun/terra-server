@@ -200,6 +200,39 @@ APP_LCD_IMG_FLASH_ADDR (nano/supermini 0x3E0000, hub 0x830000) , APP_LCD_IMG_FLA
 ### N-3 (선택) — 슬라이드쇼
 - 128KB = 3장. `slot` 0~2 로 저장, `lcd_saver.slots:[0,1,2]` 순환. 사용자 요구가 실제로 나오면
 
+### N-4 — 소등 중 수동 조작 override + 실제 화면 상태 보고 (앱팀 요청서 2026-11-03)
+
+요청: tera-ai-flutter `docs/handoffs/2026-11-03-lcd-quiet-manual-override-request.md`. 디자인은 "예약 중에도 켤 수 있고,
+21시에 켰다가 다시 껐다면 8시에 다시 켜짐". 합의 규칙: **소등 시간대가 설정돼 있으면 사용자의 켜기/끄기는 다음 예약 경계
+(start/end 중 먼저 오는 것)까지만 우선, 경계를 지나면 예약 규칙. 예약이 없으면 sticky(현행)**. 재부팅해도 유지.
+"낮(예약 밖)에 끈 것을 아침 경계에서 켤지"는 디자이너 확인 중 — 기본은 표대로(20:00 경계에서 예약 규칙 → 08:00 켜짐).
+허브는 2026-11-03 개발 중단 → **nano 만**.
+
+펌웨어(nano, `lcd_power.c`):
+- `effective_on`:
+  ```
+  in_quiet   = quiet 설정 && 시각 유효 && now ∈ [start, end)
+  override   = NVS override_until 이 있고 now < override_until  (경계 지나면 NVS 에서 지움)
+  effective  = override ? override_on : (quiet 설정 ? !in_quiet : lcd_power)
+  ```
+  `lcd_power` 수신 시: quiet 설정돼 있고 시각 유효 → `override_on = on`, `override_until = 다음 경계` 를 NVS 에 저장(`pwr` 는 그대로 둠).
+  quiet 없음 또는 시각 미동기 → 현행(`pwr` 저장, sticky).
+- telemetry 에 `lcd: {on: effective, override_until: ISO|null, image: sha8|null}` 매 건(3초). `image` 는 `lcd_image_store` 의
+  present && NVS 메타 sha8, 아니면 null(다운로드 중 잠깐 null — 서버가 진행 중 명령을 보고 거른다).
+- `capabilities.lcd_override: true` 추가. ack 는 변화 없음(`LCD_ON`/`LCD_OFF`).
+
+서버(2026-11-04 선행, PR feat/lcd-screen-state):
+- `migrations/2026-11-04_devices_lcd_screen_state.sql`: `lcd_screen_on BOOLEAN`, `lcd_override_until TIMESTAMPTZ` (NULL = 구 펌웨어).
+- `handlers._sync_device_lcd_state`: telemetry `lcd` 블록 → 바뀔 때만 UPDATE(capabilities 와 같은 프로세스 캐시). `image: null` 이고
+  서버 `lcd_image_key` 가 있고 pending/sent `lcd_image` 가 없으면 key·set_at NULL. 컬럼 누락은 `_missing_columns` 로 10분 보류.
+- `GET /lcd` 응답에 두 필드. `PUT /lcd/power` 형식 불변.
+
+- [x] **backend** 컬럼·동기화·응답·문서 (2026-11-04)
+- [x] **마이그레이션 적용** `2026-11-04_devices_lcd_screen_state.sql` (2026-11-04, 코드 배포 전)
+- [ ] **firmware(nano)** override 규칙·NVS·telemetry `lcd` 블록·`capabilities.lcd_override`
+- [ ] 디자이너 결론("낮에 끈 경우") 반영
+- [ ] E2E: 21시 켬→08시 켜져 있음 / 21시 켬→22시 끔→08시 켜짐 / 23시 끔→변화 없음→08시 켜짐 / 재부팅 후 override 유지 / `lcd_screen_on` Realtime 반영 / erase_flash 뒤 `lcd_image_key` 비워짐
+
 ## 설계 메모
 
 - **왜 교대(rotate)지 오버레이가 아닌가**: 사진 위에 온습도 글자를 겹치면 둘 다 망가짐. 전체 화면 교대가 단순·명확. 나중에 "사진 위 작은 온도" 가 필요하면 IMAGE 화면에 하단 띠를 옵션으로 추가

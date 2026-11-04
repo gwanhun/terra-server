@@ -303,6 +303,7 @@ def reset_device_cache() -> None:
     _hw_id_conflict.clear()
     _missing_columns.clear()
     _device_caps_cache.clear()
+    _device_lcd_cache.clear()
     _uptime_prev.clear()
     from backend import schedule_restore  # 지연 import (schedule_restore → command_service, handlers 미참조)
     schedule_restore.reset()
@@ -427,6 +428,114 @@ def _sync_device_capabilities(sb: Client, device_uuid: str, label: str, caps: di
         return
     _device_caps_cache[device_uuid] = caps
     logger.info("device %s: capabilities 갱신 %s → %s", label, known, caps)
+
+
+# ---------- LCD 실제 화면 상태 (Stage N-4, telemetry `lcd` 블록) ----------
+#
+# lcd_power 는 "사용자가 마지막으로 보낸 전원 설정"일 뿐이라, 소등 시간대·override(소등 중 수동 조작은
+# 다음 예약 경계까지만 유효) 가 겹치면 화면이 실제로 켜져 있는지 서버가 모른다. 앱 스위치가 실제 상태를
+# 그리려면 기기가 보고해야 한다(앱팀 요청서 2026-11-03 §3-3). 경계에서 기기가 스스로 바꾸는 상태라 ack 가
+# 없고, 그래서 telemetry(3초)에 싣는다. 쓰기는 capabilities 와 같이 "마지막으로 DB 와 일치 확인한 값"과
+# 다를 때만 — 3초마다 UPDATE 하지 않는다.
+#
+# 블록: {"on": bool, "override_until": ISO8601|null, "image": sha8|null}
+#   - image = 플래시에 있는 사진의 sha8(NVS 메타). null = 사진 없음. 키가 없으면 "모름"(구 블록) → 안 건드림.
+#     null 인데 서버 lcd_image_key 가 있고 진행 중(pending/sent) lcd_image 명령도 없으면 서버 key 를 비운다 —
+#     erase_flash·NVS 초기화로 어긋난 상태 복구(다운로드 중엔 기기가 잠깐 null 을 보고하므로 진행 중 명령을 본다).
+_device_lcd_cache: dict[str, tuple[Any, Any, Any]] = {}   # device_uuid → (screen_on, override_until(UTC iso), image_key)
+_LCD_IMAGE_SHA8_RE = re.compile(r"^[0-9a-f]{8}$")
+_LCD_IMAGE_UNKNOWN = object()
+
+
+def _norm_ts(v: Any) -> str | None:
+    """ISO8601 문자열 → UTC isoformat(비교용). None/빈 값은 None, 못 읽으면 ValueError."""
+    if v is None or v == "":
+        return None
+    if not isinstance(v, str):
+        raise ValueError("timestamp 는 문자열")
+    return datetime.fromisoformat(v.replace("Z", "+00:00")).astimezone(timezone.utc).isoformat()
+
+
+def _parse_lcd_block(lcd: dict[str, Any]) -> tuple[bool, str | None, Any] | None:
+    """telemetry `lcd` 블록 검증. 깨졌으면 None(무시). image 는 sha8 / None(없음) / _LCD_IMAGE_UNKNOWN(키 없음·형식 오류)."""
+    on = lcd.get("on")
+    if not isinstance(on, bool):
+        return None
+    try:
+        until = _norm_ts(lcd.get("override_until"))
+    except ValueError:
+        return None
+    if "image" not in lcd:
+        image: Any = _LCD_IMAGE_UNKNOWN
+    else:
+        image = lcd.get("image")
+        if image is not None and not (isinstance(image, str) and _LCD_IMAGE_SHA8_RE.match(image)):
+            image = _LCD_IMAGE_UNKNOWN
+    return on, until, image
+
+
+def _lcd_image_inflight(sb: Client, device_uuid: str) -> bool:
+    """아직 끝나지 않은 lcd_image 명령이 있나. 조회 실패면 True(있다고 보고 key 를 건드리지 않는다)."""
+    try:
+        res = (
+            sb.table("commands").select("id")
+            .eq("device_id", device_uuid).eq("action", "lcd_image")
+            .in_("status", ["pending", "sent"]).limit(1).execute()
+        )
+        return bool(res.data)
+    except Exception:  # noqa: BLE001
+        logger.exception("lcd_image 진행 중 명령 조회 실패 (device=%s)", device_uuid)
+        return True
+
+
+def _sync_device_lcd_state(sb: Client, device_uuid: str, label: str, lcd: dict[str, Any]) -> None:
+    """telemetry `lcd` 블록 → devices.lcd_screen_on / lcd_override_until (+ 사진 없음이면 lcd_image_key 정리).
+    바뀔 때만 UPDATE. 실패는 로그만. 컬럼 누락(마이그레이션 전)은 _missing_columns 로 10분간 그 컬럼만 뺀다."""
+    parsed = _parse_lcd_block(lcd)
+    if parsed is None:
+        return
+    on, until, image = parsed
+    known = _device_lcd_cache.get(device_uuid, _MISSING)
+    if known is _MISSING:
+        try:
+            res = (
+                sb.table("devices").select("lcd_screen_on, lcd_override_until, lcd_image_key")
+                .eq("id", device_uuid).limit(1).execute()
+            )
+            rows = res.data if isinstance(res.data, list) else []
+            row = rows[0] if rows and isinstance(rows[0], dict) else {}
+            known = (row.get("lcd_screen_on"), _norm_ts(row.get("lcd_override_until")), row.get("lcd_image_key"))
+        except Exception:  # noqa: BLE001
+            logger.exception("devices lcd 상태 조회 실패 (device=%s)", label)
+            return
+    k_on, k_until, k_key = known
+    now = time.monotonic()
+    update: dict[str, Any] = {}
+    if k_on != on and _missing_columns.get("devices.lcd_screen_on", 0.0) <= now:
+        update["lcd_screen_on"] = on
+    if k_until != until and _missing_columns.get("devices.lcd_override_until", 0.0) <= now:
+        update["lcd_override_until"] = until
+    new_key = k_key
+    if image is None and k_key and not _lcd_image_inflight(sb, device_uuid):
+        update.update({"lcd_image_key": None, "lcd_image_set_at": None, "lcd_updated_at": _now_iso()})
+        new_key = None
+        logger.info("device %s: 기기 사진 없음 보고 → lcd_image_key %s 비움", label, k_key)
+    if update:
+        try:
+            sb.table("devices").update(update).eq("id", device_uuid).execute()
+        except APIError as exc:
+            col = _missing_column(exc)
+            if col in update:
+                _missing_columns[f"devices.{col}"] = now + MISSING_COLUMN_TTL_SEC
+                logger.warning("devices.%s 컬럼 없음 — 마이그레이션 누락? %d초간 lcd 상태 반영에서 빼고 씀 (%s)",
+                               col, MISSING_COLUMN_TTL_SEC, label)
+            else:
+                logger.exception("devices lcd 상태 UPDATE 거부 (device=%s)", label)
+            return
+        except Exception:  # noqa: BLE001
+            logger.exception("devices lcd 상태 UPDATE 실패 (device=%s)", label)
+            return
+    _device_lcd_cache[device_uuid] = (on, until, new_key)
 
 
 def _hw_id_holders(sb: Client, table: str, id_col: str, entity_uuid: str, hw_id: str) -> list[str]:
@@ -1030,6 +1139,12 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
     caps = payload.get("capabilities")
     if isinstance(caps, dict):
         _sync_device_capabilities(sb, device_uuid, device_id_text, caps)
+
+    # LCD 실제 화면 상태(Stage N-4, 2026-11-04): 펌웨어가 telemetry 에 `lcd` 블록을 실으면 devices.lcd_screen_on /
+    # lcd_override_until 에 바뀔 때만 반영. 구 펌웨어(키 없음)는 아무것도 안 한다. 이유는 _sync_device_lcd_state 참고.
+    lcd = payload.get("lcd")
+    if isinstance(lcd, dict):
+        _sync_device_lcd_state(sb, device_uuid, device_id_text, lcd)
 
     # 임계값 평가 → alerts INSERT/RESOLVE (Stage D). 실패해도 telemetry 저장은 성공.
     # 임포트는 함수 안에서 — 순환참조 회피 (alerts.py 도 device_meta 를 함수 안에서만 임포트).

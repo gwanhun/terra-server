@@ -65,7 +65,8 @@
   "free_heap": 190000,
   "reset": "SW:mqtt_reboot",
   "wifi_rssi": -40,
-  "temp_offset_c": -1.5
+  "temp_offset_c": -1.5,
+  "lcd": { "on": false, "override_until": "2026-11-04T20:00:00+09:00", "image": "3f9a1c2e" }
 }
 ```
 
@@ -78,6 +79,11 @@
   다를 때만 UPDATE(프로세스 캐시). 베타 기기는 페어링을 호출하지 않아 이 경로가 유일하다. `mist_max_ms` = 분무 1회 상한(ms)
   Terra Hub(2026-10-06+)는 `hub: true` 와 `lcd: true|false`(ST7735 빌드 여부 — false 면 `lcd_*` 가 `unknown_action`)를 더 싣는다
   `lcd_saver: true` (2026-10-28+, nano·supermini·hub LCD 빌드) = Stage N `lcd_power/lcd_quiet/lcd_saver/lcd_image` 지원
+- `lcd` (2026-11-04+, `capabilities.lcd_override` 펌웨어, Stage N-4): LCD **실제** 화면 상태. `on` = 지금 화면이 켜져 있는지(전원 설정·소등
+  시간대·override 를 모두 적용한 결과), `override_until` = 소등 중 수동 조작이 유지되는 끝 시각(다음 예약 경계, ISO8601, 없으면 null),
+  `image` = 플래시에 있는 사진의 sha8(없으면 null). 서버는 `devices.lcd_screen_on`/`lcd_override_until` 에 **바뀔 때만** 반영하고,
+  `image: null` 인데 서버 `lcd_image_key` 가 있고 진행 중 `lcd_image` 명령이 없으면 key 를 비운다(erase_flash 로 어긋난 상태 복구).
+  매 telemetry 에 실어도 된다. 구 펌웨어(키 없음)는 아무것도 안 함
 - `hw_id` (2026-09-21+): 보드 불변 하드웨어 ID(efuse base MAC 12자리 hex). 페어링에서 이미
   저장되지만, 구 펌웨어로 등록돼 `devices.hw_id` 가 NULL 인 행은 새 펌웨어의 첫 telemetry 에서
   채워진다. 디바이스 telemetry 는 3초 주기라 프로세스당 1회만 UPDATE 한다. 용도는 **이미 생겨버린
@@ -340,4 +346,5 @@ topic read  esp32/picam-b2c3d4e5/command
 | 2026-10-01 | 0.6.2 | IoT telemetry `temp_offset_c`(지금 적용 중인 온도 보정) → `devices.temp_offset_c`. 콘솔 온도 셀·보정 입력칸에 현재값 표시, 구 펌웨어는 commands 마지막 `set_temp_offset` 값으로 폴백 |
 | 2026-10-06 | 0.7.0 | **Terra Hub**(`p4hub-`): 카메라+기기 통합 보드. 한 계정·같은 토픽, payload 모양(`dht22_a`)으로 기기/카메라 경로 분기, ack 는 commands 매칭 여부로 분기. 기기 ack 에 `state`·`ts` 포함(terra-iot 와 동일) |
 | 2026-10-07 | 0.7.1 | **Stage J OTA**: `ota_prepare` / `ota_apply` action(카메라·기기 공통), §3-b `ota` 블록 ack, IoT telemetry `fw` → `devices.firmware_ver`, `capabilities.ota` 게이트 |
+| 2026-11-04 | 0.8.1 | IoT telemetry `lcd` 블록 `{on, override_until, image}`(Stage N-4, `capabilities.lcd_override` 펌웨어) → `devices.lcd_screen_on`/`lcd_override_until`, 사진 없음 보고 시 `lcd_image_key` 정리 |
 | 2026-10-28 | 0.8.0 | **Stage N LCD**: `lcd_power` / `lcd_quiet(_clear)` / `lcd_saver` / `lcd_image(_clear)` action, `capabilities.lcd_saver` 게이트. `lcd_image` 는 HTTP 다운로드(기기 토큰) + 지연 ack |

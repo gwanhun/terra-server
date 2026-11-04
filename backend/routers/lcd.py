@@ -163,7 +163,7 @@ SAVER_SEC_MAX = 300
 # devices 에서 앱/콘솔에 돌려주는 LCD 상태 컬럼 (lcd_text 포함)
 _LCD_STATE_COLS = (
     "lcd_text, lcd_text_updated_at, lcd_power, lcd_quiet_start, lcd_quiet_end, "
-    "lcd_saver, lcd_image_key, lcd_image_set_at, lcd_updated_at"
+    "lcd_saver, lcd_image_key, lcd_image_set_at, lcd_updated_at, lcd_screen_on, lcd_override_until"
 )
 
 # R2 키: lcd/{device_uuid}/{sha8}.rgb565 (기기용 40KB) + .png (앱 미리보기). sha8 = RGB565 바이트의 sha256 앞 8자.
@@ -218,6 +218,10 @@ class LcdStateOut(BaseModel):
     lcd_image_key: str | None = None
     lcd_image_set_at: str | None = None
     lcd_updated_at: str | None = None
+    lcd_screen_on: bool | None = Field(
+        None, description="기기가 보고한 실제 화면 상태(telemetry lcd.on, 바뀔 때만 갱신). NULL=구 펌웨어·미보고. 오프라인이면 마지막 보고값")
+    lcd_override_until: str | None = Field(
+        None, description="소등 중 수동 조작이 유지되는 끝 시각(다음 예약 경계, 기기 보고). NULL=override 없음")
     preview_url: str | None = Field(None, description="확정된 사진의 미리보기 PNG presigned URL (있을 때)")
 
     model_config = ConfigDict(extra="ignore")
