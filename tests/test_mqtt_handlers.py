@@ -1778,6 +1778,28 @@ def test_handle_ack_lcd_image_ok_sets_key_without_r2(fake_sb: MagicMock, monkeyp
     assert img[0]["lcd_image_key"] == f"lcd/{DEVICE_UUID}/abababab" and img[0]["lcd_image_set_at"]
 
 
+@pytest.mark.parametrize("result", ["dl_connect", "dl_read", "http_404", "http_401", "sha_mismatch",
+                                    "flash_write", "no_mem", "some_new_failure"])
+def test_handle_ack_lcd_image_failed_after_erase_clears_key(fake_sb: MagicMock, result: str) -> None:
+    """erase 뒤 실패 → 기기엔 사진이 없다 → lcd_image_key/set_at NULL (앱이 옛 사진을 안 보여주게)."""
+    ups = _lcd_state_updates(fake_sb, "lcd_image", result, {"sha256": "ab" * 32})
+    assert len(ups) == 1
+    assert ups[0] == {"lcd_image_key": None, "lcd_image_set_at": None, "lcd_updated_at": ups[0]["lcd_updated_at"]}
+    assert ups[0]["lcd_updated_at"]
+
+
+@pytest.mark.parametrize("result", ["busy", "no_token", "bad_request", "unknown_action", "deferred"])
+def test_handle_ack_lcd_image_rejected_before_erase_keeps_key(fake_sb: MagicMock, result: str) -> None:
+    """erase 전에 거절된 result 는 옛 사진이 살아 있으니 서버 값도 그대로."""
+    assert not _lcd_state_updates(fake_sb, "lcd_image", result, {"sha256": "ab" * 32})
+
+
+def test_handle_ack_other_lcd_actions_failed_keep_state(fake_sb: MagicMock) -> None:
+    """lcd_image 외 명령의 실패는 기존대로 아무것도 안 바꾼다."""
+    assert not _lcd_state_updates(fake_sb, "lcd_power", "dl_connect", {"on": True})
+    assert not _lcd_state_updates(fake_sb, "lcd_image_clear", "flash_write", None)
+
+
 def test_handle_ack_lcd_image_clear_nulls_without_r2(fake_sb: MagicMock, monkeypatch) -> None:
     from backend import r2_client
     monkeypatch.setattr(r2_client, "delete_object",

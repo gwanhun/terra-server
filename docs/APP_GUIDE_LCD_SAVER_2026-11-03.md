@@ -122,6 +122,7 @@ Content-Type: image/jpeg
 | 공통 | — | `unknown_action`(구 펌웨어 — §1 게이트가 막아야 정상), `expired`(기기가 30초 넘게 오프라인), `no_ack`(서버가 30초 내 응답 못 받음), `device_offline` |
 
 - **확정값 갱신 시점** = `result == "ok"`. 그때 `devices.lcd_*` 가 바뀌고 Realtime 으로 온다. ok 가 아니면 서버 값은 그대로(화면도 안 바뀌었으니).
+  **예외(2026-11-03, 앱팀 요청)**: `lcd_image` 가 `dl_*`/`http_NNN`/`sha_mismatch`/`flash_write` 등으로 실패하면 기기는 이미 이전 사진을 지운 상태라 서버가 `lcd_image_key`·`lcd_image_set_at` 을 **NULL** 로 비운다(Realtime 으로 옴 → 미리보기 제거, "다시 올려 주세요"). `busy`/`no_token`/`bad_request`/`unknown_action` 은 지우기 전에 거절된 것이라 옛 사진·key 그대로. `no_ack`/`expired`(기기가 못 받음)도 그대로.
 - `lcd_image` ok 뒤 `lcd_image_key` 가 새 sha 로 바뀐다. 이전 사진의 미리보기 URL 은 다음 업로드 때 정리되므로 **키가 바뀌면 `GET /lcd` 로 `preview_url` 을 새로 받는다**.
 
 ## 5. 권장 UI 흐름

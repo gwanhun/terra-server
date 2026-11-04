@@ -1269,10 +1269,35 @@ def _min_to_time(v: Any) -> str | None:
     return f"{m // 60:02d}:{m % 60:02d}:00"
 
 
+# lcd_image 실패 중 기기가 플래시를 지우기 **전에** 거절한 result. 이 외의 실패(dl_* / http_NNN /
+# sha_mismatch / flash_write / no_mem …)는 펌웨어가 write_begin(erase) 뒤에 abort 한 것이라 기기에
+# 사진이 없다(terra-iot-nano command_dispatch.c lcd_img_task, lcd_image_store_write_abort). 새 result 가
+# 생겨도 기본은 "지워졌다"로 보는 쪽이 안전 — 앱이 없는 사진을 보여주는 것보다 재업로드가 낫다.
+_LCD_IMAGE_PRE_ERASE_RESULTS: frozenset[str] = frozenset({
+    "busy", "no_token", "bad_request", "unknown_action", "deferred",
+})
+
+
+def _lcd_image_erased(result: Any) -> bool:
+    return isinstance(result, str) and result != "ok" and result not in _LCD_IMAGE_PRE_ERASE_RESULTS
+
+
+def _clear_lcd_image_key(sb: Any, device_uuid: str, result: Any) -> None:
+    """lcd_image 가 erase 뒤 실패 → 기기엔 사진이 없으니 서버 확정값도 비운다(앱 미리보기가 옛 사진을
+    가리키지 않게, 앱팀 요청 2026-11-03). R2 객체는 그대로(다음 업로드 때 정리)."""
+    try:
+        sb.table("devices").update({
+            "lcd_image_key": None, "lcd_image_set_at": None, "lcd_updated_at": _now_iso(),
+        }).eq("id", device_uuid).execute()
+    except Exception:  # noqa: BLE001
+        logger.exception("lcd_image 실패 후 lcd_image_key 비우기 실패 (device=%s, result=%s)", device_uuid, result)
+
+
 def _commit_lcd_state(sb: Any, command_row: dict[str, Any], device_uuid: str) -> None:
     """Stage N LCD 명령(전원/소등/보호기/이미지)이 ok 로 ACK 되면 devices.lcd_* 확정.
 
-    규칙은 기기 NVS 가 진실이고 여기는 "서버가 마지막으로 확인한 값". ok 아니면 안 바뀌었으니 둔다.
+    규칙은 기기 NVS 가 진실이고 여기는 "서버가 마지막으로 확인한 값". ok 아니면 안 바뀌었으니 둔다 —
+    예외는 lcd_image 가 erase 뒤 실패한 경우(기기 사진 없음 → key 비움, _lcd_image_erased).
     payload 가 깨져 확정값을 못 만들면 건너뛴다(기기는 bad_request 로 거부했을 것). 실패는 삼킨다.
 
     여기는 paho 네트워크 스레드라 Supabase 한 번 외에 외부 호출을 하지 않는다 — 특히 R2 를 안 부른다.
@@ -1281,7 +1306,12 @@ def _commit_lcd_state(sb: Any, command_row: dict[str, Any], device_uuid: str) ->
     telemetry 가 멈추기 때문.
     """
     action = command_row.get("action")
-    if action not in _LCD_STATE_ACTIONS or command_row.get("result") != "ok":
+    if action not in _LCD_STATE_ACTIONS:
+        return
+    result = command_row.get("result")
+    if result != "ok":
+        if action == "lcd_image" and _lcd_image_erased(result):
+            _clear_lcd_image_key(sb, device_uuid, result)
         return
     payload = command_row.get("payload") or {}
     update: dict[str, Any]

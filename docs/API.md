@@ -1003,7 +1003,8 @@ GET /devices/{device_uuid}/commands/{command_id}
 - 기기 동작: `effective_on = lcd_power && !(소등 창 && 시각 유효 && now ∈ 창)`. 시각 미동기(핫스팟 콜드부트)면 켜둠. 화면보호기 이미지 중
   서버 끊김이면 우상단 빨간 아이콘(`show_offline_icon:false` 로 숨김), 연결 중엔 이미지만 온전히.
 - 사진은 컬러(RGB565, 65K 색)다. 앱 UI 는 업로드 응답의 `preview_url` 을 보여주고, 나중에 "지금 올라간 사진" 은 `GET /lcd` 의
-  `preview_url` 로 다시 받는다. 기기 ACK ok 시 `lcd_image_key` 확정. 이전 사진의 R2 객체는 다음 업로드 때 정리된다
+  `preview_url` 로 다시 받는다. 기기 ACK ok 시 `lcd_image_key` 확정. `lcd_image` 가 erase 뒤 실패(`dl_*`/`http_NNN`/`sha_mismatch`/`flash_write`)하면
+  기기에 사진이 없으므로 `lcd_image_key`·`lcd_image_set_at` 을 NULL 로 비운다(`busy`/`no_token`/`bad_request` 는 그대로). 이전 사진의 R2 객체는 다음 업로드 때 정리된다
   (ACK 경로는 MQTT 스레드라 R2 를 안 부름). 업로드 시 정리는 확정 사진과 아직 pending/sent 인 `lcd_image` 명령의 사진은 남긴다.
 - TTL 30초. `lcd_image` 는 기기가 다운로드·플래시 기록을 마친 뒤 ack 하므로 다른 명령보다 1~3초 늦다. 기기 오프라인·만료·거부면 서버 확정값은 안 바뀐다.
 

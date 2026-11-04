@@ -162,6 +162,7 @@ APP_LCD_IMG_FLASH_ADDR (nano/supermini 0x3E0000, hub 0x830000) , APP_LCD_IMG_FLA
 - `lcd_quiet`/`_clear` ok → `lcd_quiet_start/end`
 - `lcd_saver` ok → `lcd_saver`
 - `lcd_image` ok → `lcd_image_key`(payload 의 sha 로 역산)·`lcd_image_set_at=now`, `_clear` → NULL. R2 삭제는 안 함(위 참조)
+- `lcd_image` 실패 중 erase 뒤 실패(`busy`/`no_token`/`bad_request`/`unknown_action` 외 전부) → 기기 사진 없음 → `lcd_image_key`·`set_at` NULL (2026-11-03 앱팀 요청, 펌웨어 `lcd_img_task` 순서: no_token → write_begin(erase) → download → finish, 실패 시 abort)
 - 공통 `lcd_updated_at`. payload 에 큰 원문이 없으므로(url·sha 만) 서버 전용 키 불필요
 
 ### 웹 콘솔 (`web/index.html` LCD 패널 확장)
