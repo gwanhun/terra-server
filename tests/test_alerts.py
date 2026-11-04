@@ -14,11 +14,12 @@ from typing import Any
 
 import pytest
 
-from backend import alerts, push_events
+from backend import alerts, env_rules, push_events
 from backend.mqtt import handlers
 from tests.fake_sb import FakeSB
 
 DEV = "11111111-1111-1111-1111-aaaaaaaaaaaa"
+REAL_DEFAULT_TEMP_MAX = env_rules.DEFAULT_TEMP_MAX
 DEV_TEXT = "terra-test01"
 OWNER = "99999999-9999-9999-9999-999999999999"
 WALL0 = datetime(2026, 11, 2, 5, 0, 0, tzinfo=timezone.utc)
@@ -100,6 +101,9 @@ def sb(monkeypatch: pytest.MonkeyPatch) -> FlakySB:
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch: pytest.MonkeyPatch):
+    # 이 파일의 동작 테스트는 디폴트 MAX 26℃ 기준으로 쓰여 있다(2026-11-04 디폴트 27℃ 로 변경).
+    # 실제 디폴트는 test_defaults_when_no_settings_row 가 REAL_DEFAULT_TEMP_MAX 로 본다.
+    monkeypatch.setattr(env_rules, "DEFAULT_TEMP_MAX", 26.0)
     monkeypatch.setenv("ALERTS_V4_ENABLED", "true")
     monkeypatch.setenv("PUSH_ENV_ALERTS_ENABLED", "true")
     monkeypatch.setenv("PUSH_EVENT_INGEST_URL", "https://example.test/functions/v1/ingest")
@@ -155,15 +159,18 @@ def test_flag_off_legacy_path(monkeypatch: pytest.MonkeyPatch, sb: FlakySB, cloc
 # ---------- 설정(D8) ----------
 
 
-def test_defaults_when_no_settings_row(sb: FlakySB, clock: Clock) -> None:
-    run(clock, 0, 123, 26.3)
+def test_defaults_when_no_settings_row(monkeypatch: pytest.MonkeyPatch, sb: FlakySB, clock: Clock) -> None:
+    monkeypatch.setattr(env_rules, "DEFAULT_TEMP_MAX", REAL_DEFAULT_TEMP_MAX)   # 실제 디폴트 27℃
+    run(clock, 0, 123, 26.9)
+    assert env_rows(sb) == []                                  # 26.9℃ 는 디폴트(27)에서 적정
+    run(clock, 123, 246, 27.3)
     rows = env_rows(sb)
     assert len(rows) == 1
     r = rows[0]
     assert r["kind"] == "env_temp_high" and r["severity"] == "warning"
-    assert r["triggered_at"] == at(0)
+    assert r["triggered_at"] == at(123)
     assert r["message"] == "[고온 주의] 적정 온도보다 +0.3℃"
-    assert r["context"]["rule"] == "v4" and r["context"]["threshold"] == 26.0
+    assert r["context"]["rule"] == "v4" and r["context"]["threshold"] == 27.0
     assert r["context"]["level"] == "caution" and r["context"]["diff"] == 0.3
 
 

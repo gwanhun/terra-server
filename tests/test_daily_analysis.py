@@ -386,7 +386,7 @@ def test_card_json_has_element_code_status():
 
 def _replay_rows(samples: list[tuple[float, float]], base: datetime) -> list[dict]:
     """ElementTracker 를 돌리고 Action 을 alerts.py 처럼 행으로 남긴다(_insert_open/_write_close/peak)."""
-    th = Thresholds.default()
+    th = Thresholds(18.0, 26.0, 40.0, 80.0)   # 26℃ 기준으로 쓴 시나리오(디폴트 값과 무관)
     tr = ElementTracker("temp")
     rows: dict[str, dict] = {}
     seq = 0
