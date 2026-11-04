@@ -11,7 +11,7 @@
 | 테이블 | 도메인 | 용도 | 키 |
 |--------|--------|------|---|
 | `enclosures` | 공통 | 사육장 (상위 묶음) | UUID, owner_id FK |
-| `devices` | IoT | ESP32-S3 등록. `sys_state`(진단 최신값, 2026-09-28) + `temp_offset_c`(지금 적용 중인 온도 보정, 펌웨어 보고, NULL=구 펌웨어 — 2026-10-01) + `lcd_text`/`lcd_text_updated_at`(지금 LCD 문구 원문, 기기 ACK ok 시 확정, NULL=기본값·미상 — 2026-10-07) + `lcd_power`/`lcd_quiet_start`/`lcd_quiet_end`/`lcd_saver`/`lcd_image_key`(R2 키 접두 `lcd/{uuid}/{sha8}`)/`lcd_image_set_at`/`lcd_updated_at`(Stage N 전원·소등 시간대·화면보호기·컬러 사진 — 같은 ACK ok 확정 규칙, 규칙 자체는 기기 NVS·플래시가 진실 — 2026-10-28) | UUID, owner_id + enclosure_id FK |
+| `devices` | IoT | ESP32-S3 등록. `sys_state`(진단 최신값, 2026-09-28) + `temp_offset_c`(지금 적용 중인 온도 보정, 펌웨어 보고, NULL=구 펌웨어 — 2026-10-01) + `lcd_text`/`lcd_text_updated_at`(지금 LCD 문구 원문, 기기 ACK ok 시 확정, NULL=기본값·미상 — 2026-10-07) + `lcd_power`/`lcd_quiet_start`/`lcd_quiet_end`/`lcd_saver`/`lcd_image_key`(R2 키 접두 `lcd/{uuid}/{sha8}`)/`lcd_image_set_at`/`lcd_updated_at`(Stage N 전원·소등 시간대·화면보호기·컬러 사진 — 같은 ACK ok 확정 규칙, 규칙 자체는 기기 NVS·플래시가 진실 — 2026-10-28) + `lcd_screen_on`/`lcd_override_until`(기기가 telemetry `lcd` 블록으로 보고한 실제 화면 상태·override 끝 시각, 바뀔 때만 갱신, NULL=구 펌웨어 — 2026-11-04) | UUID, owner_id + enclosure_id FK |
 | `device_settings` | IoT | 사용자별 목표/임계값 | device_id PK (1:1) |
 | `telemetry` | IoT | 시계열 원본 (3초) | (device_id, ts) |
 | `telemetry_1m` | IoT | 분 단위 다운샘플 | (device_id, bucket) |

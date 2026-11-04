@@ -49,6 +49,19 @@ devices.capabilities.lcd_saver === true
 ### 2-2. Realtime (설정 화면 열어 둔 동안)
 `devices` 행 구독에 이미 `lcd_text` 를 쓰고 있으면 같은 채널에서 `lcd_power`, `lcd_quiet_start`, `lcd_quiet_end`, `lcd_saver`, `lcd_image_key`, `lcd_image_set_at`, `lcd_updated_at` 이 함께 온다. `preview_url` 은 Realtime 에 없다 — `lcd_image_key` 가 바뀌면 `GET /lcd` 한 번.
 
+### 2-3. 실제 화면 상태 (2026-11-04 서버 선행, 펌웨어는 `capabilities.lcd_override` 부터)
+`GET /lcd` 와 `devices` Realtime 에 두 필드가 추가됐다.
+
+| 필드 | 뜻 | NULL |
+|---|---|---|
+| `lcd_screen_on` | 지금 화면이 **실제로** 켜져 있는지(전원 설정 + 소등 시간대 + override 적용 결과). 기기가 3초마다 보고하고 서버는 바뀔 때만 갱신 | 구 펌웨어·미보고 |
+| `lcd_override_until` | 소등 시간대 중 수동 조작이 유지되는 끝 시각(다음 예약 경계). 지나면 예약 규칙으로 돌아간다 | override 없음 |
+
+- 앱 스위치는 `capabilities.lcd_override === true` 면 `lcd_screen_on` 으로, 아니면 지금처럼 `lcd_power` 로 그린다.
+- "오전 8:00에 켜져요" 류 안내는 `lcd_override_until` 이 있으면 그 시각을, 없으면 소등 `end` 를 쓰면 된다.
+- 기기가 오프라인이면 마지막 보고값이 남는다 — "서버가 마지막으로 확인한 값" 으로 표시.
+- 기기가 사진 없음을 보고하면(erase_flash 등) 서버가 `lcd_image_key` 를 비운다(진행 중 업로드 명령이 있으면 보류). 실패 ack 때 비우는 §4 규칙과 함께 "앱이 없는 사진을 보여주는" 상태가 사라진다.
+
 ## 3. 쓰기 — 호출별 주의점
 
 ### 3-1. 전원 `PUT /devices/{id}/lcd/power`
@@ -56,6 +69,7 @@ devices.capabilities.lcd_saver === true
 {"on": false}
 ```
 - `false` 는 **끈끈하다(sticky)**: 소등 시간이 끝나도 안 켜진다. `true` 로만 풀림. UI 문구: "끄기 — 다시 켤 때까지 꺼져 있어요".
+- **override 펌웨어(`capabilities.lcd_override`, 예정)** 에서는 소등 시간대가 설정돼 있을 때 켜기/끄기가 **다음 예약 경계까지만** 우선하고 경계를 지나면 예약 규칙으로 돌아간다(요청서 2026-11-03 §2). 예약이 없으면 sticky 그대로. 요청 형식 `{on}` 은 바뀌지 않는다 — 앱은 플래그로 문구만 분기.
 - ack `state`: `LCD_ON` / `LCD_OFF`.
 
 ### 3-2. 소등 시간대 `PUT /devices/{id}/lcd/quiet` · `DELETE`
