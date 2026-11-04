@@ -262,7 +262,7 @@ WebRTC P2P 시 트래픽 비용 거의 없음 (서버는 시그널링만, ~수�
 
 ## 확장 시 고려
 
-- **카메라 영상 누적 압박** — R2 lifecycle rule 30일 후 자동 삭제 + DB row 동기 삭제 (Stage F2)
+- **카메라 영상 누적 압박** — 현재 무기한 보관(lifecycle 없음, 2026-11-04). 정리 도입 시 `deleted/` 같은 삭제 전용 prefix 에만 규칙을 걸고 `motion_clips` 가 가리키는 경로엔 걸지 않는다(docs/ENV.md)
 - **TURN 서버 필요 시** — coturn 을 같은 Lightsail 에 같이 띄움 (RAM ~50MB 추가)
 - **앱 영상 재생** — mp4/H.264 는 iOS/Android 기본 호환 완벽
 - **디바이스 100+** — Lightsail $5 (1GB) 업그레이드

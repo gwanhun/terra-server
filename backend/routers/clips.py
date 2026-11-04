@@ -695,19 +695,23 @@ def delete_clip(
     user_id: str = Depends(get_current_user_id),
 ) -> None:
     """
-    R2 객체(영상 + 썸네일)와 DB row 동시 삭제.
+    R2 객체(영상 + 썸네일)를 먼저 지우고, 성공해야 DB row 를 지운다. R2 실패는 502 (DB 보존).
 
-    R2 delete 실패해도 DB 삭제는 진행 (orphan 객체는 30일 lifecycle 로 자동 정리).
+    [2026-11-05] 예전엔 "R2 실패해도 DB 삭제 진행 — 고아는 30일 lifecycle 이 정리" 였는데, 버킷에
+    clips 경로 lifecycle 규칙이 **없다**(2026-10-20 대시보드 확인). 그 규칙으로 두면 (1) 지운 영상
+    원본이 영구 잔존하고 (2) 고아 역등록 cron(scripts/reconcile_r2_orphans.py) 이 그 mp4 를
+    "미등록 업로드" 로 보고 다음 날 되살린다. R2 delete 는 없는 키에도 성공(멱등)이라 앱이
+    502 를 받고 재시도하면 된다.
     """
     clip = _load_clip_for_owner(clip_id, user_id)
 
-    # R2 먼저 (실패해도 DB 삭제는 진행 — 어차피 30일 lifecycle 로 정리됨)
     try:
         delete_object(clip["r2_key"])
         if clip.get("thumbnail_key"):
             delete_object(clip["thumbnail_key"])
     except (BotoCoreError, ClientError) as exc:
-        logger.warning("R2 delete 실패 (DB 삭제는 계속 진행): %s", exc)
+        logger.warning("R2 delete 실패 — DB 행 보존, 502 (clip=%s): %s", clip["id"], exc)
+        raise HTTPException(status_code=502, detail="영상 저장소 삭제 실패 — 잠시 후 다시 시도") from exc
 
     sb = get_supabase_client()
     res = (

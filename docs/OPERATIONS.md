@@ -120,6 +120,30 @@ uv run python scripts/faststart_backfill.py --camera p4cam-2d854b2f --limit 20
 
 결과 로그 `완료 Ns: {'already': A, 'converted': C, ...}`. `error` 가 있으면 다시 돌리면 그것만 재시도된다.
 
+## 1-2. R2 고아 클립 역등록 (2026-11-04, 매일 자동)
+
+카메라가 R2 PUT 까지 마치고 meta POST 가 서버에 닿지 못하면(카메라 쪽 네트워크·TLS 끊김) mp4 만
+남고 앱엔 안 보인다. 서버 로그엔 흔적이 없고 펌웨어 기본값은 실패 클립 즉시 폐기라, 서버가 주기적으로
+R2 를 스캔해 빠진 행을 채운다. 멱등(이미 등록된 clip_id 스킵)이고, 등록 클립과 같은 시각인 고아는
+중복 재업로드로 보고 제외하며, 해제된 카메라는 건너뛴다.
+
+```bash
+cd ~/terra-server
+uv run python scripts/reconcile_r2_orphans.py --all-linked --days 2            # dry-run
+uv run python scripts/reconcile_r2_orphans.py --all-linked --days 2 --apply    # 등록
+uv run python scripts/reconcile_r2_orphans.py --camera p4cam-d141abfb --since 2026-10-18 --until 2026-10-26  # 특정 카메라·범위
+```
+
+매일 04:10 KST 자동 실행 (`crontab -e`, 서버 시간대가 UTC 면 `10 19 * * *`):
+
+```cron
+10 4 * * * cd /home/ubuntu/terra-server && .venv/bin/python scripts/reconcile_r2_orphans.py --all-linked --days 2 --apply >> /home/ubuntu/reconcile_r2.log 2>&1
+```
+
+확인은 `tail -50 ~/reconcile_r2.log`. 매일 `orphan 0건` 이 정상이고, 특정 카메라에 계속 생기면 그 보드의
+네트워크·TLS 상태를 본다. R2 버킷엔 clips 경로 lifecycle 규칙이 **없다**(2026-10-20 대시보드 확인) —
+삭제 API 가 R2 객체를 직접 지우고, 고아는 이 스크립트가 등록으로 흡수한다.
+
 ---
 
 ## 2. 로그 확인
@@ -353,3 +377,4 @@ sudo journalctl -u caddy --since "1 day ago" | grep -i renew
 | 날짜 | 변경 |
 |------|------|
 | 2026-05-29 | 최초 작성 |
+| 2026-11-04 | 1-2 R2 고아 클립 역등록 cron 추가 |

@@ -75,8 +75,8 @@ ESP32-P4 → NVS 저장 → MQTT connect + 워커 시작
 
 ### F2 — 영상 수명 관리
 
-- [ ] Cloudflare R2 lifecycle rule 추가 (`clips/` prefix, 30일 후 delete)
-- [ ] `scripts/cleanup_orphan_clips.py` 작성 (cron 매일 1회)
+- [x] ~~Cloudflare R2 lifecycle rule 추가 (`clips/` prefix, 30일 후 delete)~~ **철회(2026-11-04)** — 보존이 무기한으로 운영돼 `motion_clips` 가 가리키는 영상이 같이 지워진다. 삭제 API 가 R2 를 직접 지움(docs/ENV.md 권장 셋업 5)
+- [x] ~~`scripts/cleanup_orphan_clips.py`~~ → `scripts/reconcile_r2_orphans.py --all-linked` cron (고아는 삭제가 아니라 역등록, 2026-11-04, docs/OPERATIONS.md 1-2)
 
 ### F3 — ESP32-P4 카메라 워커 펌웨어 (별도 레포)
 

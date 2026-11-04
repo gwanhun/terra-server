@@ -70,7 +70,7 @@ Content-Type: application/json
 | `POST` | `/cameras/{id}/clips` | **Camera Token** | 업로드 완료 후 모션 클립 메타 등록 |
 | `GET` | `/enclosures/{id}/clips` | JWT | 사육장의 모션 클립 목록 (cursor pagination) |
 | `GET` | `/clips/{id}/url` | JWT | 영상 재생용 presigned GET URL |
-| `DELETE` | `/clips/{id}` | JWT | 클립 삭제 (R2 객체 + DB 행) |
+| `DELETE` | `/clips/{id}` | JWT | 클립 삭제 (R2 객체 먼저 → DB 행. R2 실패는 502, 행 보존 — 재시도 가능) |
 | `POST` | `/recordings` | JWT | **라이브 직접 녹화** 등록 + presigned PUT URL (새 201 / 같은 `client_id` 200, 2026-10-20, §4.11) |
 | `POST` | `/recordings/{id}/complete` | JWT | 녹화 업로드 완료 — R2 영상 존재·크기 확인 후 `ready` (§4.11) |
 | `GET` | `/recordings/{id}/url` · `/recordings/{id}/thumbnail/url` | JWT | 녹화 재생·썸네일 presigned GET URL (`ready` 만, §4.11) |

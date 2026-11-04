@@ -76,6 +76,10 @@ class _Query:
     def limit(self, n: int) -> "_Query":
         self._limit = n; return self
 
+    def range(self, lo: int, hi: int) -> "_Query":
+        """PostgREST range(lo, hi) — 양끝 포함 오프셋 슬라이스."""
+        self._range = (lo, hi); return self
+
     def single(self) -> "_Query":
         self._single = True; return self
 
@@ -153,6 +157,9 @@ class _Query:
         if self._order:
             col, desc = self._order
             matched.sort(key=lambda r: (r.get(col) is None, r.get(col)), reverse=desc)
+        rng = getattr(self, "_range", None)
+        if rng is not None:
+            matched = matched[rng[0] : rng[1] + 1]
         if self._limit is not None:
             matched = matched[: self._limit]
         if self._single:

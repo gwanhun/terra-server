@@ -66,13 +66,16 @@ def get_authed_camera(
     sb = get_supabase_client()
     res = (
         sb.table("cameras")
-        .select("id, owner_id, enclosure_id, camera_id, token_hash, name, model")
+        .select("id, owner_id, enclosure_id, camera_id, token_hash, name, model, unlinked_at")
         .eq("id", cam_uuid)
         .limit(1)
         .execute()
     )
     row = first_row(res.data)
-    if not row:
+    # [2026-11-04] 해제(unlinked_at)된 카메라도 401 — auth_device 와 동일. 해제는 MQTT 계정만
+    # 회수했고 HTTP 토큰은 살아 있어서, 보드가 옛 토큰으로 upload-url·meta 를 계속 통과해
+    # 옛 소유자 계정에 클립이 쌓였다(p4cam-2de5836d 11/03 15:06 해제 → 15:15 까지 업로드).
+    if not row or row.get("unlinked_at"):
         # 의도적으로 401 (404 로 존재 여부 노출 안 함)
         raise CameraAuthError("카메라를 찾을 수 없거나 토큰 불일치.")
 
