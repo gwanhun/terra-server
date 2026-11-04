@@ -228,7 +228,7 @@ APP_LCD_IMG_FLASH_ADDR (nano/supermini 0x3E0000, hub 0x830000) , APP_LCD_IMG_FLA
 - `GET /lcd` 응답에 두 필드. `PUT /lcd/power` 형식 불변.
 
 - [x] **backend** 컬럼·동기화·응답·문서 (2026-11-04)
-- [ ] **마이그레이션 적용** `2026-11-04_devices_lcd_screen_state.sql` — 코드 배포 전
+- [x] **마이그레이션 적용** `2026-11-04_devices_lcd_screen_state.sql` (2026-11-04, 코드 배포 전)
 - [ ] **firmware(nano)** override 규칙·NVS·telemetry `lcd` 블록·`capabilities.lcd_override`
 - [ ] 디자이너 결론("낮에 끈 경우") 반영
 - [ ] E2E: 21시 켬→08시 켜져 있음 / 21시 켬→22시 끔→08시 켜짐 / 23시 끔→변화 없음→08시 켜짐 / 재부팅 후 override 유지 / `lcd_screen_on` Realtime 반영 / erase_flash 뒤 `lcd_image_key` 비워짐
