@@ -27,7 +27,8 @@ import os
 import secrets
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from botocore.exceptions import BotoCoreError, ClientError
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend import ota_service
@@ -35,6 +36,7 @@ from backend.auth import get_current_user_id
 from backend.crypto import generate_token, hash_token
 from backend.db_helpers import first_row, parse_uuid, parse_uuid_or_404
 from backend.mqtt import registry
+from backend.r2_client import delete_objects
 from backend.mqtt.camera_commands import (
     ota_apply_command,
     ota_prepare_command,
@@ -807,10 +809,20 @@ def unlink_camera(
 )
 def delete_camera(
     camera_uuid: str,
+    background: BackgroundTasks,
     user_id: str = Depends(get_current_user_id),
 ) -> None:
-    """소속 `motion_clips` 도 cascade 삭제. R2 객체는 30일 lifecycle 로 자동 정리."""
+    """소속 `motion_clips` 는 cascade 삭제, R2 객체(영상·썸네일)는 응답 뒤 BackgroundTasks 로 삭제.
+
+    [2026-11-04] 예전 주석 "R2 객체는 30일 lifecycle 로 자동 정리" 는 사실이 아니었다 — 버킷에
+    clips 경로 lifecycle 규칙이 없어(2026-10-20 대시보드 확인) 앱에서 지운 카메라의 영상이 R2 에
+    영구 잔존했다(사생활). 키는 **DB 삭제 전에** 모아야 한다(cascade 뒤엔 r2_key 를 못 찾는다).
+    R2 삭제는 응답 밖에서: 카메라 하나에 클립 수천 개라 요청 안에서 돌리면 앱이 타임아웃을 본다.
+    프로세스가 그 사이 재시작되면 일부가 남는다 → 경고 로그 + scripts/ 로 수동 정리.
+    """
     sb = get_supabase_client()
+    keys = _collect_clip_object_keys(sb, camera_uuid, user_id)
+
     res = (
         sb.table("cameras")
         .delete()
@@ -823,3 +835,42 @@ def delete_camera(
 
     # Mosquitto password/ACL 제거
     registry.unregister_device(res.data[0]["camera_id"])
+
+    if keys:
+        logger.info("camera 삭제: R2 객체 %d개 백그라운드 삭제 예약 (camera=%s)", len(keys), camera_uuid)
+        background.add_task(_delete_clip_objects_safe, keys, camera_uuid)
+
+
+_CLIP_KEY_PAGE = 1000
+
+
+def _collect_clip_object_keys(sb: Any, camera_uuid: str, user_id: str) -> list[str]:
+    """카메라 소속 motion_clips 의 r2_key·thumbnail_key 전부 (owner 필터 — service_role 바이패스 방지)."""
+    keys: list[str] = []
+    offset = 0
+    while True:
+        res = (
+            sb.table("motion_clips")
+            .select("r2_key, thumbnail_key")
+            .eq("camera_id", camera_uuid)
+            .eq("owner_id", user_id)
+            .order("id")
+            .range(offset, offset + _CLIP_KEY_PAGE - 1)
+            .execute()
+        )
+        rows = list(res.data or [])
+        for row in rows:
+            for col in ("r2_key", "thumbnail_key"):
+                if row.get(col):
+                    keys.append(row[col])
+        if len(rows) < _CLIP_KEY_PAGE:
+            return keys
+        offset += _CLIP_KEY_PAGE
+
+
+def _delete_clip_objects_safe(keys: list[str], camera_uuid: str) -> None:
+    """BackgroundTasks 용 — 예외를 삼키고 경고만 남긴다(응답은 이미 나갔다)."""
+    try:
+        delete_objects(keys)
+    except (BotoCoreError, ClientError) as exc:
+        logger.warning("camera 삭제 뒤 R2 객체 삭제 실패 (camera=%s, %d개 잔존): %s", camera_uuid, len(keys), exc)

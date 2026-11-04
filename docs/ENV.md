@@ -104,9 +104,11 @@ ESP32-CAM 모션 영상 저장용. S3 호환 API.
    - Permissions: Object Read & Write
    - Specify bucket: `terra-clips` (보안 위해 한정)
 4. 토큰 + Access Key ID + Secret 발급 → `.env` 에 기입
-5. Lifecycle rule 추가 (Stage F2):
-   - Prefix: `clips/`
-   - Action: Delete after 30 days
+5. ~~Lifecycle rule 추가 (Stage F2): `clips/` 30일 삭제~~ — **적용하지 않았고, 하면 안 된다**(2026-11-04).
+   클립 보존은 사실상 무기한으로 운영돼 왔고 `motion_clips` 가 가리키는 정상 영상이 함께 사라진다.
+   삭제는 DELETE /clips·/cameras 가 R2 객체를 직접 지운다. 버킷(`petcam-clips`)은 petcam-lab 과 공유라
+   규칙 변경은 그쪽과 맞춘다. 현재 규칙: Multipart Abort 7일, `terra-derived/gme/v1/debug-14d/` 14일.
+   서버 R2 키엔 `GetBucketLifecycleConfiguration` 권한이 없어 조회는 대시보드만 가능.
 
 ### 앱 푸시 이벤트 (2026-09-15)
 

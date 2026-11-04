@@ -152,6 +152,34 @@ def delete_object(key: str) -> None:
     logger.info("r2 delete ok: bucket=%s key=%s", bucket, key)
 
 
+_DELETE_BATCH = 1000   # S3 DeleteObjects 한 요청 상한
+
+
+def delete_objects(keys: list[str]) -> int:
+    """여러 객체를 DeleteObjects(최대 1000개/요청) 로 삭제하고 삭제된 수를 돌려준다.
+
+    cameras DELETE 가 소속 클립 영상·썸네일을 지울 때 사용 — 카메라 하나에 수천 개라
+    delete_object 반복은 느리다. 없는 키는 S3 규약상 성공으로 친다. 개별 오류는 경고만.
+    """
+    if not keys:
+        return 0
+    client = get_r2_client()
+    bucket = get_r2_bucket()
+    deleted = 0
+    for i in range(0, len(keys), _DELETE_BATCH):
+        chunk = keys[i : i + _DELETE_BATCH]
+        resp = client.delete_objects(
+            Bucket=bucket,
+            Delete={"Objects": [{"Key": k} for k in chunk], "Quiet": True},
+        )
+        errors = resp.get("Errors") or []
+        for err in errors:
+            logger.warning("r2 delete_objects 오류 key=%s code=%s", err.get("Key"), err.get("Code"))
+        deleted += len(chunk) - len(errors)
+    logger.info("r2 delete_objects ok: bucket=%s %d/%d", bucket, deleted, len(keys))
+    return deleted
+
+
 _MISSING_CODES = frozenset({"404", "NoSuchKey", "NotFound"})
 
 

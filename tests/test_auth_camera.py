@@ -99,3 +99,16 @@ def test_non_uuid_camera_id_is_401_without_db(
     with pytest.raises(CameraAuthError):
         get_authed_camera(camera_id=camera_id, authorization="Bearer anytoken")
     fake_sb.table.assert_not_called()
+
+
+def test_unlinked_camera_is_401(monkeypatch: pytest.MonkeyPatch, fake_sb: MagicMock) -> None:
+    """해제(unlinked_at)된 카메라는 토큰이 맞아도 401 — 옛 토큰으로 업로드가 계속되던 갭(2026-11-04)."""
+    from backend import auth_camera
+
+    monkeypatch.setattr(auth_camera, "get_supabase_client", lambda: fake_sb)
+    token = generate_token()
+    row = _setup_camera_row(fake_sb, token=token)
+    row["unlinked_at"] = "2026-11-03T06:06:33+00:00"
+
+    with pytest.raises(CameraAuthError):
+        get_authed_camera(camera_id=CAMERA_UUID, authorization=f"Bearer {token}")

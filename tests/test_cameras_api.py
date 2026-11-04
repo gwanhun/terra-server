@@ -298,6 +298,60 @@ def test_delete_camera_ok(app_client: TestClient, fake_sb: MagicMock) -> None:
     assert res.status_code == 204
 
 
+def _setup_delete_chains(fake_sb: MagicMock, clip_rows: list[dict]) -> None:
+    """DELETE /cameras 가 쓰는 두 체인: motion_clips 키 수집(select…range) + cameras delete."""
+    sel = fake_sb.table.return_value.select.return_value.eq.return_value.eq.return_value
+    sel.order.return_value.range.return_value.execute.return_value.data = clip_rows
+    dele = fake_sb.table.return_value.delete.return_value.eq.return_value.eq.return_value
+    dele.execute.return_value.data = [{"id": CAMERA_UUID, "camera_id": "p4cam-aabbccdd"}]
+
+
+def test_delete_camera_removes_r2_objects(
+    app_client: TestClient, fake_sb: MagicMock, monkeypatch
+) -> None:
+    """카메라 삭제 시 소속 클립 영상·썸네일을 R2 에서 지운다 — lifecycle 이 없어 잔존하던 것(2026-11-04)."""
+    from backend.routers import cameras as cameras_router
+
+    deleted: list[list[str]] = []
+    monkeypatch.setattr(cameras_router, "delete_objects", lambda keys: deleted.append(list(keys)) or len(keys))
+    _setup_delete_chains(fake_sb, [
+        {"r2_key": "terra-clips/clips/p4cam-aabbccdd/2026-11-01/120000_a.mp4",
+         "thumbnail_key": "terra-clips/clips/p4cam-aabbccdd/2026-11-01/120000_a.jpg"},
+        {"r2_key": "terra-clips/clips/p4cam-aabbccdd/2026-11-01/120100_b.mp4", "thumbnail_key": None},
+    ])
+
+    res = app_client.delete(f"/cameras/{CAMERA_UUID}")
+    assert res.status_code == 204
+    # TestClient 는 BackgroundTasks 를 응답 뒤 동기 실행한다
+    assert deleted == [[
+        "terra-clips/clips/p4cam-aabbccdd/2026-11-01/120000_a.mp4",
+        "terra-clips/clips/p4cam-aabbccdd/2026-11-01/120000_a.jpg",
+        "terra-clips/clips/p4cam-aabbccdd/2026-11-01/120100_b.mp4",
+    ]]
+    # 키 수집은 DB 삭제 전에 — owner 필터 포함(service_role RLS 바이패스 방지)
+    eq_calls = [c.args for c in fake_sb.table.return_value.select.return_value.eq.call_args_list]
+    assert ("camera_id", CAMERA_UUID) in eq_calls
+
+
+def test_delete_camera_r2_failure_still_204(
+    app_client: TestClient, fake_sb: MagicMock, monkeypatch
+) -> None:
+    """R2 삭제가 실패해도 응답은 이미 204 — 경고 로그만(사용자 관점 삭제 우선)."""
+    from botocore.exceptions import ClientError
+
+    from backend.routers import cameras as cameras_router
+
+    def _boom(keys: list[str]) -> int:
+        raise ClientError({"Error": {"Code": "AccessDenied", "Message": "x"}}, "DeleteObjects")
+
+    monkeypatch.setattr(cameras_router, "delete_objects", _boom)
+    _setup_delete_chains(fake_sb, [{"r2_key": "terra-clips/clips/p4cam-aabbccdd/2026-11-01/120000_a.mp4",
+                                    "thumbnail_key": None}])
+
+    res = app_client.delete(f"/cameras/{CAMERA_UUID}")
+    assert res.status_code == 204
+
+
 # ---------- rotate_180 / capabilities (2026-09-08 앱 핸드오프 rotate180) ----------
 
 

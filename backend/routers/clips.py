@@ -697,11 +697,14 @@ def delete_clip(
     """
     R2 객체(영상 + 썸네일)와 DB row 동시 삭제.
 
-    R2 delete 실패해도 DB 삭제는 진행 (orphan 객체는 30일 lifecycle 로 자동 정리).
+    R2 delete 실패해도 DB 삭제는 진행 — 사용자 관점의 "지웠다" 를 우선한다. 실패한 객체는
+    R2 에 남는다: 버킷에 clips 경로 lifecycle 규칙이 **없다**(2026-10-20 대시보드 확인,
+    2026-11-04 재확인). 예전 주석의 "30일 lifecycle 자동 정리" 는 적용된 적 없는 계획이었다.
+    아래 경고 로그(key 포함)가 수동 정리의 단서.
     """
     clip = _load_clip_for_owner(clip_id, user_id)
 
-    # R2 먼저 (실패해도 DB 삭제는 진행 — 어차피 30일 lifecycle 로 정리됨)
+    # R2 먼저 (실패해도 DB 삭제는 진행 — 경고 로그만 남고 객체는 잔존)
     try:
         delete_object(clip["r2_key"])
         if clip.get("thumbnail_key"):
