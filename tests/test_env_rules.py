@@ -19,7 +19,7 @@ from backend.env_rules import (
     title,
 )
 
-TH = Thresholds.default()
+TH = Thresholds(18.0, 26.0, 40.0, 80.0)   # 동작 테스트용 고정 기준 — 디폴트 값이 바뀌어도 그대로(디폴트는 아래 sanitize 테스트)
 
 SKIP = object()  # seg() 에서 "이 구간은 샘플 없음(통신 공백)"
 
@@ -405,10 +405,10 @@ def test_sanitize_thresholds():
     # 행 없음·NULL → 디폴트
     assert Thresholds.sanitize({}) == Thresholds.default()
     assert Thresholds.sanitize({"target_temp_max": None, "target_humid_min": 50}) == Thresholds(
-        18.0, 26.0, 50.0, 80.0)
+        18.0, 27.0, 50.0, 80.0)
     # MIN ≥ MAX → 그 요소만 디폴트
     th = Thresholds.sanitize({"target_temp_min": 25, "target_temp_max": 24, "target_humid_min": 45})
-    assert (th.temp_min, th.temp_max, th.humid_min) == (18.0, 26.0, 45.0)
+    assert (th.temp_min, th.temp_max, th.humid_min) == (18.0, 27.0, 45.0)
 
 
 # ---------- 타이틀 ----------
@@ -424,3 +424,10 @@ def test_titles():
     # 부동소수 오차로 0.3 이 0.4 로 올라가지 않음(유저 체험 시뮬레이션 1)
     assert title("env_temp_high", "caution", 26.3, 26.0) == "[고온 주의] 적정 온도보다 +0.3℃"
     assert title("env_temp_low", "caution", 17.5, 18.0) == "[저온 주의] 적정 온도보다 -0.5℃"
+
+
+def test_default_temp_max_27() -> None:
+    # 2026-11-04 앱 요청: 저장값 없는 기기의 적정 온도 상한 26 → 27℃ (하한 18 그대로)
+    assert (Thresholds.default().temp_min, Thresholds.default().temp_max) == (18.0, 27.0)
+    assert Thresholds.sanitize({"target_temp_min": 20.0}).temp_max == 27.0
+    assert Thresholds.sanitize({"target_temp_max": 26.0}).temp_max == 26.0     # 사용자 저장값은 그대로
