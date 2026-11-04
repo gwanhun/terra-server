@@ -189,7 +189,8 @@ APP_LCD_IMG_FLASH_ADDR (nano/supermini 0x3E0000, hub 0x830000) , APP_LCD_IMG_FLA
 - [x] **firmware** sensor_task 상태기계(IMAGE↔INFO 교대, reinit 사이클 재blit, repaint_static 은 INFO 만). 다운로드 중엔 단일 영역이라 **이전 이미지는 지워지고 INFO**(erase 가 먼저) — 실패해도 INFO 유지, 크래시 없음. 교대 기본 이미지 20초 / 온습도 10초
 - [x] **backend** `render_image_rgb565` + `POST/DELETE /lcd/image`(multipart, `python-multipart` 추가) + `GET /lcd/image/bin?sha=`(기기 토큰) + `PUT /lcd/saver` + ACK 확정(R2 호출 없음) + 업로드 시 고아 정리(확정·진행 중 키 보존). 테스트 790 통과
 - [x] **web** 업로드/미리보기/보호기 설정 (`api()` 가 FormData 면 Content-Type 생략)
-- [ ] E2E: 사진 업로드 → 미리보기와 LCD 동일(색·방향) 확인 → 교대 주기(예: 10/5초) 확인 → 재부팅 후 WiFi 없이도 사진 유지 → 소등 창에서는 보호기도 꺼짐 → 같은 사진 재업로드 시 다운로드 스킵 로그 → 다운로드 중 전원 차단 후 재부팅 시 이전 이미지 또는 INFO(크래시 없음)
+- [x] E2E **실기 통과(2026-11-04, nano 1대, 서버 #40 배포본)**: 사진 업로드 → LCD 표시 확인, 소등 시간대 설정 동작, 화면보호기(대기모드) 교대 동작
+- [ ] E2E 잔여: 재부팅 후 WiFi 없이도 사진 유지 → 같은 사진 재업로드 시 다운로드 스킵 로그 → 다운로드 중 전원 차단 후 재부팅 시 이전 이미지 또는 INFO(크래시 없음)
 - [x] **docs** MQTT.md action 목록·DATABASE.md devices 컬럼·API.md §4.14 갱신, nano/hub `partitions.csv` 주석(supermini 는 내장 표라 Kconfig help 에), 앱 핸드오프 `docs/BACKEND_HANDOFF_REPLY_LCD_SAVER_2026-10-28.md`
 - [x] **마이그레이션 적용** (2026-11-03) · **main 머지** PR #32
 - [x] **OTA 릴리스 등록** (2026-11-03): nano `terra-fw 1.2.0-20261103`, hub `terra-hub-p4 0.4.0-20261103` — 둘 다 bin+elf R2. supermini 는 OTA 대상 아님(USB)
