@@ -15,6 +15,9 @@ Supabase RLS 직결로도 device_settings 를 쓸 수 있지만, 값 범위 검�
   **MIN < MAX**(같으면 거절). 범위·단위는 요청에 들어온 필드만 본다 — 구 범위로 저장된 값이
   있어도 다른 필드 수정은 막지 않는다(사용자가 고칠 수 있게). MIN < MAX 는 병합 결과로 본다.
 - null 은 "미설정" — 판정은 디폴트(18~27℃, 40~80%)를 쓴다.
+- 자동 환기·분무 토글 `auto_vent_enabled`·`auto_mist_enabled` (Stage R, 앱 계약 C1):
+  `true`/`false` 만 받는다. 문자열 "true"·숫자는 StrictBool 로, 명시적 null 은 validator 로 422.
+  생략하면 안 바뀐다(exclude_unset). 행이 없거나 미설정이면 GET 은 false.
 
 ## 저장 방식
 device_settings PK = device_id (= devices.id). 디바이스당 1행이라 upsert.
@@ -27,7 +30,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from backend.alerts import reset_settings_cache
 from backend.auth import get_current_user_id
@@ -43,10 +46,12 @@ _NOT_FOUND = {404: {"description": "본인 디바이스가 아니거나 미존�
 _BAD = {400: {"description": "값 범위/일관성 검증 실패"}}
 
 # setpoint 열만 앱에 노출 (alert_*·schedule 은 별도 관심사).
-_SETTINGS_COLS = (
+_BASE_COLS = (
     "device_id, target_temp_c, target_humidity_pct, "
     "target_temp_min, target_temp_max, target_humid_min, target_humid_max, updated_at"
 )
+_SETTINGS_COLS = _BASE_COLS + ", auto_vent_enabled, auto_mist_enabled"
+_AUTO_COLS = ("auto_vent_enabled", "auto_mist_enabled")
 
 # 단일 목표값: 물리적으로 말이 되는 범위 (사육장 일반 범위보다 넉넉하게).
 _TEMP_RANGE = (-20.0, 60.0)
@@ -66,6 +71,17 @@ class SettingsUpdate(BaseModel):
     target_temp_max: float | None = None
     target_humid_min: float | None = None
     target_humid_max: float | None = None
+    # 자동 환기·분무 토글 (Stage R). None 기본값은 "생략"을 뜻하고, 명시적 null 은 아래에서 거절.
+    auto_vent_enabled: StrictBool | None = Field(None, description="자동 환기 (true/false 만)")
+    auto_mist_enabled: StrictBool | None = Field(None, description="자동 분무 (true/false 만)")
+
+    @field_validator("auto_vent_enabled", "auto_mist_enabled")
+    @classmethod
+    def _reject_null_toggle(cls, v: bool | None) -> bool:
+        # 기본값(생략)엔 validator 가 돌지 않으니 여기 None 은 요청에 null 을 직접 넣은 경우 → 422.
+        if v is None:
+            raise ValueError("true 또는 false 여야 함 (null 불가)")
+        return v
 
 
 class SettingsOut(BaseModel):
@@ -76,6 +92,8 @@ class SettingsOut(BaseModel):
     target_temp_max: float | None = None
     target_humid_min: float | None = None
     target_humid_max: float | None = None
+    auto_vent_enabled: bool = False
+    auto_mist_enabled: bool = False
     updated_at: str | None = None
 
     model_config = ConfigDict(extra="ignore")
@@ -115,15 +133,20 @@ def _validate(updates: dict[str, Any], existing: dict[str, Any]) -> None:
         raise HTTPException(status_code=400, detail="target_humid_min 은 target_humid_max 보다 작아야 함")
 
 
-def _fetch_settings(sb: Any, device_uuid: str) -> dict[str, Any] | None:
-    res = (
-        sb.table("device_settings")
-        .select(_SETTINGS_COLS)
-        .eq("device_id", device_uuid)
-        .limit(1)
-        .execute()
-    )
+def _select(sb: Any, device_uuid: str, cols: str) -> dict[str, Any] | None:
+    res = sb.table("device_settings").select(cols).eq("device_id", device_uuid).limit(1).execute()
     return (res.data or [None])[0]
+
+
+def _fetch_settings(sb: Any, device_uuid: str) -> dict[str, Any] | None:
+    """Stage R 토글 컬럼이 아직 없으면(마이그레이션 전 배포) 기존 컬럼만 다시 읽는다 — 토글은 false."""
+    try:
+        return _select(sb, device_uuid, _SETTINGS_COLS)
+    except Exception as exc:  # noqa: BLE001 — supabase-py 예외 타입 넓음
+        if not any(col in str(exc) for col in _AUTO_COLS):
+            raise
+        logger.warning("device_settings 에 자동 토글 컬럼 없음 — 마이그레이션 2026-11-05 전: %s", exc)
+        return _select(sb, device_uuid, _BASE_COLS)
 
 
 @router.get(

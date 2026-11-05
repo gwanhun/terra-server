@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.conftest import TEST_USER_ID
@@ -184,3 +185,86 @@ def test_patch_null_resets_to_default(app_client: TestClient, fake_sb: MagicMock
                      existing={"device_id": DEVICE_UUID, "target_temp_min": 20.0})
     assert res.status_code == 200, res.text
     assert ds.upsert.call_args.args[0]["target_temp_min"] is None
+
+
+# ---------- Stage R 자동 환기·분무 토글 (앱 계약 C1) ----------
+
+
+def test_patch_auto_toggles_only(app_client: TestClient, fake_sb: MagicMock) -> None:
+    """토글만 보내면 그 필드만 upsert — 온습도 목표값은 그대로 남는다."""
+    existing = {"device_id": DEVICE_UUID, "target_temp_max": 28.0, "target_humid_max": 80.0}
+    dev = _device_mock()
+    ds = _settings_mock(existing)
+    after = {**existing, "auto_vent_enabled": True, "auto_mist_enabled": False}
+    ds.select.return_value.eq.return_value.limit.return_value.execute.side_effect = [
+        MagicMock(data=[existing]),  # 검증용 기존값
+        MagicMock(data=[after]),  # upsert 뒤 재조회
+    ]
+    fake_sb.table.side_effect = lambda name: {"devices": dev, "device_settings": ds}[name]
+
+    res = app_client.patch(f"/devices/{DEVICE_UUID}/settings", json={"auto_vent_enabled": True})
+    assert res.status_code == 200, res.text
+    assert ds.upsert.call_args.args[0] == {"auto_vent_enabled": True, "device_id": DEVICE_UUID}
+    body = res.json()
+    assert body["auto_vent_enabled"] is True
+    assert body["auto_mist_enabled"] is False
+    assert body["target_temp_max"] == 28.0
+    assert body["target_humid_max"] == 80.0
+
+
+def test_patch_auto_toggle_rejects_string_and_null(app_client: TestClient, fake_sb: MagicMock) -> None:
+    """true/false 만 받는다 — 문자열 "true"·숫자 1·명시적 null 은 422."""
+    for field in ("auto_vent_enabled", "auto_mist_enabled"):
+        for bad in ("true", 1, None):
+            res, ds = _patch(app_client, fake_sb, {field: bad})
+            assert res.status_code == 422, (field, bad, res.text)
+            ds.upsert.assert_not_called()
+    res, ds = _patch(app_client, fake_sb, {"auto_mist_enabled": False})
+    assert res.status_code == 200, res.text
+    assert ds.upsert.call_args.args[0]["auto_mist_enabled"] is False
+
+
+def test_get_defaults_false(app_client: TestClient, fake_sb: MagicMock) -> None:
+    """행 없음·컬럼 없는 행 모두 토글은 false (null 아님)."""
+    for row in (None, {"device_id": DEVICE_UUID, "target_temp_c": 28.0}):
+        dev = _device_mock()
+        ds = _settings_mock(row)
+        fake_sb.table.side_effect = lambda name, dev=dev, ds=ds: {"devices": dev, "device_settings": ds}[name]
+        res = app_client.get(f"/devices/{DEVICE_UUID}/settings")
+        assert res.status_code == 200, res.text
+        assert res.json()["auto_vent_enabled"] is False
+        assert res.json()["auto_mist_enabled"] is False
+
+
+def test_get_before_migration_falls_back(app_client: TestClient, fake_sb: MagicMock) -> None:
+    """리뷰 #4: 마이그레이션 전(토글 컬럼 없음)이면 기존 컬럼만 다시 읽고 토글은 false — 500 아님."""
+    dev = _device_mock()
+    ds = MagicMock()
+    selected: list[str] = []
+    row = {"device_id": DEVICE_UUID, "target_temp_max": 28.0}
+
+    def _select(cols: str) -> MagicMock:
+        selected.append(cols)
+        chain = MagicMock()
+        ex = chain.eq.return_value.limit.return_value.execute
+        if "auto_vent_enabled" in cols:
+            ex.side_effect = RuntimeError("column device_settings.auto_vent_enabled does not exist")
+        else:
+            ex.return_value.data = [row]
+        return chain
+
+    ds.select.side_effect = _select
+    fake_sb.table.side_effect = lambda name: {"devices": dev, "device_settings": ds}[name]
+    res = app_client.get(f"/devices/{DEVICE_UUID}/settings")
+    assert res.status_code == 200, res.text
+    assert res.json()["target_temp_max"] == 28.0 and res.json()["auto_vent_enabled"] is False
+    assert len(selected) == 2 and "auto_vent_enabled" not in selected[1]
+
+
+def test_get_other_db_error_still_raises(app_client: TestClient, fake_sb: MagicMock) -> None:
+    dev = _device_mock()
+    ds = MagicMock()
+    ds.select.return_value.eq.return_value.limit.return_value.execute.side_effect = RuntimeError("timeout")
+    fake_sb.table.side_effect = lambda name: {"devices": dev, "device_settings": ds}[name]
+    with pytest.raises(RuntimeError):
+        app_client.get(f"/devices/{DEVICE_UUID}/settings")

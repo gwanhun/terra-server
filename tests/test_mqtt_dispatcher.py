@@ -940,3 +940,65 @@ def test_future_issued_at_stays_pending(fake_sb: MagicMock, fake_bridge: MagicMo
     assert dispatcher.poll_and_dispatch(fake_bridge) == 0
     fake_bridge.publish_command.assert_not_called()
     assert updates == []
+
+
+# ---------- Stage R 자동 명령: 발행 직전 재확인 (코드 리뷰 2026-11-05) ----------
+
+
+def _auto_cmd() -> dict:
+    return {"id": "cmd-auto", "device_id": DEVICE_UUID, "action": "fan_off", "payload": {},
+            "issued_at": _now_iso(), "ttl_sec": 10, "source": "auto"}
+
+
+def _auto_dispatch(monkeypatch: pytest.MonkeyPatch, fake_sb: MagicMock, fake_bridge: MagicMock,
+                   still: object) -> None:
+    _setup_devices_lookup(fake_sb, DEVICE_UUID, DEVICE_TEXT)
+    calls: list[str] = []
+
+    def _check(_sb: object, cmd_id: str) -> bool:
+        calls.append(cmd_id)
+        if isinstance(still, Exception):
+            raise still
+        return bool(still)
+
+    monkeypatch.setattr(dispatcher, "_still_pending", _check)
+    dispatcher._dispatch_one(fake_bridge, _auto_cmd())
+    assert calls == ["cmd-auto"]
+
+
+def test_auto_command_superseded_before_publish_not_sent(
+    monkeypatch: pytest.MonkeyPatch, fake_sb: MagicMock, fake_bridge: MagicMock
+) -> None:
+    """사용자 조작으로 취소된 자동 명령은 폴링이 먼저 읽었어도 보내지 않는다."""
+    _auto_dispatch(monkeypatch, fake_sb, fake_bridge, False)
+    fake_bridge.publish_command.assert_not_called()
+
+
+def test_auto_command_still_pending_is_published(
+    monkeypatch: pytest.MonkeyPatch, fake_sb: MagicMock, fake_bridge: MagicMock
+) -> None:
+    _auto_dispatch(monkeypatch, fake_sb, fake_bridge, True)
+    fake_bridge.publish_command.assert_called_once()
+
+
+def test_still_pending_query_failure_means_not_pending(fake_sb: MagicMock) -> None:
+    fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.side_effect = (
+        RuntimeError("boom"))
+    assert dispatcher._still_pending(fake_sb, "cmd-auto") is False
+
+
+def test_still_pending_reads_status(fake_sb: MagicMock) -> None:
+    chain = fake_sb.table.return_value.select.return_value.eq.return_value.limit.return_value
+    chain.execute.return_value.data = [{"status": "expired"}]
+    assert dispatcher._still_pending(fake_sb, "cmd-auto") is False
+    chain.execute.return_value.data = [{"status": "pending"}]
+    assert dispatcher._still_pending(fake_sb, "cmd-auto") is True
+
+
+def test_manual_command_skips_recheck(
+    monkeypatch: pytest.MonkeyPatch, fake_sb: MagicMock, fake_bridge: MagicMock
+) -> None:
+    _setup_devices_lookup(fake_sb, DEVICE_UUID, DEVICE_TEXT)
+    monkeypatch.setattr(dispatcher, "_still_pending", lambda *_a: pytest.fail("수동 명령은 재확인 안 함"))
+    dispatcher._dispatch_one(fake_bridge, {**_auto_cmd(), "source": "manual"})
+    fake_bridge.publish_command.assert_called_once()

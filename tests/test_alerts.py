@@ -559,3 +559,186 @@ def test_close_v4_alerts_script_dry_run_then_apply(sb: FlakySB) -> None:
     assert a["resolved_at"] == at(0) and a["context"]["peak_diff"] == 1.0
     for rid in ("f-1", "o-1", "x-1"):
         assert sb.one("alerts", id=rid)["resolved_at"] is None
+
+
+# ---------- Stage R 자동 환기·분무 연결 (specs/stage-r-auto-env.md Task 4) ----------
+
+
+def _auto_row(t_a: float = 24.0, h_a: float = 60.0, fan: str | None = "OFF") -> dict[str, Any]:
+    return {"device_id": DEV, "t_a": t_a, "h_a": h_a, "a_ok": True, "fan": fan, "relay": "OFF"}
+
+
+def _auto_run(clock: Clock, start: float, end: float, step: float = 3.0, **kw: Any) -> None:
+    t = start
+    while t < end:
+        clock.t = t
+        alerts.evaluate_telemetry(DEV, _auto_row(**kw), device_key=DEV_TEXT)
+        t += step
+
+
+def _count_tables(monkeypatch: pytest.MonkeyPatch, sb: FlakySB) -> list[tuple[str, str]]:
+    calls: list[tuple[str, str]] = []
+    orig = sb.table
+
+    def table(name: str):
+        q = orig(name)
+        inner = q.execute
+
+        def execute():
+            calls.append((name, q._op or "select"))
+            return inner()
+
+        q.execute = execute  # type: ignore[method-assign]
+        return q
+
+    monkeypatch.setattr(sb, "table", table)
+    return calls
+
+
+def _auto_settings(sb: FlakySB, vent: bool = True, mist: bool = False) -> None:
+    sb.rows("device_settings").append({"device_id": DEV, "target_humid_max": 80.0,
+                                       "auto_vent_enabled": vent, "auto_mist_enabled": mist})
+
+
+def test_auto_env_off_by_default(monkeypatch: pytest.MonkeyPatch, sb: FlakySB, clock: Clock) -> None:
+    from backend import auto_env_store
+
+    monkeypatch.delenv("AUTO_ENV_ENABLED", raising=False)
+    _auto_settings(sb)
+    called: list[Any] = []
+    monkeypatch.setattr(auto_env_store, "step", lambda *a, **k: called.append(a))
+    calls = _count_tables(monkeypatch, sb)
+    _auto_run(clock, 0, 300, h_a=85.0)
+    assert called == []
+    assert sb.rows("commands") == []
+    assert [c for c in calls if c[0] in ("commands", "schedules")] == []
+    assert calls.count(("device_settings", "select")) == 5          # 60초 TTL 그대로(0·60·120·180·240)
+    assert alerts._states[DEV].toggles == (True, False)
+
+
+def test_auto_env_error_does_not_block_v4(monkeypatch: pytest.MonkeyPatch, sb: FlakySB, clock: Clock,
+                                          caplog: pytest.LogCaptureFixture) -> None:
+    from backend import auto_env_store
+
+    monkeypatch.setenv("AUTO_ENV_ENABLED", "true")
+    _auto_settings(sb)
+
+    def boom(*_a: Any, **_k: Any) -> None:
+        raise RuntimeError("auto boom")
+
+    monkeypatch.setattr(auto_env_store, "step", boom)
+    _auto_run(clock, 0, 200, t_a=26.3)
+    rows = env_rows(sb)
+    assert len(rows) == 1 and rows[0]["kind"] == "env_temp_high"
+    assert any("자동 환기·분무 평가 실패" in r.getMessage() for r in caplog.records)
+
+
+def test_switch_off_drops_auto_state(monkeypatch: pytest.MonkeyPatch, sb: FlakySB, clock: Clock) -> None:
+    monkeypatch.setenv("AUTO_ENV_ENABLED", "true")
+    monkeypatch.setenv("AUTO_ENV_DRY_RUN", "false")
+    _auto_settings(sb)
+    _auto_run(clock, 0, 30)
+    auto = alerts._states[DEV].auto
+    assert auto.restored is True
+
+    monkeypatch.setenv("AUTO_ENV_DEVICES", "someone-else")          # 허용목록에서 빠짐
+    _auto_run(clock, 30, 33)
+    assert alerts._states[DEV].auto is not auto and alerts._states[DEV].auto.restored is False
+
+    monkeypatch.delenv("AUTO_ENV_DEVICES")
+    _auto_run(clock, 33, 36)
+    assert alerts._states[DEV].auto.restored is True
+    monkeypatch.setenv("AUTO_ENV_ENABLED", "false")                   # 스위치 끔
+    _auto_run(clock, 36, 39)
+    assert alerts._states[DEV].auto.restored is False
+
+
+def test_auto_env_end_to_end_insert_and_ack(monkeypatch: pytest.MonkeyPatch, sb: FlakySB,
+                                            clock: Clock) -> None:
+    monkeypatch.setenv("AUTO_ENV_ENABLED", "true")
+    monkeypatch.setenv("AUTO_ENV_DRY_RUN", "false")
+    _auto_settings(sb)
+    _auto_run(clock, 0, 3603, h_a=85.0)                              # 습도 MAX 초과 1시간 → 3600초에 켬
+    cmds = sb.rows("commands")
+    assert [(r["action"], r["source"], r["issued_by"], r["reason"]) for r in cmds] == [
+        ("fan_on", "auto", OWNER, "auto_vent:humid_high")]
+    assert sb.one("devices", id=DEV)["auto_env_state"]["vent"]["active"] is False
+
+    alerts.on_command_ack({**cmds[0], "status": "acked", "result": "ok"})
+    assert sb.one("devices", id=DEV)["auto_env_state"]["vent"]["active"] is True
+    alerts.on_command_ack({"id": "x", "device_id": "unknown-device", "action": "fan_on",
+                           "source": "manual", "result": "ok"})       # 상태 없는 기기 — 무시
+
+
+def test_on_command_ack_noop_when_switch_off(monkeypatch: pytest.MonkeyPatch, sb: FlakySB,
+                                             clock: Clock) -> None:
+    from backend import auto_env_store
+
+    monkeypatch.setenv("AUTO_ENV_ENABLED", "true")
+    monkeypatch.setenv("AUTO_ENV_DRY_RUN", "false")
+    _auto_settings(sb)
+    _auto_run(clock, 0, 6)
+    monkeypatch.setenv("AUTO_ENV_ENABLED", "false")
+    called: list[Any] = []
+    monkeypatch.setattr(auto_env_store, "handle_ack", lambda *a: called.append(a))
+    alerts.on_command_ack({"id": "m", "device_id": DEV, "action": "fan_off", "source": "manual",
+                           "result": "ok"})
+    assert called == []
+    monkeypatch.setenv("AUTO_ENV_ENABLED", "true")
+    alerts.on_command_ack({"id": "m", "device_id": DEV, "action": "fan_off", "source": "manual",
+                           "result": "ok"})
+    assert len(called) == 1
+
+
+def test_threshold_change_resets_auto_timers(monkeypatch: pytest.MonkeyPatch, sb: FlakySB,
+                                             clock: Clock) -> None:
+    monkeypatch.setenv("AUTO_ENV_ENABLED", "true")
+    monkeypatch.setenv("AUTO_ENV_DRY_RUN", "false")
+    _auto_settings(sb)
+    _auto_run(clock, 0, 120, h_a=85.0)
+    sb.rows("device_settings")[0]["target_humid_max"] = 82.0           # 120초 재조회에서 바뀜
+    _auto_run(clock, 120, 3720, h_a=85.0)
+    assert sb.rows("commands") == []                                  # 타이머가 120초에 다시 시작
+    _auto_run(clock, 3720, 3723, h_a=85.0)                            # 120 + 3600
+    assert [r["action"] for r in sb.rows("commands")] == ["fan_on"]
+
+
+def test_auto_toggles_missing_columns_are_false(monkeypatch: pytest.MonkeyPatch, sb: FlakySB,
+                                                clock: Clock) -> None:
+    monkeypatch.setenv("AUTO_ENV_ENABLED", "true")
+    sb.rows("device_settings").append({"device_id": DEV, "target_humid_max": 80.0,
+                                       "auto_vent_enabled": None})
+    calls = _count_tables(monkeypatch, sb)
+    _auto_run(clock, 0, 300, h_a=85.0)
+    assert alerts._states[DEV].toggles == (False, False)
+    assert [c for c in calls if c[0] in ("commands", "schedules")
+            or c == ("devices", "update")] == []
+
+
+def test_settings_select_skips_auto_columns_when_off(monkeypatch: pytest.MonkeyPatch, sb: FlakySB,
+                                                     clock: Clock) -> None:
+    """스위치 꺼짐이면 v4 기준 조회에 Stage R 컬럼을 안 넣는다 — 마이그레이션 전 배포에도 v4 알림 유지."""
+    selects: list[str] = []
+    orig = sb.table
+
+    def table(name: str):
+        q = orig(name)
+        if name == "device_settings":
+            inner = q.select
+
+            def select(*a: Any, **k: Any):
+                selects.append(a[0] if a else "")
+                return inner(*a, **k)
+
+            q.select = select  # type: ignore[method-assign]
+        return q
+
+    monkeypatch.setattr(sb, "table", table)
+    monkeypatch.delenv("AUTO_ENV_ENABLED", raising=False)
+    _auto_run(clock, 0, 3, h_a=60.0)
+    monkeypatch.setenv("AUTO_ENV_ENABLED", "true")
+    alerts._states[DEV].th_expires = 0.0
+    _auto_run(clock, 3, 6, h_a=60.0)
+    assert len(selects) == 2
+    assert "auto_vent_enabled" not in selects[0]
+    assert "auto_vent_enabled" in selects[1] and "auto_mist_enabled" in selects[1]

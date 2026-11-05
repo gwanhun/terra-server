@@ -11,11 +11,11 @@
 | 테이블 | 도메인 | 용도 | 키 |
 |--------|--------|------|---|
 | `enclosures` | 공통 | 사육장 (상위 묶음) | UUID, owner_id FK |
-| `devices` | IoT | ESP32-S3 등록. `sys_state`(진단 최신값, 2026-09-28) + `temp_offset_c`(지금 적용 중인 온도 보정, 펌웨어 보고, NULL=구 펌웨어 — 2026-10-01) + `lcd_text`/`lcd_text_updated_at`(지금 LCD 문구 원문, 기기 ACK ok 시 확정, NULL=기본값·미상 — 2026-10-07) + `lcd_power`/`lcd_quiet_start`/`lcd_quiet_end`/`lcd_saver`/`lcd_image_key`(R2 키 접두 `lcd/{uuid}/{sha8}`)/`lcd_image_set_at`/`lcd_updated_at`(Stage N 전원·소등 시간대·화면보호기·컬러 사진 — 같은 ACK ok 확정 규칙, 규칙 자체는 기기 NVS·플래시가 진실 — 2026-10-28) + `lcd_screen_on`/`lcd_override_until`(기기가 telemetry `lcd` 블록으로 보고한 실제 화면 상태·override 끝 시각, 바뀔 때만 갱신, NULL=구 펌웨어 — 2026-11-04) | UUID, owner_id + enclosure_id FK |
-| `device_settings` | IoT | 사용자별 목표/임계값 | device_id PK (1:1) |
+| `devices` | IoT | ESP32-S3 등록. `sys_state`(진단 최신값, 2026-09-28) + `temp_offset_c`(지금 적용 중인 온도 보정, 펌웨어 보고, NULL=구 펌웨어 — 2026-10-01) + `lcd_text`/`lcd_text_updated_at`(지금 LCD 문구 원문, 기기 ACK ok 시 확정, NULL=기본값·미상 — 2026-10-07) + `lcd_power`/`lcd_quiet_start`/`lcd_quiet_end`/`lcd_saver`/`lcd_image_key`(R2 키 접두 `lcd/{uuid}/{sha8}`)/`lcd_image_set_at`/`lcd_updated_at`(Stage N 전원·소등 시간대·화면보호기·컬러 사진 — 같은 ACK ok 확정 규칙, 규칙 자체는 기기 NVS·플래시가 진실 — 2026-10-28) + `lcd_screen_on`/`lcd_override_until`(기기가 telemetry `lcd` 블록으로 보고한 실제 화면 상태·override 끝 시각, 바뀔 때만 갱신, NULL=구 펌웨어 — 2026-11-04) + `auto_env_state`(JSONB, 자동 환기·분무 지금 상태 `{vent:{active,causes,since,paused_until,schedule_hold,last_end_at,runtime_today_sec}, mist:{last_at,today_count}, day, updated_at}` — 브리지가 내용이 바뀔 때만 씀, 앱은 Realtime 으로 읽기만, NULL=기록 없음 — Stage R 2026-11-05) | UUID, owner_id + enclosure_id FK |
+| `device_settings` | IoT | 사용자별 목표/임계값. `auto_vent_enabled`/`auto_mist_enabled`(BOOLEAN NOT NULL DEFAULT false, 자동 환기·분무 토글, `PATCH /devices/{id}/settings` — Stage R 2026-11-05) | device_id PK (1:1) |
 | `telemetry` | IoT | 시계열 원본 (3초) | (device_id, ts) |
 | `telemetry_1m` | IoT | 분 단위 다운샘플 | (device_id, bucket) |
-| `commands` | IoT | 명령 이력 | UUID, device_id FK |
+| `commands` | IoT | 명령 이력. `source` CHECK: `manual`/`schedule`/`timer`/`guard`/`restore`/`auto`(`auto` = 브리지 자동 환기·분무, `issued_by`=기기 소유자, `reason` 예 `auto_vent:humid_high` — Stage R 2026-11-05) | UUID, device_id FK |
 | `alerts` | IoT | 알림 이력 | UUID, device_id FK |
 | `cameras` | 영상 | 카메라 워커 등록 (ESP32-P4 / RPi). `rotate_180`(180° 회전 설정, 진실) + `capabilities`(펌웨어 보고, NULL=구 펌웨어) — 2026-09-08. `device_id`(Terra Hub 짝 devices 행, NULL=순수 카메라) — 2026-10-06 | UUID, owner_id + enclosure_id FK |
 | `motion_clips` | 영상 | 모션 영상 메타 (R2 키, H.264 mp4) | UUID, camera_id FK |

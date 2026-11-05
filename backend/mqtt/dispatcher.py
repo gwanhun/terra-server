@@ -35,6 +35,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
+from backend.auto_env_store import AUTO_SOURCE   # Stage R 자동 환기·분무 — 상수 한 곳
 from backend.command_service import MIST_ACTION, insert_pending_command
 from backend.mqtt import handlers
 from backend.push_events import NO_ACK_RESULT
@@ -112,6 +113,17 @@ def _prune_state(pending_ids: set[str]) -> None:
     cutoff = time.monotonic() - PUBLISHED_MEMO_SEC
     for cmd_id in [k for k, t in _published_unmarked.items() if t < cutoff]:
         del _published_unmarked[cmd_id]
+
+
+def _still_pending(sb: Any, cmd_id: str) -> bool:
+    """자동 명령 발행 직전 재확인. 아직 pending 이면 True, 취소됐거나 조회 실패면 False."""
+    try:
+        res = sb.table("commands").select("status").eq("id", cmd_id).limit(1).execute()
+    except Exception:  # noqa: BLE001 — supabase-py 예외 타입 넓음
+        logger.warning("command %s: 발행 전 상태 재확인 실패 — 이번 폴링은 보내지 않음", cmd_id)
+        return False
+    rows = res.data or []
+    return bool(rows) and rows[0].get("status") == "pending"
 
 
 def _mark_sent(sb: Any, cmd_id: str) -> bool:
@@ -380,6 +392,14 @@ def _dispatch_one(bridge: "MqttBridge", row: dict[str, Any]) -> None:
         )
     if burst_ms is not None:
         publish_payload["duration_ms"] = burst_ms   # DB 행은 요청값(10000) 그대로, 기기엔 상한만큼
+
+    # 3.5) 자동 명령(Stage R)은 발행 직전 아직 pending 인지 다시 본다. 사용자 조작이 오면
+    #      auto_env_store 가 pending 자동 팬 명령을 expired/superseded 로 바꾸는데, 이 폴링이 그 전에
+    #      행을 읽었으면 그대로 나가 사용자 팬을 되돌린다. 조회 실패면 이번엔 보내지 않는다(pending
+    #      그대로 — 다음 폴링 재확인, TTL 10초 안에 못 보면 expired). 사용자·예약 명령은 그대로.
+    if row.get("source") == AUTO_SOURCE and not _still_pending(sb, cmd_id):
+        logger.info("command %s: 자동 명령이 발행 전에 취소됨 — 보내지 않음", cmd_id)
+        return
 
     # 4) MQTT publish
     success = bridge.publish_command(device_text, publish_payload)
