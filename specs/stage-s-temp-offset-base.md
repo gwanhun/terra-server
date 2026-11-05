@@ -1,6 +1,6 @@
 # Stage S — 온도 보정 분리: 공장 기본(-1.5℃, 서버만 앎) + 사용자 보정(앱이 보는 값)
 
-> 상태: 🚧 **서버 구현 완료·PR #50, 마이그레이션 적용 완료, 배포 전** (2026-11-05). 서버만 수정, 펌웨어 변경 없음. 구현: 이관훈(Claude).
+> 상태: ✅ **서버 배포 완료 2026-11-05 12:59 UTC (main ce61eca, PR #49·#50)**. 실기 3항목 통과(아래), 앱팀 "배포 완료" 알림 → 신 앱 0.174.6 스위치 켬 대기. 서버만 수정, 펌웨어 변경 없음. 구현: 이관훈(Claude).
 > 사용자 요청: "기본 온도보정 -1.5 는 앱에 안 보이게. 앱이 하는 보정은 기본에 더해져서 기기에 들어가게. 서버가 합산."
 > 결정 경로: [docs/REVIEW_TEMP_OFFSET_BASE_2026-11-05.md](../docs/REVIEW_TEMP_OFFSET_BASE_2026-11-05.md)(검토, §5 결정 기록) → 백진우 결정 문서 `TEMP_OFFSET_BASE_DECISION_2026-11-05.md`(D1~D13, 레포 밖) → [docs/TEMP_OFFSET_BASE_DECISION_REPLY_2026-11-05.md](../docs/TEMP_OFFSET_BASE_DECISION_REPLY_2026-11-05.md)(회신, 발송 완료).
 > 원래 Stage R 이었으나 PR #48(자동 환기·분무)이 R 을 먼저 써서 S.
@@ -103,7 +103,15 @@
 - [x] API: `user_offset_c: 12` → 400(범위 -8.5~11.5 표기) / 두 키 → 400 / 둘 다 없음 → 400 / `offset_c: -1.5` → 201(기존 테스트 그대로)
 - [x] `DeviceOut`·admin 응답 `temp_offset_user_c`, 콘솔 괄호 표기·`🌡명령` 키별 처리 — 콘솔은 base 를 모르므로 `🌡명령(사용자) +1.0` 으로 구분 표기(D9 의 "+base 기기값" 대신, 2026-11-05)
 - [x] 문서 6종 + ENV.md D11 경고
-- [ ] 배포 → 실기 4항목 → 앱팀 알림
+- [x] 배포 (2026-11-05 12:59 UTC, `.env` `TEMP_OFFSET_BASE_C=-1.5`, api·bridge 재시작, health 200, 에러 0)
+- [x] 실기 — 테스트 기기 `terra-d9feaaa2`(1.2.1), 2026-11-05 13:00 UTC, 기기는 기본값으로 복귀시킴
+  - 신경로 `user_offset_c: 1.0` → acked ok, `devices` (-0.5, 1.0) ✅
+  - 구경로 `offset_c: -2.0` → acked ok, (-2.0, -0.5) ✅ (변환 없이 통과)
+  - 신경로 끔 `user_offset_c: 0` → acked ok, (-1.5, 0.0) ✅
+  - 범위 밖 `user_offset_c: 12` → 발행 전 `rejected / offset_out_of_range` (status·result 한 UPDATE) ✅
+  - 배포 직후 온라인 10대 전부 쌍 기록 확인(사용자값 = 기기값 + 1.5)
+  - 미확인(앱 몫): Realtime 한 이벤트에 두 컬럼 — 신 앱 스위치 켤 때 앱팀이 확인 / LCD 온도 변화 육안
+- [ ] 앱 계약 문서 머리 "배포 완료 2026-11-05 + ce61eca" → 앱팀 알림 (이관훈)
 
 ## 학습 노트
 
