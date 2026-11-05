@@ -330,9 +330,11 @@ ALTER TABLE public.commands ADD CONSTRAINT commands_source_check
 
 ## 켜는 순서 (머지·배포·플래그는 이관훈님)
 
-0. 착수 전: 이관훈님께 "서버는 우리가 구현" 알림 + 펌웨어 타이머 동작 확인을 부탁한다. 확인할 것: 타이머 중 `fan_on{duration_ms}` 가 busy 인지, 일반 `fan_on` 이 자동 OFF 를 지우는지, `fan_off` 가 타이머를 취소하는지.
-1. 마이그레이션 운영 적용(Task 2).
-2. PR 머지·배포. `AUTO_ENV_ENABLED` 꺼짐이라 변화 없다.
+0. ✅ 착수 전: 펌웨어 타이머 동작 3가지 확인 완료(2026-11-05, nano·supermini 소스 — [docs/TEMP_OFFSET_BASE_DECISION_REPLY_2026-11-05.md](../docs/TEMP_OFFSET_BASE_DECISION_REPLY_2026-11-05.md) §B): 타이머 중 `fan_on{duration_ms}` → `busy`(연장 아님) / 일반 `fan_on` → 자동 OFF 예약 취소, 계속 ON / `fan_off` → fan·fan2 모두 타이머 취소 후 OFF. R6·R7 가정과 일치.
+1. ✅ 마이그레이션 운영 적용(2026-11-05, `MIGRATIONS_APPLIED.md`).
+2. ✅ PR #48 머지·배포(2026-11-05 11:13 UTC, 리뷰 반영 0b3c812 포함). `AUTO_ENV_ENABLED` 꺼짐이라 변화 없음 — 배포 후 `source='auto'` 0건·에러 0건 확인.
+   - **앱팀 확정(2026-11-05)**: 테스트 기기 = **사육장 1 `terra-d9feaaa2`(tester01 계정)** → `AUTO_ENV_DEVICES` 에 이 기기 UUID. 앱 토글은 "전체 켬" 알림 전까지 숨김. `source='auto'` 기록 표시 + 자동 팬을 사용자 타이머로 세지 않는 수정은 APK 0.174.2 에 포함. "1대 실제 명령" 단계 진입 시 앱팀에 알리면 실기기 확인.
+   - 앱 §6 회신 반영: 습도 1시간 문구 변경 없음 / 예약 실행 중 판정은 앱이 예약 목록으로(미구현, 지금은 토글 자유) / 제어 기록 합치기 기준 "끝 + 8분".
 3. `ALERTS_V4_ENABLED` 켜진 상태에서 `AUTO_ENV_ENABLED=true` + `AUTO_ENV_DRY_RUN` 기본(켜짐) + `AUTO_ENV_DEVICES=<토글 켠 테스트 기기>` 로 **섀도 2~3일**을 돌린다.
    - 게이트 1: 기기·일당 자동 환기 시작 ≤ 6(중앙값 ≤ 3).
    - 게이트 2: 환기 1회 길이 중앙값 ≥ 10분.
