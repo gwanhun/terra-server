@@ -46,13 +46,15 @@ class OffsetError(ValueError):
 def base_c(device_uuid: str | None = None) -> float:
     """공장 기본 보정(℃). 지금은 전 기기 공통 env 값 — 보드별로 달라지면 device_uuid 로 분기(D1)."""
     global _warned_bad_env
-    raw = (os.getenv(ENV_VAR) or "").strip()
-    if raw:
-        try:
-            return float(raw)
-        except ValueError:
-            pass
-    if raw and not _warned_bad_env:
+    raw_env = os.getenv(ENV_VAR)
+    if raw_env is None:                 # 아예 안 설정 — 기본값, 조용히
+        return DEFAULT_BASE_C
+    raw = raw_env.strip()
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    if not _warned_bad_env:             # 설정했는데 빈 값·숫자 아님(.env 오타) — 한 번만 경고
         _warned_bad_env = True
         logger.warning("%s=%r 숫자 아님 — 기본 %.1f 사용", ENV_VAR, raw, DEFAULT_BASE_C)
     return DEFAULT_BASE_C

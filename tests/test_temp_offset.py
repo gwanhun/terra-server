@@ -26,13 +26,19 @@ def test_base_bad_env_falls_back_to_default_not_zero(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """빈 값·오타는 0 이 아니라 기본 -1.5 (0 이면 신 앱 기기가 1.5℃ 높게 읽혀 오경보)."""
-    monkeypatch.setenv(temp_offset.ENV_VAR, "")
-    assert temp_offset.base_c() == -1.5
-    monkeypatch.setenv(temp_offset.ENV_VAR, "abc")
+    with caplog.at_level(logging.WARNING):
+        monkeypatch.setenv(temp_offset.ENV_VAR, "")          # .env 에 `TEMP_OFFSET_BASE_C=` 오타 — 경고 대상
+        assert temp_offset.base_c() == -1.5
+        monkeypatch.setenv(temp_offset.ENV_VAR, "abc")
+        assert temp_offset.base_c() == -1.5
+        assert temp_offset.base_c() == -1.5
+    assert sum("숫자 아님" in r.message for r in caplog.records) == 1   # 경고는 프로세스당 한 번만
+
+
+def test_base_unset_is_silent(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING):
         assert temp_offset.base_c() == -1.5
-        assert temp_offset.base_c() == -1.5
-    assert sum("숫자 아님" in r.message for r in caplog.records) == 1   # 경고는 한 번만
+    assert not [r for r in caplog.records if "숫자 아님" in r.message]
 
 
 def test_conversions_round_trip() -> None:
