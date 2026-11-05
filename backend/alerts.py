@@ -516,11 +516,14 @@ def _thresholds(c: _Step) -> Thresholds | None:
     st = c.st
     if c.now_mono < st.th_expires:
         return st.th   # 캐시 유효 또는 실패 backoff 중(그동안 th 가 None 이면 보류)
+    cols = "target_temp_min, target_temp_max, target_humid_min, target_humid_max"
+    if auto_env_store.auto_env_enabled():
+        # Stage R 컬럼은 스위치가 켜졌을 때만 — 마이그레이션 전에 배포돼도 v4 알림 조회가 깨지지 않게
+        cols += ", auto_vent_enabled, auto_mist_enabled"
     try:
         res = (
             c.sb.table("device_settings")
-            .select("target_temp_min, target_temp_max, target_humid_min, target_humid_max, "
-                    "auto_vent_enabled, auto_mist_enabled")
+            .select(cols)
             .eq("device_id", c.device_uuid)
             .limit(1)
             .execute()

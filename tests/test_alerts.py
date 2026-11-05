@@ -715,6 +715,35 @@ def test_auto_toggles_missing_columns_are_false(monkeypatch: pytest.MonkeyPatch,
             or c == ("devices", "update")] == []
 
 
+def test_settings_select_skips_auto_columns_when_off(monkeypatch: pytest.MonkeyPatch, sb: FlakySB,
+                                                     clock: Clock) -> None:
+    """스위치 꺼짐이면 v4 기준 조회에 Stage R 컬럼을 안 넣는다 — 마이그레이션 전 배포에도 v4 알림 유지."""
+    selects: list[str] = []
+    orig = sb.table
+
+    def table(name: str):
+        q = orig(name)
+        if name == "device_settings":
+            inner = q.select
+
+            def select(*a: Any, **k: Any):
+                selects.append(a[0] if a else "")
+                return inner(*a, **k)
+
+            q.select = select  # type: ignore[method-assign]
+        return q
+
+    monkeypatch.setattr(sb, "table", table)
+    monkeypatch.delenv("AUTO_ENV_ENABLED", raising=False)
+    _auto_run(clock, 0, 3, h_a=60.0)
+    monkeypatch.setenv("AUTO_ENV_ENABLED", "true")
+    alerts._states[DEV].th_expires = 0.0
+    _auto_run(clock, 3, 6, h_a=60.0)
+    assert len(selects) == 2
+    assert "auto_vent_enabled" not in selects[0]
+    assert "auto_vent_enabled" in selects[1] and "auto_mist_enabled" in selects[1]
+
+
 def test_auto_env_wet_latch_from_humid_cycle(monkeypatch: pytest.MonkeyPatch, sb: FlakySB,
                                              clock: Clock) -> None:
     """습기 사이클 detected_at 을 mono 로 바꿔 래치하고, 사이클이 없어져도 유지한다(R3 ②)."""
