@@ -26,14 +26,25 @@
   않기 위해. 같은 초에 두 모션이 시작할 수는 없으니 시각 일치 = 같은 클립.
 - [2026-11-04] 해제된(unlinked_at) 카메라는 enclosure_id 가 NULL 이라 등록해도 앱 목록
   (GET /enclosures/{id}/clips)에 안 보인다. 기본 거부, --allow-unlinked 로만 진행(연구용 등).
+
+역방향 정리 — 행은 있는데 R2 미디어가 없는 클립 (2026-11-05):
+    uv run python scripts/reconcile_r2_orphans.py --prune-missing                 # 전체, dry-run
+    uv run python scripts/reconcile_r2_orphans.py --prune-missing --camera p4cam-… # 한 카메라
+    ... --prune-missing --apply                                                  # 행 삭제
+  배경: R2 대시보드에서 카메라 폴더를 직접 지우면 DB 행이 남아 앱에 404 클립이 보인다
+  (2026-11-05 확인 12,377행). 대상·결과는 CSV(--out, 기본 tmp/prune_missing_<날짜>.csv)로 남기고,
+  --apply 때만 100건씩 DELETE. user_hidden_clips·gme_jobs 는 ON DELETE CASCADE. R2 는 건드리지 않는다.
+  생성 10분 미만 행은 건너뛴다(방어적 — 행은 PUT 뒤에 생기지만 faststart 재기록 등과 겹치지 않게).
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import re
 import struct
 import sys
+from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -157,6 +168,85 @@ def mvhd_duration_sec(client, bucket: str, key: str, size: int) -> float | None:
     return None
 
 
+def find_dangling(
+    rows: list[dict[str, Any]], r2_keys: set[str], now: datetime, min_age: timedelta,
+) -> list[dict[str, Any]]:
+    """R2 에 mp4 가 없는 행. 생성 min_age 미만 행은 제외(방어적)."""
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        if r["r2_key"] in r2_keys:
+            continue
+        created = datetime.fromisoformat(str(r["created_at"]).replace("Z", "+00:00"))
+        if now - created < min_age:
+            continue
+        out.append(r)
+    return out
+
+
+def prune_missing(
+    sb, client, bucket: str, camera_text: str | None, *, apply: bool, out_csv: Path,
+    min_age: timedelta = timedelta(minutes=MIN_AGE_MIN_DEFAULT),
+) -> tuple[int, int]:
+    """미디어 없는 motion_clips 행을 찾아 CSV 로 남기고, --apply 면 삭제. (대상 수, 삭제 수)."""
+    prefix = f"terra-clips/clips/{camera_text}/" if camera_text else "terra-clips/clips/"
+    r2_keys = set(list_objects(client, bucket, prefix))
+    print(f"R2 스캔: {prefix} 아래 객체 {len(r2_keys)}건")
+
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        res = (
+            sb.table("motion_clips")
+            .select("id, camera_id, r2_key, thumbnail_key, started_at, created_at, file_size")
+            .like("r2_key", prefix + "%")
+            .order("id")
+            .range(offset, offset + DB_PAGE - 1)
+            .execute()
+        )
+        page = list(res.data or [])
+        rows += page
+        if len(page) < DB_PAGE:
+            break
+        offset += DB_PAGE
+    dangling = find_dangling(rows, r2_keys, datetime.now(timezone.utc), min_age)
+    print(f"motion_clips 행 {len(rows)}건 → 미디어 없음 {len(dangling)}건")
+    if not dangling:
+        return 0, 0
+
+    by_cam: dict[str, int] = {}
+    for r in dangling:
+        cam = r["r2_key"].split("/")[2]
+        by_cam[cam] = by_cam.get(cam, 0) + 1
+    for cam, n in sorted(by_cam.items(), key=lambda x: -x[1]):
+        print(f"  {cam}: {n}건")
+
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    with out_csv.open("w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(["clip_id", "key_camera", "r2_key", "thumbnail_key", "file_size", "started_at", "row_created_at", "deleted"])
+        for r in sorted(dangling, key=lambda r: r["r2_key"]):
+            w.writerow([r["id"], r["r2_key"].split("/")[2], r["r2_key"], r.get("thumbnail_key") or "",
+                        r.get("file_size"), r["started_at"], r["created_at"], "pending" if apply else "dry-run"])
+    print(f"목록 저장: {out_csv}")
+
+    if not apply:
+        return len(dangling), 0
+
+    deleted = 0
+    failed_batches = 0
+    ids = [r["id"] for r in dangling]
+    for i in range(0, len(ids), 100):
+        chunk = ids[i : i + 100]
+        try:
+            res = sb.table("motion_clips").delete().in_("id", chunk).execute()
+            deleted += len(res.data or [])
+        except Exception as exc:  # noqa: BLE001 — 한 배치 실패가 나머지를 막지 않게
+            failed_batches += 1
+            print(f"  ! 배치 {i // 100 + 1} 삭제 실패: {exc!r}")
+    print(f"완료: {deleted}/{len(ids)}건 삭제" + (f", 실패 배치 {failed_batches}" if failed_batches else ""))
+    return len(dangling), deleted
+
+
 def reconcile_camera(
     sb, client, bucket: str, camera: dict[str, Any], since: date, until: date, *,
     apply: bool, min_age: timedelta = timedelta(minutes=MIN_AGE_MIN_DEFAULT),
@@ -263,7 +353,7 @@ def reconcile_camera(
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    target = ap.add_mutually_exclusive_group(required=True)
+    target = ap.add_mutually_exclusive_group()
     target.add_argument("--camera", help="카메라 text id (예: p4cam-2d854b2f)")
     target.add_argument(
         "--all-linked", action="store_true",
@@ -276,12 +366,32 @@ def main() -> None:
         "--min-age-min", type=int, default=MIN_AGE_MIN_DEFAULT,
         help=f"이보다 젊은(분) mp4 는 업로드 진행 중으로 보고 건너뜀 (기본 {MIN_AGE_MIN_DEFAULT})",
     )
-    ap.add_argument("--apply", action="store_true", help="실제 INSERT (기본은 dry-run)")
+    ap.add_argument(
+        "--prune-missing", action="store_true",
+        help="역방향: R2 에 미디어가 없는 motion_clips 행 정리 (--camera 로 한정 가능, 기본 전체)",
+    )
+    ap.add_argument("--out", help="--prune-missing 대상 CSV 경로 (기본 tmp/prune_missing_<날짜>.csv)")
+    ap.add_argument("--apply", action="store_true", help="실제 INSERT/DELETE (기본은 dry-run)")
     ap.add_argument(
         "--allow-unlinked", action="store_true",
         help="해제된 카메라도 진행 (enclosure_id NULL 로 등록돼 앱 목록엔 안 보임)",
     )
     args = ap.parse_args()
+
+    if args.prune_missing:
+        if args.all_linked or args.since or args.until:
+            sys.exit("--prune-missing 은 --camera(선택) 만 받는다")
+        out_csv = Path(args.out) if args.out else Path("tmp") / f"prune_missing_{datetime.now(KST):%Y-%m-%d}.csv"
+        n, deleted = prune_missing(
+            get_supabase_client(), get_r2_client(), get_r2_bucket(), args.camera,
+            apply=args.apply, out_csv=out_csv,
+            min_age=timedelta(minutes=max(args.min_age_min, 0)),
+        )
+        if not args.apply and n:
+            print("dry-run 완료 — 실제 삭제는 --apply 로 재실행")
+        return
+    if not (args.camera or args.all_linked):
+        ap.error("--camera 또는 --all-linked 중 하나 필요")
 
     if args.since or args.until:
         if not (args.since and args.until):

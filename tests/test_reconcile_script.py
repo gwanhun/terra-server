@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from scripts.reconcile_r2_orphans import (
     DB_PAGE,
     default_range,
+    find_dangling,
     registered_started_at_keys,
     split_in_flight,
 )
@@ -51,3 +52,15 @@ def test_split_in_flight_skips_young_objects() -> None:
     old, young = split_in_flight(mp4s, now, timedelta(minutes=10))
     assert old == {"old.mp4": 100, "edge.mp4": 300}
     assert young == ["young.mp4"]
+
+
+def test_find_dangling_skips_present_and_young_rows() -> None:
+    """R2 에 없는 행만, 단 생성 10분 미만은 제외(방어적)."""
+    now = datetime(2026, 11, 5, 2, 0, tzinfo=timezone.utc)
+    rows = [
+        {"id": "a", "r2_key": "k/a.mp4", "created_at": "2026-10-01T00:00:00+00:00"},   # 없음 → 대상
+        {"id": "b", "r2_key": "k/b.mp4", "created_at": "2026-10-01T00:00:00+00:00"},   # 있음
+        {"id": "c", "r2_key": "k/c.mp4", "created_at": "2026-11-05T01:55:00Z"},        # 없음이지만 5분 전 → 제외
+    ]
+    out = find_dangling(rows, {"k/b.mp4"}, now, timedelta(minutes=10))
+    assert [r["id"] for r in out] == ["a"]
