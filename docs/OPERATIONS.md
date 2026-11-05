@@ -144,6 +144,19 @@ uv run python scripts/reconcile_r2_orphans.py --camera p4cam-d141abfb --since 20
 네트워크·TLS 상태를 본다. R2 버킷엔 clips 경로 lifecycle 규칙이 **없다**(2026-10-20 대시보드 확인) —
 삭제 API 가 R2 객체를 직접 지우고, 고아는 이 스크립트가 등록으로 흡수한다.
 
+### 역방향 — 행은 있는데 R2 미디어가 없는 클립 (2026-11-05)
+
+**R2 대시보드에서 카메라 폴더를 직접 지우지 말 것.** DB 행이 남아 앱에 재생 404 클립이 보인다
+(2026-11-05 확인 12,377행 — 전부 과거 대시보드 삭제가 원인). 카메라 영상을 지우려면 앱의 카메라 삭제
+(DELETE /cameras — R2 까지 같이 지움)를 쓰고, 이미 생긴 잔존 행은 아래로 정리한다. R2 는 건드리지 않는다.
+
+```bash
+cd ~/terra-server
+uv run python scripts/reconcile_r2_orphans.py --prune-missing                     # dry-run, tmp/prune_missing_<날짜>.csv 저장
+uv run python scripts/reconcile_r2_orphans.py --prune-missing --camera p4cam-…    # 한 카메라만
+uv run python scripts/reconcile_r2_orphans.py --prune-missing --apply             # 행 삭제 (100건씩, cascade: user_hidden_clips·gme_jobs)
+```
+
 ---
 
 ## 2. 로그 확인

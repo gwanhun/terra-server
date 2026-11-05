@@ -12,3 +12,6 @@ storage/
 
 # Claude Code 로컬 설정·worktree
 .claude/
+
+# 로컬 조사 결과물 (커밋 금지)
+tmp/
