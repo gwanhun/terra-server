@@ -43,6 +43,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -50,6 +51,8 @@ from typing import Any, Literal
 
 from backend.daily_analysis import num as _num
 from backend.env_rules import GAP_SEC, OVER_HUMID_ENTRY_SEC, Thresholds
+
+logger = logging.getLogger(__name__)
 
 # ---------- 상수 (계획 Global Constraints 표가 정본) ----------
 
@@ -467,7 +470,9 @@ class AutoEnvTracker:
         # R6: 소유 중 OFF 관측
         recent_cmd = self._last_cmd is not None and now - self._last_cmd < REFIRE_MIN_SEC
         if self._off_streak >= OFF_STREAK and not recent_cmd:
-            assert self._last_on is not None
+            if self._last_on is None:   # 소유 중이면 항상 있어야 한다 — 깨졌으면 이 틱만 건너뛰고 로그
+                logger.warning("auto-env: owned 상태인데 _last_on 없음 — 이 틱 건너뜀")
+                return None
             expiry = self._last_on + VENT_DURATION_MS / 1000 - EXPIRY_SLACK_SEC
             if now < expiry:
                 self._release(now)                          # ⓑ 외부 끔
@@ -493,7 +498,9 @@ class AutoEnvTracker:
             return None
         if self._runtime() >= VENT_DAILY_MAX_SEC:
             return _vent_off_cmd("auto_vent_cap")
-        assert t is not None
+        if t is None:                   # blind 가 아니면 온도가 있어야 한다 — 깨졌으면 이 틱만 건너뜀
+            logger.warning("auto-env: blind 아닌데 온도 없음 — 이 틱 건너뜀")
+            return None
         if t <= th.temp_min:
             self._causes.discard("humid_high")
             if not self._causes:
@@ -534,7 +541,8 @@ class AutoEnvTracker:
     def _stop_pending(self, now: float) -> bool:
         """자동 fan_off ACK 대기 중이면 True(명령 없음). 텔레메트리 OFF 2샘플이면 끄기 성공으로 확정,
         300초 안에 ACK·OFF 둘 다 없으면 대기를 풀어 다음 판정이 fan_off 를 다시 내게 한다."""
-        assert self._stopping is not None
+        if self._stopping is None:      # 호출자가 _stopping 을 확인하고 부른다 — 아니면 대기 없음
+            return False
         since, reason = self._stopping
         if self._off_streak >= OFF_STREAK:
             self._stopping = None

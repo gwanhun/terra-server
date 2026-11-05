@@ -35,6 +35,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
+from backend.auto_env_store import AUTO_SOURCE   # Stage R 자동 환기·분무 — 상수 한 곳
 from backend.command_service import MIST_ACTION, insert_pending_command
 from backend.mqtt import handlers
 from backend.push_events import NO_ACK_RESULT
@@ -112,9 +113,6 @@ def _prune_state(pending_ids: set[str]) -> None:
     cutoff = time.monotonic() - PUBLISHED_MEMO_SEC
     for cmd_id in [k for k, t in _published_unmarked.items() if t < cutoff]:
         del _published_unmarked[cmd_id]
-
-
-AUTO_SOURCE = "auto"   # Stage R 자동 환기·분무 (backend/auto_env_store.AUTO_SOURCE 와 같은 값)
 
 
 def _still_pending(sb: Any, cmd_id: str) -> bool:
