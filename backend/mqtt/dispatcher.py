@@ -40,6 +40,7 @@ from backend.command_service import MIST_ACTION, insert_pending_command
 from backend.mqtt import handlers
 from backend.push_events import NO_ACK_RESULT
 from backend.supabase_client import get_supabase_client
+from backend import temp_offset
 
 if TYPE_CHECKING:
     from backend.mqtt.bridge import MqttBridge
@@ -67,7 +68,9 @@ _RESERVED_PAYLOAD_KEYS: frozenset[str] = frozenset({
 
 # 서버만 쓰는 기록용 필드 — 기기로 발행하지 않는다.
 # lcd_text: LCD 원문. ACK 때 devices.lcd_text 로 확정 (routers/lcd.py).
-_SERVER_ONLY_PAYLOAD_KEYS: frozenset[str] = frozenset({"lcd_text"})
+# user_offset_c: 사용자 온도 보정값(Stage S). 발행 직전 base 를 더한 offset_c 로 바꿔 보낸다 — 아래 3.5).
+_SERVER_ONLY_PAYLOAD_KEYS: frozenset[str] = frozenset({"lcd_text", temp_offset.USER_KEY})
+TEMP_OFFSET_ACTION = "set_temp_offset"
 
 DEFAULT_INTERVAL_SEC = 1.0
 DEFAULT_BATCH = 50
@@ -318,6 +321,22 @@ def _dispatch_one(bridge: "MqttBridge", row: dict[str, Any]) -> None:
         _enqueue_failure(row, device_uuid, "unsupported_action")
         return
 
+    # 1.6) 온도 보정(Stage S): 신 앱은 사용자값 user_offset_c 를 보낸다. 기기에 갈 절대값은 여기서
+    #      base(-1.5) 를 더해 정하고, 잘못된 값은 발행 전 거절한다 — status·result 를 한 UPDATE 로
+    #      (result 없는 rejected 는 앱이 15초 뒤 "응답 없음"으로 오인). 구 앱·콘솔의 offset_c 는 그대로 통과.
+    #      DB 행은 사용자값 그대로 두고 기기에만 변환값 — mist 분할과 같은 규칙.
+    device_offset_c: float | None = None
+    if action == TEMP_OFFSET_ACTION:
+        try:
+            device_offset_c = temp_offset.resolve_device_offset(row.get("payload"), device_uuid)
+        except temp_offset.OffsetError as exc:
+            sb.table("commands").update(
+                {"status": "rejected", "result": exc.result}
+            ).eq("id", cmd_id).execute()
+            logger.warning("command %s: set_temp_offset %s → rejected (%s)", cmd_id, exc.result, exc)
+            _enqueue_failure(row, device_uuid, exc.result)
+            return
+
     # 2) device UUID → device_id (TEXT) 캐시 해상
     #    조회 실패(예외)도, 한 번의 빈 결과도 '미등록'으로 굳히지 않는다. pending 그대로 두면
     #    다음 폴링이 다시 조회한다. 예외가 TTL 을 넘기면 1) 에서 expired(실패 푸시 포함),
@@ -392,6 +411,8 @@ def _dispatch_one(bridge: "MqttBridge", row: dict[str, Any]) -> None:
         )
     if burst_ms is not None:
         publish_payload["duration_ms"] = burst_ms   # DB 행은 요청값(10000) 그대로, 기기엔 상한만큼
+    if device_offset_c is not None:
+        publish_payload[temp_offset.DEVICE_KEY] = device_offset_c   # 3.5) 사용자값 + base. user_offset_c 는 위에서 빠짐
 
     # 3.5) 자동 명령(Stage R)은 발행 직전 아직 pending 인지 다시 본다. 사용자 조작이 오면
     #      auto_env_store 가 pending 자동 팬 명령을 expired/superseded 로 바꾸는데, 이 폴링이 그 전에

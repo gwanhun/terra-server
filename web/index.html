@@ -653,8 +653,10 @@ async function loadLastTempOffsetCmds(deviceIds) {
   if (error) { log({ last_temp_offset: error.message }); return; }
   (data || []).forEach(c => {
     if (LAST_TOFF_CMD[c.device_id]) return;   // 최신순이라 첫 건이 마지막 명령
-    const v = c.payload && Number(c.payload.offset_c);
-    if (!isNaN(v)) LAST_TOFF_CMD[c.device_id] = { offset_c: v, status: c.status, issued_at: c.issued_at };
+    // Stage S: 신 앱은 user_offset_c(사용자값)를 보낸다 — 콘솔은 공장 기본을 모르므로 '사용자' 로 구분 표기만.
+    const isUser = !!(c.payload && c.payload.user_offset_c != null);
+    const v = c.payload && Number(isUser ? c.payload.user_offset_c : c.payload.offset_c);
+    if (!isNaN(v)) LAST_TOFF_CMD[c.device_id] = { offset_c: v, user: isUser, status: c.status, issued_at: c.issued_at };
   });
 }
 
@@ -663,13 +665,16 @@ function tempOffsetHtml(deviceUuid) {
   const d = DEVICES.find(x => x.id === deviceUuid);
   const fmt = v => (v > 0 ? '+' : '') + Number(v).toFixed(1);
   if (d && d.temp_offset_c != null) {
-    return `<br><small class="muted" title="기기가 보고한 현재 보정값(NVS) — 2026-10-01+ 펌웨어">🌡보정 ${fmt(d.temp_offset_c)}</small>`;
+    // Stage S(2026-11-05): 괄호는 사용자 보정값(= 기기값 − 공장 기본, 신 앱이 보는 수치). 콘솔 명령은 여전히 기기값.
+    const user = d.temp_offset_user_c != null ? ` <span style="opacity:.7">(사용자 ${fmt(d.temp_offset_user_c)})</span>` : '';
+    return `<br><small class="muted" title="기기가 보고한 현재 보정값(NVS) — 2026-10-01+ 펌웨어. 괄호 = 공장 기본을 뺀 사용자 보정값(신 앱 표시값)">🌡보정 ${fmt(d.temp_offset_c)}${user}</small>`;
   }
   const c = LAST_TOFF_CMD[deviceUuid];
   if (c) {
     const when = (c.issued_at || '').slice(0, 10);
     const st = c.status === 'acked' ? '' : ' ' + c.status;
-    return `<br><small class="muted" title="구 펌웨어라 현재값 미보고 — commands 의 마지막 set_temp_offset(${c.issued_at})${st}. 보드 교체·flash 후엔 실제와 다를 수 있음(빌드 기본 -1.5)" style="opacity:.7">🌡명령 ${fmt(c.offset_c)} <span style="opacity:.6">${when}${st}</span></small>`;
+    const label = c.user ? '🌡명령(사용자)' : '🌡명령';
+    return `<br><small class="muted" title="구 펌웨어라 현재값 미보고 — commands 의 마지막 set_temp_offset(${c.issued_at})${st}. 보드 교체·flash 후엔 실제와 다를 수 있음(빌드 기본 -1.5). '(사용자)' 는 신 앱이 보낸 사용자 보정값(기기값 = 사용자값 + 공장 기본)" style="opacity:.7">${label} ${fmt(c.offset_c)} <span style="opacity:.6">${when}${st}</span></small>`;
   }
   return '';
 }

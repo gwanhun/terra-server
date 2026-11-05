@@ -185,3 +185,27 @@ def test_get_command_status_404(app_client: TestClient, fake_sb: MagicMock) -> N
     fake_sb.table.side_effect = lambda name: {"devices": dev, "commands": cmd}[name]
     assert app_client.get(f"/devices/{DEVICE_UUID}/commands/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").status_code == 404
     assert app_client.get(f"/devices/{DEVICE_UUID}/commands/not-uuid").status_code == 404
+
+
+def test_generic_command_temp_offset_user_key(app_client: TestClient, fake_sb: MagicMock, monkeypatch) -> None:
+    """Stage S: 신 앱은 user_offset_c(사용자값)만 보낸다. DB 에는 사용자값 그대로, 범위는 base 로 계산(-8.5~11.5)."""
+    monkeypatch.delenv("TEMP_OFFSET_BASE_C", raising=False)
+    cmd = _cmd_tables(fake_sb)
+    ok = app_client.post(f"/devices/{DEVICE_UUID}/commands",
+                         json={"action": "set_temp_offset", "payload": {"user_offset_c": 1.0}})
+    assert ok.status_code == 201, ok.text
+    assert cmd.insert.call_args.args[0]["payload"] == {"user_offset_c": 1.0}   # 합산값은 DB 에 안 씀
+    zero = app_client.post(f"/devices/{DEVICE_UUID}/commands",
+                           json={"action": "set_temp_offset", "payload": {"user_offset_c": 0}})
+    assert zero.status_code == 201, zero.text                                   # 끔 = 0
+    for bad in (
+        {"user_offset_c": 12},                      # 합산 10.5 > 10
+        {"user_offset_c": -9},                      # 합산 -10.5
+        {"user_offset_c": "1"},
+        {"user_offset_c": 1.0, "offset_c": -0.5},   # 두 키 동시
+    ):
+        res = app_client.post(f"/devices/{DEVICE_UUID}/commands", json={"action": "set_temp_offset", "payload": bad})
+        assert res.status_code == 400, (bad, res.text)
+    out_of_range = app_client.post(f"/devices/{DEVICE_UUID}/commands",
+                                   json={"action": "set_temp_offset", "payload": {"user_offset_c": 12}})
+    assert "-8.5 ~ 11.5" in out_of_range.json()["detail"]

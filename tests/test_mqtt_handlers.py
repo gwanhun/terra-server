@@ -6,6 +6,7 @@ handlers.py 가 paho 의존이 없어서 Supabase mock 만으로 충분.
 from __future__ import annotations
 
 import logging
+import time
 from unittest.mock import MagicMock
 
 import httpx
@@ -1952,3 +1953,35 @@ def test_handle_ack_lcd_state_not_ok_or_bad_payload_skipped(fake_sb: MagicMock) 
     # ok 인데 payload 가 깨진 행(있을 수 없지만) — 확정값 못 만들면 건너뜀
     assert not _lcd_state_updates(fake_sb, "lcd_quiet", "ok", {"start_min": 5000, "end_min": 1})
     assert not _lcd_state_updates(fake_sb, "lcd_power", "ok", {"on": "yes"})
+
+
+def test_device_telemetry_writes_user_offset_pair(fake_sb: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stage S(2026-11-05): 사용자 보정값(기기값 − base -1.5)을 temp_offset_user_c 에 **같은 UPDATE** 로.
+    기존 temp_offset_c 값·규칙은 그대로(앱 0.166.0~ 이 절대값으로 읽음). 구 펌웨어·범위 밖은 둘 다 없음."""
+    monkeypatch.delenv("TEMP_OFFSET_BASE_C", raising=False)
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _device_table_factory(updates, db_caps=None)
+
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 1, "temp_offset_c": -0.5})
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 2, "temp_offset_c": -1.5})
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 3, "temp_offset_c": -3.0})
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 4})                        # 구 펌웨어
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 5, "temp_offset_c": 42})   # 범위 밖
+
+    pairs = [(u.get("temp_offset_c"), u.get("temp_offset_user_c")) for u in updates]
+    assert pairs == [(-0.5, 1.0), (-1.5, 0.0), (-3.0, -1.5), (None, None), (None, None)]
+    assert all(("temp_offset_c" in u) == ("temp_offset_user_c" in u) for u in updates)
+
+
+def test_device_telemetry_user_offset_column_missing_drops_both(fake_sb: MagicMock) -> None:
+    """새 컬럼이 없다고 기억돼 있으면(마이그레이션 누락) temp_offset_c 도 함께 뺀다 — 앱 Realtime 한 이벤트에서
+    두 값이 어긋나지 않게. 온라인 표시(last_seen_at)는 그대로."""
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _device_table_factory(updates, db_caps=None)
+    handlers._missing_columns["devices.temp_offset_user_c"] = time.monotonic() + 600
+
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 1, "temp_offset_c": -0.5})
+
+    assert len(updates) == 1
+    assert "temp_offset_c" not in updates[0] and "temp_offset_user_c" not in updates[0]
+    assert updates[0]["is_online"] is True

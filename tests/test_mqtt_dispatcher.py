@@ -1002,3 +1002,76 @@ def test_manual_command_skips_recheck(
     monkeypatch.setattr(dispatcher, "_still_pending", lambda *_a: pytest.fail("수동 명령은 재확인 안 함"))
     dispatcher._dispatch_one(fake_bridge, {**_auto_cmd(), "source": "manual"})
     fake_bridge.publish_command.assert_called_once()
+
+
+# ---------- 온도 보정 분리 (Stage S, 2026-11-05) ----------
+
+
+def test_temp_offset_user_value_is_summed_with_base_before_publish(
+    fake_sb: MagicMock, fake_bridge: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """신 앱 user_offset_c=+1.0 → 기기엔 offset_c=-0.5(+base -1.5). user_offset_c 는 기기로 안 나간다."""
+    monkeypatch.delenv("TEMP_OFFSET_BASE_C", raising=False)
+    out = _dispatch_with_payload(fake_sb, fake_bridge, "set_temp_offset", {"user_offset_c": 1.0})
+    assert out["action"] == "set_temp_offset"
+    assert out["offset_c"] == -0.5
+    assert "user_offset_c" not in out
+
+
+def test_temp_offset_legacy_offset_c_passes_through(
+    fake_sb: MagicMock, fake_bridge: MagicMock
+) -> None:
+    """구 앱·콘솔의 offset_c(합산값)는 변환 없이 그대로 — 의미 변경 금지(앱 0.166.0~ 배포됨)."""
+    out = _dispatch_with_payload(fake_sb, fake_bridge, "set_temp_offset", {"offset_c": -1.5})
+    assert out["offset_c"] == -1.5
+
+
+def _dispatch_temp_offset_expect_reject(
+    fake_sb: MagicMock, fake_bridge: MagicMock, monkeypatch: pytest.MonkeyPatch, payload: dict,
+) -> list[dict]:
+    cmd = {
+        "id": "cmd-1", "device_id": DEVICE_UUID, "action": "set_temp_offset", "payload": payload,
+        "issued_at": _now_iso(), "ttl_sec": 30, "issued_by": "o", "source": "manual", "source_id": None,
+    }
+    updates: list[dict] = []
+
+    def _table(name: str) -> MagicMock:
+        t = MagicMock()
+        if name == "commands":
+            t.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = [cmd]
+            def _cap(patch: dict) -> MagicMock:
+                updates.append(patch)
+                c = MagicMock(); c.eq.return_value.execute.return_value.data = [{"id": "cmd-1"}]
+                return c
+            t.update.side_effect = _cap
+        return t
+
+    fake_sb.table.side_effect = _table
+    failures: list[str] = []
+    monkeypatch.setattr(dispatcher, "_enqueue_failure", lambda row, dev, result: failures.append(result))
+    assert dispatcher.poll_and_dispatch(fake_bridge) == 1
+    fake_bridge.publish_command.assert_not_called()
+    assert len(updates) == 1, updates           # status·result 한 UPDATE (앱 요청)
+    assert failures == [updates[0]["result"]]
+    return updates
+
+
+def test_temp_offset_out_of_range_rejected_before_publish(
+    fake_sb: MagicMock, fake_bridge: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """합산 결과 ±10 밖(12 + -1.5 = 10.5) → 발행 전 rejected/offset_out_of_range."""
+    monkeypatch.delenv("TEMP_OFFSET_BASE_C", raising=False)
+    updates = _dispatch_temp_offset_expect_reject(fake_sb, fake_bridge, monkeypatch, {"user_offset_c": 12})
+    assert updates == [{"status": "rejected", "result": "offset_out_of_range"}]
+
+
+@pytest.mark.parametrize("payload", [
+    {"user_offset_c": 1.0, "offset_c": -0.5},
+    {"user_offset_c": "1.0"},
+])
+def test_temp_offset_invalid_payload_rejected_before_publish(
+    fake_sb: MagicMock, fake_bridge: MagicMock, monkeypatch: pytest.MonkeyPatch, payload: dict
+) -> None:
+    """두 키 동시·숫자 아님 → rejected/invalid_payload (앱은 REST 만 쓰므로 방어용)."""
+    updates = _dispatch_temp_offset_expect_reject(fake_sb, fake_bridge, monkeypatch, payload)
+    assert updates == [{"status": "rejected", "result": "invalid_payload"}]

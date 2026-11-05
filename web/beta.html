@@ -607,8 +607,10 @@ async function toggleDeviceTest(email, dev, hostDiv, btn) {
     const fmt = v => (v > 0 ? '+' : '') + Number(v).toFixed(1) + '℃';
     if (dev.temp_offset_c != null) {
       offIn.value = dev.temp_offset_c;
-      cur.textContent = '(기기 보고: ' + fmt(dev.temp_offset_c) + ')';
-      cur.title = '기기가 telemetry 로 보고한 현재 NVS 보정값';
+      // Stage S(2026-11-05): temp_offset_user_c = 기기값 − 공장 기본(서버만 앎). 신 앱이 보는 값. 콘솔 입력칸은 여전히 기기값(offset_c).
+      const userTxt = dev.temp_offset_user_c != null ? ' · 사용자 ' + fmt(dev.temp_offset_user_c) : '';
+      cur.textContent = '(기기 보고: ' + fmt(dev.temp_offset_c) + userTxt + ')';
+      cur.title = '기기가 telemetry 로 보고한 현재 NVS 보정값(입력칸은 이 기기값 기준). "사용자" 는 공장 기본을 뺀 값 — 신 앱 화면에 보이는 수치';
     } else {
       cur.textContent = '(현재값 미보고 — 구 펌웨어, 빌드 기본 -1.5℃ 추정)';
       cur.title = '2026-10-01+ 펌웨어만 현재 보정값을 보고. 보드 교체·flash 후엔 빌드 기본(-1.5℃)으로 돌아갔을 수 있음';
