@@ -31,10 +31,16 @@
     uv run python scripts/reconcile_r2_orphans.py --prune-missing                 # 전체, dry-run
     uv run python scripts/reconcile_r2_orphans.py --prune-missing --camera p4cam-… # 한 카메라
     ... --prune-missing --apply                                                  # 행 삭제
-  배경: R2 대시보드에서 카메라 폴더를 직접 지우면 DB 행이 남아 앱에 404 클립이 보인다
-  (2026-11-05 확인 12,377행). 대상·결과는 CSV(--out, 기본 tmp/prune_missing_<날짜>.csv)로 남기고,
-  --apply 때만 100건씩 DELETE. user_hidden_clips·gme_jobs 는 ON DELETE CASCADE. R2 는 건드리지 않는다.
-  생성 10분 미만 행은 건너뛴다(방어적 — 행은 PUT 뒤에 생기지만 faststart 재기록 등과 겹치지 않게).
+  배경: R2 미디어가 없는 행은 두 종류다(2026-11-05, 12,376행 대조).
+    1) 의도된 삭제 — 라벨링 팀의 미디어 삭제 파이프라인이 원장 `motion_clip_system_exclusions` 에
+       state=media_deleted(조용한 영상·짧은 오류·사생활 요청 등)로 적고 R2 원본만 지운다. 행은
+       활동 통계·GME 결과·라벨을 위해 **일부러 남기며**, 앱·라벨링 웹은 원장을 보고 숨긴다.
+    2) 원장 없음 — R2 대시보드에서 폴더를 직접 지운 것. 이것도 행을 지우지 않고 라벨링 팀이 원장 행을
+       넣는 방식으로 정리한다(행에 라벨러 제출·GME 실행·감사 기록이 붙어 있어 CASCADE 로 지우면 같이 사라짐).
+  그래서 이 모드는 **보고용**이다: 원장에 있는 clip 은 "의도된 미디어 없음" 으로 빼고, 원장에 없는 clip 만
+  CSV(--out, 기본 tmp/prune_missing_<날짜>.csv)에 남겨 라벨링 팀에 넘긴다. --apply 는 원장 없는 행만
+  100건씩 DELETE 하되 기본 경로가 아니다(FK/트리거에 막히는 행은 blocked:<테이블> 로 기록).
+  생성 10분 미만 행은 건너뛴다(방어적).
 """
 
 from __future__ import annotations
@@ -183,6 +189,28 @@ def find_dangling(
     return out
 
 
+LEDGER_TABLE = "motion_clip_system_exclusions"   # 라벨링 팀 소유 — 읽기만 한다
+
+
+def ledger_states(sb, clip_ids: list[str]) -> dict[str, str]:
+    """원장에 있는 clip_id → state. 없는 clip 은 키 자체가 없다."""
+    out: dict[str, str] = {}
+    for i in range(0, len(clip_ids), 200):
+        res = sb.table(LEDGER_TABLE).select("clip_id, state").in_("clip_id", clip_ids[i : i + 200]).execute()
+        for r in res.data or []:
+            out[r["clip_id"]] = str(r.get("state"))
+    return out
+
+
+def split_by_ledger(
+    dangling: list[dict[str, Any]], ledger: dict[str, str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(원장에 있는 행, 원장에 없는 행). 원장 state 는 무엇이든 '라벨링 팀 관리 중' 으로 본다."""
+    ledgered = [r for r in dangling if r["id"] in ledger]
+    unledgered = [r for r in dangling if r["id"] not in ledger]
+    return ledgered, unledgered
+
+
 def prune_missing(
     sb, client, bucket: str, camera_text: str | None, *, apply: bool, out_csv: Path,
     min_age: timedelta = timedelta(minutes=MIN_AGE_MIN_DEFAULT),
@@ -208,28 +236,37 @@ def prune_missing(
         if len(page) < DB_PAGE:
             break
         offset += DB_PAGE
-    dangling = find_dangling(rows, r2_keys, datetime.now(timezone.utc), min_age)
-    print(f"motion_clips 행 {len(rows)}건 → 미디어 없음 {len(dangling)}건")
-    if not dangling:
+    all_dangling = find_dangling(rows, r2_keys, datetime.now(timezone.utc), min_age)
+    print(f"motion_clips 행 {len(rows)}건 → 미디어 없음 {len(all_dangling)}건")
+    if not all_dangling:
         return 0, 0
+
+    ledger = ledger_states(sb, [r["id"] for r in all_dangling])
+    ledgered, dangling = split_by_ledger(all_dangling, ledger)
+    by_state: dict[str, int] = {}
+    for r in ledgered:
+        by_state[ledger[r["id"]]] = by_state.get(ledger[r["id"]], 0) + 1
+    print(f"  원장({LEDGER_TABLE})에 있음 — 의도된 미디어 없음: {len(ledgered)}건 {by_state}")
+    print(f"  원장에 없음 — 라벨링 팀에 원장 등록 요청 대상: {len(dangling)}건")
 
     by_cam: dict[str, int] = {}
     for r in dangling:
         cam = r["r2_key"].split("/")[2]
         by_cam[cam] = by_cam.get(cam, 0) + 1
     for cam, n in sorted(by_cam.items(), key=lambda x: -x[1]):
-        print(f"  {cam}: {n}건")
+        print(f"    {cam}: {n}건")
 
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     with out_csv.open("w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["clip_id", "key_camera", "r2_key", "thumbnail_key", "file_size", "started_at", "row_created_at", "deleted"])
-        for r in sorted(dangling, key=lambda r: r["r2_key"]):
+        w.writerow(["clip_id", "key_camera", "r2_key", "thumbnail_key", "file_size", "started_at", "row_created_at", "ledger_state", "deleted"])
+        for r in sorted(all_dangling, key=lambda r: r["r2_key"]):
             w.writerow([r["id"], r["r2_key"].split("/")[2], r["r2_key"], r.get("thumbnail_key") or "",
-                        r.get("file_size"), r["started_at"], r["created_at"], "pending" if apply else "dry-run"])
+                        r.get("file_size"), r["started_at"], r["created_at"], ledger.get(r["id"], ""),
+                        "skip:ledger" if r["id"] in ledger else ("pending" if apply else "dry-run")])
     print(f"목록 저장: {out_csv}")
 
-    if not apply:
+    if not apply or not dangling:
         return len(dangling), 0
 
     # 배치 DELETE 는 한 행이라도 FK/트리거에 걸리면 전체 롤백된다(2026-11-05 실측: 앱팀 테이블
@@ -257,10 +294,11 @@ def prune_missing(
     status.update({cid: f"blocked:{why}" for cid, why in blocked.items()})
     with out_csv.open("w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["clip_id", "key_camera", "r2_key", "thumbnail_key", "file_size", "started_at", "row_created_at", "deleted"])
-        for r in sorted(dangling, key=lambda r: r["r2_key"]):
+        w.writerow(["clip_id", "key_camera", "r2_key", "thumbnail_key", "file_size", "started_at", "row_created_at", "ledger_state", "deleted"])
+        for r in sorted(all_dangling, key=lambda r: r["r2_key"]):
             w.writerow([r["id"], r["r2_key"].split("/")[2], r["r2_key"], r.get("thumbnail_key") or "",
-                        r.get("file_size"), r["started_at"], r["created_at"], status.get(r["id"], "unknown")])
+                        r.get("file_size"), r["started_at"], r["created_at"], ledger.get(r["id"], ""),
+                        "skip:ledger" if r["id"] in ledger else status.get(r["id"], "unknown")])
     print(f"완료: {len(deleted)}/{len(ids)}건 삭제, 막힘 {len(blocked)}건 (결과 CSV deleted 열 참고)")
     if blocked:
         by_why: dict[str, int] = {}
@@ -268,7 +306,7 @@ def prune_missing(
             by_why[why] = by_why.get(why, 0) + 1
         for why, n in sorted(by_why.items(), key=lambda x: -x[1]):
             print(f"  - {why}: {n}건")
-        print("  → 막힌 행은 참조 테이블 소유자(앱팀)가 참조 행을 정리하거나 FK 를 CASCADE 로 바꿔야 지워진다")
+        print("  → 막힌 행은 지우지 말고 라벨링 팀에 원장(media_deleted) 등록을 요청한다(라벨·감사 기록 보존)")
     return len(dangling), len(deleted)
 
 

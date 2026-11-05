@@ -146,16 +146,21 @@ uv run python scripts/reconcile_r2_orphans.py --camera p4cam-d141abfb --since 20
 
 ### 역방향 — 행은 있는데 R2 미디어가 없는 클립 (2026-11-05)
 
-**R2 대시보드에서 카메라 폴더를 직접 지우지 말 것.** DB 행이 남아 앱에 재생 404 클립이 보인다
-(2026-11-05 확인 12,377행 — 전부 과거 대시보드 삭제가 원인). 카메라 영상을 지우려면 앱의 카메라 삭제
-(DELETE /cameras — R2 까지 같이 지움)를 쓰고, 이미 생긴 잔존 행은 아래로 정리한다. R2 는 건드리지 않는다.
+미디어 없는 행은 **지우지 않는다.** 라벨링 팀 원장 `motion_clip_system_exclusions`(state=media_deleted) 가
+"의도적으로 원본만 지운 클립" 의 기준이고, 앱·라벨링 웹은 이 원장을 보고 숨긴다. 행엔 라벨러 제출·GME 실행·
+감사 기록이 FK 로 붙어 있어 CASCADE 로 지우면 같이 사라진다(2026-11-05 라벨링 팀 합의).
+
+- **R2 대시보드에서 카메라 폴더를 직접 지우지 말 것.** 원장 없이 미디어만 사라져 앱에 404 클립이 보인다
+  (2026-11-05 확인 3,494행 — 과거 대시보드 삭제). 카메라 영상 삭제는 앱의 카메라 삭제(DELETE /cameras) 로.
+- 원장에 없는 미디어 없는 행이 보이면 라벨링 팀에 CSV 를 넘겨 원장 행을 넣게 한다. 아래 모드가 그 CSV 를 만든다.
 
 ```bash
 cd ~/terra-server
-uv run python scripts/reconcile_r2_orphans.py --prune-missing                     # dry-run, tmp/prune_missing_<날짜>.csv 저장
+uv run python scripts/reconcile_r2_orphans.py --prune-missing                     # 보고: 원장 유/무 분리 → tmp/prune_missing_<날짜>.csv
 uv run python scripts/reconcile_r2_orphans.py --prune-missing --camera p4cam-…    # 한 카메라만
-uv run python scripts/reconcile_r2_orphans.py --prune-missing --apply             # 행 삭제 (100건씩, cascade: user_hidden_clips·gme_jobs)
 ```
+
+`--apply`(원장 없는 행만 DELETE) 는 남겨두지만 기본 경로가 아니다 — 라벨링 팀과 합의된 경우에만.
 
 ---
 
