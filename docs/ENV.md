@@ -145,6 +145,19 @@ Edge Function 으로 이벤트를 보낸다. 브리지가 `push_outbox` 에 적�
 - 롤백: `ALERTS_V4_ENABLED=false` + 브리지 재시작 → `uv run python scripts/close_v4_alerts.py --apply` 로 진행 중 `env_*` 행 종료.
 - 습기 사이클만 롤백: `HUMID_CYCLES_ENABLED=false` + 재시작 → `uv run python scripts/close_v4_alerts.py --cycles --apply`(환기 지연·분무 공백 종료 + 최신 사이클 `ended_by='disabled'`). 다시 켤 땐 새 `HUMID_CYCLES_SINCE`.
 
+### 온도 보정 분리 (Stage S, 2026-11-05)
+
+기기는 보정값을 절대값 하나만 가진다. 앱(신 계약)이 보는 값은 "사용자 보정값"이고, 공장 기본은 서버만 안다.
+변환(더하기·빼기)은 브리지 한 곳(`backend/temp_offset.py`)에서만 — 규칙: [specs/stage-s-temp-offset-base.md](../specs/stage-s-temp-offset-base.md).
+
+| 변수 | 필수 | 설명 |
+|------|:---:|------|
+| `TEMP_OFFSET_BASE_C` | X | 공장 기본 온도 보정(℃). **기본 -1.5** = 펌웨어 빌드 기본 `CONFIG_APP_TEMP_OFFSET_MDEG`(-1500)과 같은 값이어야 한다 — 다르면 flash erase 뒤 기기가 보고한 -1.5 가 사용자값 0 이 아닌 값으로 기록된다. **비어 있거나 숫자가 아니면 0 이 아니라 -1.5** 로 떨어진다(경고 1회). 바꾸면 브리지·API 모두 재시작 |
+
+- ⚠️ **`0` 은 kill switch 가 아니다.** `user_offset_c` 경로만 항등이 되는데, 신 앱(0.174.6+, 새 계약 스위치 켠 뒤) 사용자가 "끔"으로 보낸 0 이 기기에 그대로 0 으로 가서 보드 발열 1.5℃가 실린다 → v4 29℃ 경고 오발. 되돌리려면 코드 롤백.
+- 펌웨어 기본값을 바꾸는 PR 은 이 env 도 함께 바꾼다(ENV.md·.env 둘 다).
+- 범위: 사용자값 허용 = `-10 − base` ~ `10 − base`(지금 -8.5 ~ +11.5). 서버가 계산해 400 메시지에 넣는다.
+
 ### 자동 환기·자동 분무 (Stage R, 2026-11-05)
 
 브리지가 v4 판정 자리(`alerts._evaluate_v4`)에서 `device_settings.auto_vent_enabled`·`auto_mist_enabled` 를 켠 기기에 `commands.source='auto'` 명령을 넣는다. 규칙: [specs/stage-r-auto-env.md](../specs/stage-r-auto-env.md). 바꾸면 브리지 재시작(systemd 환경).

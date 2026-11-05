@@ -40,6 +40,7 @@ from backend.command_service import (
 from backend.db_helpers import first_row, parse_uuid_or_404
 from backend.mqtt.camera_commands import ACTION_OTA_APPLY, ACTION_OTA_PREPARE, OTA_TTL_SEC
 from backend.supabase_client import get_supabase_client
+from backend import temp_offset
 
 logger = logging.getLogger(__name__)
 
@@ -78,13 +79,17 @@ GENERIC_ACTIONS: frozenset[str] = frozenset({
     "heater_toggle", "heater_clear", "set_temp_offset",
 })
 TEMP_OFFSET_ACTION = "set_temp_offset"
-TEMP_OFFSET_LIMIT_C = 10.0   # 펌웨어 허용 범위 ±10 (docs/MQTT.md)
+TEMP_OFFSET_LIMIT_C = temp_offset.DEVICE_LIMIT_C   # 펌웨어 허용 범위 ±10 (docs/MQTT.md)
 _BAD_ACTION = {400: {"description": "action 화이트리스트 밖 / payload 형식 오류"}}
 
 
 class GenericCommandIn(BaseModel):
     action: str = Field(..., description="relay_toggle | fan_toggle | fan2_toggle | led_toggle | heater_toggle | heater_clear | set_temp_offset")
-    payload: dict[str, Any] | None = Field(None, description="set_temp_offset 만 {offset_c: -10.0~10.0}. 나머지는 비움")
+    payload: dict[str, Any] | None = Field(
+        None,
+        description="set_temp_offset 만: {user_offset_c: 사용자 보정값(신 앱, 서버가 공장 기본을 더해 기기로)} 또는 "
+                    "{offset_c: -10.0~10.0(기기 절대값, 구 앱·콘솔)}. 둘 중 하나만. 나머지 action 은 비움",
+    )
 
 
 def _validate_generic(body: GenericCommandIn) -> dict[str, Any] | None:
@@ -92,6 +97,13 @@ def _validate_generic(body: GenericCommandIn) -> dict[str, Any] | None:
     if body.action not in GENERIC_ACTIONS:
         raise InvalidCommand(f"허용되지 않은 action: {body.action}")
     if body.action == TEMP_OFFSET_ACTION:
+        # 신 앱(Stage S): user_offset_c — 숫자·합산 범위 검증은 dispatcher 와 같은 함수로. DB 에는 사용자값만.
+        try:
+            dev = temp_offset.resolve_device_offset(body.payload)
+        except temp_offset.OffsetError as exc:
+            raise InvalidCommand(str(exc)) from exc
+        if dev is not None:
+            return {temp_offset.USER_KEY: float((body.payload or {})[temp_offset.USER_KEY])}
         v = (body.payload or {}).get("offset_c")
         if isinstance(v, bool) or not isinstance(v, (int, float)):
             raise InvalidCommand("set_temp_offset 은 payload.offset_c(숫자) 필요")

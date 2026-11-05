@@ -51,6 +51,7 @@ from backend import ota_service
 from backend.db_helpers import parse_uuid
 from backend.mqtt.camera_commands import ACTION_OTA_APPLY, ACTION_OTA_PREPARE, rotation_command
 from backend.supabase_client import get_supabase_client, retry_idempotent
+from backend import temp_offset
 
 logger = logging.getLogger(__name__)
 
@@ -1102,9 +1103,15 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
     # 온도 보정값(2026-10-01): 기기가 지금 적용 중인 오프셋. set_temp_offset 이력은 "보냈다"일 뿐
     # 보드 교체·flash erase 뒤엔 NVS 기본값으로 돌아가므로, 기기 보고값만 진실로 친다.
     # 범위(±10℃)는 펌웨어 set 과 동일 — 밖이면 깨진 값으로 보고 무시. 구 펌웨어(키 없음)는 건드리지 않음.
+    # Stage S(2026-11-05): 사용자 보정값(= 기기값 − base)을 temp_offset_user_c 에 **같은 UPDATE 로** 함께 쓴다 —
+    # 앱이 Realtime 한 이벤트에서 두 값을 같이 보므로 쌍이어야 한다. 새 컬럼이 없다고 기억돼 있으면(마이그레이션
+    # 누락) 둘 다 뺀다. 단 첫 실패 1회는 _write_heartbeat 가 누락 컬럼만 빼고 재시도해 어긋남 — 마이그레이션이
+    # 코드보다 먼저 가야 하는 이유(specs/stage-s-temp-offset-base.md 함정 1).
     t_off = payload.get("temp_offset_c")
     if isinstance(t_off, (int, float)) and not isinstance(t_off, bool) and -10.0 <= t_off <= 10.0:
-        dev_update["temp_offset_c"] = round(float(t_off), 2)
+        if _missing_columns.get("devices.temp_offset_user_c", 0.0) <= time.monotonic():
+            dev_update["temp_offset_c"] = round(float(t_off), 2)
+            dev_update["temp_offset_user_c"] = temp_offset.to_user(t_off, device_uuid)
     # 빌드 식별(Stage J, OTA 지원 펌웨어부터): 카메라 heartbeat `fw` 와 같은 규칙 — 기기는 지금까지
     # 페어링 때만 firmware_ver 를 보내 리플래시 여부를 서버가 몰랐다. 캐시와 다를 때만 UPDATE.
     fw = payload.get("fw")
