@@ -194,6 +194,11 @@ class AutoEnvTracker:
 
     # ===== 외부 조작 =====
 
+    @property
+    def phase(self) -> Phase:
+        """환기 소유 단계(읽기 전용). store 가 "토글 꺼짐 + 소유 없음 → DB 0회" 판정에 쓴다."""
+        return self._phase
+
     def reset_timers(self) -> None:
         """연속 타이머 전부 초기화(기준 변경, R1). 소유·예산·쉼은 그대로."""
         self._over.clear()
