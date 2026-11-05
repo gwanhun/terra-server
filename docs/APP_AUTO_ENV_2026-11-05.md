@@ -107,7 +107,8 @@
 | `vent.causes` | `humid_high` / `temp_high` |
 | `vent.paused_until` | 사용자 조작으로 자동 환기를 쉬는 끝 시각 |
 | `vent.schedule_hold` | 구간 예약이 팬을 돌리는 중이라 자동이 쉬는 중 |
-| `runtime_today_sec` | 오늘 자동 환기 누적(12시간 = 43200 상한) |
+| `runtime_today_sec` | 오늘 **끝난** 자동 환기의 누적(12시간 = 43200 상한). 지금 돌고 있으면 화면에선 `now − vent.since` 를 더해 주세요(매 샘플 갱신을 막으려고 진행 중 시간은 안 넣음) |
+| `vent.since` | 이번 자동 환기가 시작된 시각. 1시간마다 다시 켜도 그대로 |
 | `mist.today_count` | 오늘 자동 분무 수(상한 4) |
 
 앱은 **읽기만** 해 주세요. 써도 서버가 다음 변경 때 덮어씁니다.
