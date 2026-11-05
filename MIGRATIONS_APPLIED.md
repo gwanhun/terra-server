@@ -52,6 +52,7 @@ Supabase 에 적용한 마이그레이션 기록(SOT). `migrations/*.sql` 을 SQ
 | ✅ | `2026-11-02_env_weekly_reports.sql` | 2026-11-02 | `env_weekly_reports` 테이블(`notices` JSONB) + RLS(본인 기기 SELECT만) + Realtime — v4 주간 분석(Stage Q). 위와 같은 실행·같은 확인 |
 | ✅ | `2026-11-03_humid_cycles.sql` | 2026-11-03 | `humid_cycles` 테이블(UNIQUE(device_id, started_at), status·ended_by CHECK, alerts FK 2개 on delete set null) + RLS(본인 기기 SELECT만), Realtime 없음 — v4 습기 사이클(Stage O). 코드 배포 **전** 적용. 사전: 테이블 없음, `alerts` CHECK 0개. 확인(DO 블록 끝 예외로 전부 롤백): service 쓰기 ok / 소유자 SELECT 1행 / 타인 0행 / authenticated INSERT 42501, 정책 1·인덱스 3·publication 0, 적용 후 0행 |
 | ✅ | `2026-11-05_auto_env.sql` | 2026-11-05 | `device_settings.auto_vent_enabled`·`auto_mist_enabled`(bool NOT NULL DEFAULT false) + `devices.auto_env_state` JSONB + `commands_source_check` 에 `'auto'` — 자동 환기·분무(Stage R, PR #48). 코드 배포 **전** 적용. 사전: CHECK = manual/schedule/timer/guard/restore, 세 컬럼 없음. 확인(DO 블록 끝 예외로 전부 롤백): source='auto' INSERT 통과·`auto_env_state` UPDATE 통과·'bogus' 는 check_violation. 적용 후 CHECK 6값, 컬럼 타입·기본값 일치, 시험 행 0·토글 true 0·state 0 |
+| ✅ | `2026-11-05_devices_temp_offset_user.sql` | 2026-11-05 | `devices.temp_offset_user_c NUMERIC(4,1)` + COMMENT — 사용자 온도 보정값(= 기기 보고 temp_offset_c − 공장 기본 -1.5), Stage S(PR #49·#50). 코드 배포 **전** 적용(이관훈, SQL Editor). 사전: 컬럼 없음. 사후: `count(*) WHERE temp_offset_user_c IS NOT NULL` = 0, 서버에서 service_role select 통과(139행 전부 NULL) |
 
 ## 규칙
 - 새 마이그레이션은 `migrations/YYYY-MM-DD_설명.sql` 로 추가하고, 적용 후 이 표에 행 추가.

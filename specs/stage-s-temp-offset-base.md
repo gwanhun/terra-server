@@ -1,6 +1,6 @@
 # Stage S — 온도 보정 분리: 공장 기본(-1.5℃, 서버만 앎) + 사용자 보정(앱이 보는 값)
 
-> 상태: 🚧 **서버 구현 완료·PR, 마이그레이션 미적용·배포 전** (2026-11-05). 서버만 수정, 펌웨어 변경 없음. 구현: 이관훈(Claude).
+> 상태: 🚧 **서버 구현 완료·PR #50, 마이그레이션 적용 완료, 배포 전** (2026-11-05). 서버만 수정, 펌웨어 변경 없음. 구현: 이관훈(Claude).
 > 사용자 요청: "기본 온도보정 -1.5 는 앱에 안 보이게. 앱이 하는 보정은 기본에 더해져서 기기에 들어가게. 서버가 합산."
 > 결정 경로: [docs/REVIEW_TEMP_OFFSET_BASE_2026-11-05.md](../docs/REVIEW_TEMP_OFFSET_BASE_2026-11-05.md)(검토, §5 결정 기록) → 백진우 결정 문서 `TEMP_OFFSET_BASE_DECISION_2026-11-05.md`(D1~D13, 레포 밖) → [docs/TEMP_OFFSET_BASE_DECISION_REPLY_2026-11-05.md](../docs/TEMP_OFFSET_BASE_DECISION_REPLY_2026-11-05.md)(회신, 발송 완료).
 > 원래 Stage R 이었으나 PR #48(자동 환기·분무)이 R 을 먼저 써서 S.
@@ -96,7 +96,7 @@
 
 ## 완료 조건
 
-- [x] 마이그레이션 SQL 작성 `migrations/2026-11-05_devices_temp_offset_user.sql` (2026-11-05) → [ ] 운영 적용·`MIGRATIONS_APPLIED.md` 기록 (이관훈)
+- [x] 마이그레이션 SQL 작성 `migrations/2026-11-05_devices_temp_offset_user.sql` (2026-11-05) → [x] 운영 적용·`MIGRATIONS_APPLIED.md` 기록 (2026-11-05, 이관훈 — 사후 count 0 확인)
 - [x] `backend/temp_offset.py` + 테스트 (`to_device(1.0) == -0.5`, `to_user(-0.5) == 1.0`, `to_user(-1.5) == 0.0`, env 미설정/오타 → -1.5 + warning, `user_range() == (-8.5, 11.5)`)
 - [x] dispatcher: `user_offset_c: 1.0` → publish `offset_c=-0.5`, payload 에 `user_offset_c` 없음, DB 행 그대로 / `offset_c: -0.5` → 그대로 통과 / `user_offset_c: 12` → `rejected offset_out_of_range` publish 0회, status·result 한 UPDATE / 두 키·문자열 → `invalid_payload`
 - [x] handlers: `temp_offset_c -0.5` → `{temp_offset_c: -0.5, temp_offset_user_c: 1.0}` 한 UPDATE / `-1.5` → `0.0` / 42 → 둘 다 없음 / 캐시에 새 컬럼 누락 → 둘 다 없음 / 키 없음(구 펌웨어) → 둘 다 없음
