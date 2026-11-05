@@ -145,6 +145,19 @@ Edge Function 으로 이벤트를 보낸다. 브리지가 `push_outbox` 에 적�
 - 롤백: `ALERTS_V4_ENABLED=false` + 브리지 재시작 → `uv run python scripts/close_v4_alerts.py --apply` 로 진행 중 `env_*` 행 종료.
 - 습기 사이클만 롤백: `HUMID_CYCLES_ENABLED=false` + 재시작 → `uv run python scripts/close_v4_alerts.py --cycles --apply`(환기 지연·분무 공백 종료 + 최신 사이클 `ended_by='disabled'`). 다시 켤 땐 새 `HUMID_CYCLES_SINCE`.
 
+### 자동 환기·자동 분무 (Stage R, 2026-11-05)
+
+브리지가 v4 판정 자리(`alerts._evaluate_v4`)에서 `device_settings.auto_vent_enabled`·`auto_mist_enabled` 를 켠 기기에 `commands.source='auto'` 명령을 넣는다. 규칙: [specs/stage-r-auto-env.md](../specs/stage-r-auto-env.md). 바꾸면 브리지 재시작(systemd 환경).
+
+| 변수 | 필수 | 설명 |
+|------|:---:|------|
+| `AUTO_ENV_ENABLED` | X | `true/1/yes/on` 이면 자동 판정. **기본 꺼짐**. `ALERTS_V4_ENABLED` 경로에서만 돈다(v4 를 끄면 자동도 멈춤). 켜기 전 `migrations/2026-11-05_auto_env.sql` 적용 |
+| `AUTO_ENV_DRY_RUN` | X | **기본 켜짐**(섀도). 켜져 있으면 명령을 넣지 않고 `auto-env intent device=… action=… reason=…` 로그만 남기며 `devices.auto_env_state` 도 쓰지 않는다. `0/false/no/off` 일 때만 실제 명령 — 오타는 섀도로 남는다 |
+| `AUTO_ENV_DEVICES` | X | 허용 기기 UUID(`devices.id`) 쉼표 목록. **비면 전체**. 섀도·첫 실명령은 테스트 기기만 넣어 돌린다 |
+
+- 켜는 순서: 계획서 "켜는 순서" — 섀도 2~3일(게이트 4개) → 펌웨어 확인 + `HUMID_CYCLES_ENABLED` 켜진 뒤 `AUTO_ENV_DRY_RUN=false`(테스트 기기 1대) → 앱 토글 출시 + `AUTO_ENV_DEVICES` 비움.
+- 롤백: `AUTO_ENV_ENABLED=false` + 브리지 재시작. 켜져 있던 자동 팬은 펌웨어 타이머(1시간)로 꺼진다.
+
 ### 운영 카메라 재부팅 (2026-10-20)
 
 petcam-lab 감시 스크립트가 `POST /ops/cameras/{id}/reboot` 를 부를 때 `X-Ops-Secret` 헤더로 보내는 서버 시크릿.

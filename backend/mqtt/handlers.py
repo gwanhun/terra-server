@@ -1256,6 +1256,13 @@ def _ack_device_command(
                 logger.exception("push 이벤트 적재 실패 (msg_id=%s)", msg_id)
             _commit_lcd_text(sb, res.data[0], device_uuid)
             _commit_lcd_state(sb, res.data[0], device_uuid)
+            # Stage R 자동 환기·분무: 자동 명령 소유 확정·사용자 명령 반영·분무 신호.
+            # 지연 임포트(순환 회피), 실패해도 ACK 처리는 계속.
+            try:
+                from backend import alerts as alerts_mod
+                alerts_mod.on_command_ack(res.data[0])
+            except Exception:  # noqa: BLE001
+                logger.exception("auto-env ACK 훅 실패 (msg_id=%s)", msg_id)
             if res.data[0].get("action") in (ACTION_OTA_PREPARE, ACTION_OTA_APPLY):
                 _route_ota_ack(sb, payload)   # 첫 ack: ok → accepted / busy·unknown_action → failed
 

@@ -57,7 +57,7 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any
 
-from backend import humid_cycle_store, push_events
+from backend import auto_env_store, humid_cycle_store, push_events
 from backend.env_rules import (
     Action,
     ActiveEvent,
@@ -297,6 +297,9 @@ class _DeviceState:
     fault_active: bool | None = None
     # Stage O 습기 사이클(HUMID_CYCLES_ENABLED). 재페어링·reset_state 때 같이 새로 만든다.
     cycles: humid_cycle_store.CycleDeviceState = field(default_factory=humid_cycle_store.CycleDeviceState)
+    # Stage R 자동 환기·분무(AUTO_ENV_ENABLED). 상태는 여기 한 곳 — 재페어링·스위치 끔 때 새로 만든다.
+    auto: auto_env_store.AutoDeviceState = field(default_factory=auto_env_store.AutoDeviceState)
+    toggles: tuple[bool, bool] = (False, False)   # device_settings.auto_vent_enabled / auto_mist_enabled
 
 
 _v4_lock = threading.Lock()
@@ -516,7 +519,8 @@ def _thresholds(c: _Step) -> Thresholds | None:
     try:
         res = (
             c.sb.table("device_settings")
-            .select("target_temp_min, target_temp_max, target_humid_min, target_humid_max")
+            .select("target_temp_min, target_temp_max, target_humid_min, target_humid_max, "
+                    "auto_vent_enabled, auto_mist_enabled")
             .eq("device_id", c.device_uuid)
             .limit(1)
             .execute()
@@ -527,12 +531,16 @@ def _thresholds(c: _Step) -> Thresholds | None:
         return st.th   # 없으면 None → 보류. 30초 뒤 재조회
     rows = res.data or []
     new = Thresholds.sanitize(rows[0] if rows else None)
+    srow = rows[0] if rows and isinstance(rows[0], dict) else {}
+    st.toggles = (srow.get("auto_vent_enabled") is True, srow.get("auto_mist_enabled") is True)
     old = st.th
     if old is not None:
         if (old.temp_min, old.temp_max) != (new.temp_min, new.temp_max):
             st.trackers["temp"].reset_timers()
         if (old.humid_min, old.humid_max) != (new.humid_min, new.humid_max):
             st.trackers["humid"].reset_timers()
+        if old != new:
+            st.auto.tracker.reset_timers()   # Stage R R1 — 기준이 바뀌면 자동 판정 타이머도
     st.th = new
     st.th_expires = c.now_mono + SETTINGS_TTL_SEC
     return new
@@ -823,6 +831,50 @@ def _evaluate_v4(device_uuid: str, row: dict[str, Any], device_key: str | None) 
             if st.unlinked:
                 break   # _confirm_linked 가 해제를 확인함 — 나머지 요소도 평가 안 함
 
+        if not st.unlinked:
+            # Stage R 자동 환기·분무 — v4 판정 뒤에, 실패해도 v4 에 영향 없게
+            try:
+                if auto_env_store.auto_env_enabled() and auto_env_store.device_allowed(device_uuid):
+                    auto_env_store.step(c, st.auto, row, th, st.toggles, _wet_mono(c))
+                else:
+                    st.auto = auto_env_store.AutoDeviceState()   # R10 게이트: 상태만 버림(명령 없음)
+            except Exception:  # noqa: BLE001
+                logger.exception("자동 환기·분무 평가 실패 (device=%s)", device_uuid)
+
+
+def _wet_mono(c: _Step) -> float | None:
+    """R3 ② 습기 사이클 감지 시각(mono). 사이클은 끝나면 None 이 되므로 지금까지 본 최댓값을 래치."""
+    st = c.st
+    latch = st.auto.wet_latch
+    if humid_cycles_enabled() and humid_cycles_since() is not None:
+        tracker = st.cycles.tracker
+        cycle = tracker.cycle if tracker is not None else None
+        detected = getattr(cycle, "detected_at", None) if cycle is not None else None
+        if isinstance(detected, datetime):
+            m = c.now_mono - (c.now_wall - detected).total_seconds()
+            latch = m if latch is None else max(latch, m)
+    st.auto.wet_latch = latch
+    return latch
+
+
+def on_command_ack(row: dict[str, Any]) -> None:
+    """commands ACK 확정 행(handlers._ack_device_command 의 UPDATE 결과) → 자동 환기·분무(R4·R7·R3).
+
+    스위치가 꺼졌거나 이 브리지가 그 기기 상태를 모르면 아무것도 안 한다.
+    """
+    if not auto_env_store.auto_env_enabled():
+        return
+    device_uuid = row.get("device_id")
+    if not isinstance(device_uuid, str):
+        return
+    with _v4_lock:
+        st = _states.get(device_uuid)
+        if st is None or st.unlinked:
+            return
+        c = _Step(sb=get_supabase_client(), st=st, device_uuid=device_uuid, device_key=None,
+                  meta=None, now_mono=_now_mono(), now_wall=_now_wall())
+        auto_env_store.handle_ack(c, st.auto, row)
+
 
 __all__ = [
     "HYST_HUMID_PCT",
@@ -831,6 +883,7 @@ __all__ = [
     "V4_KINDS",
     "evaluate_telemetry",
     "forced_close_context",
+    "on_command_ack",
     "reset_settings_cache",
     "reset_state",
     "select_active_v4_rows",

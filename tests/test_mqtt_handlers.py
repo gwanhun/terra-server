@@ -467,6 +467,44 @@ def test_handle_ack_push_failure_does_not_break_ack(
     assert "devices" in table_calls          # last_seen 갱신까지 도달
 
 
+def test_ack_calls_auto_hook(
+    fake_sb: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ACK UPDATE 성공 뒤 alerts.on_command_ack(갱신된 행). 훅이 터져도 ACK 처리는 끝까지 간다."""
+    from backend import alerts
+
+    cmd_row = {"id": "cmd-1", "device_id": DEVICE_UUID, "issued_by": "owner-1",
+               "action": "fan_on", "result": "ok", "source": "auto", "source_id": None}
+    fake_sb.table.side_effect = _ack_table_factory(cmd_row)
+    seen: list[dict] = []
+    monkeypatch.setattr(alerts, "on_command_ack", lambda row: seen.append(row))
+    handlers.handle_ack(DEVICE_TEXT, {"msg_id": "cmd-1", "result": "ok"})
+    assert seen == [cmd_row]
+
+    fake_sb.table.reset_mock()
+    fake_sb.table.side_effect = _ack_table_factory(cmd_row)
+
+    def _boom(_row: dict) -> None:
+        raise RuntimeError("auto hook down")
+
+    monkeypatch.setattr(alerts, "on_command_ack", _boom)
+    handlers.handle_ack(DEVICE_TEXT, {"msg_id": "cmd-1", "result": "ok"})
+    table_calls = [c.args[0] for c in fake_sb.table.call_args_list]
+    assert "commands" in table_calls and "devices" in table_calls   # UPDATE 유지 + last_seen 까지
+
+
+def test_ack_no_match_skips_auto_hook(
+    fake_sb: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from backend import alerts
+
+    fake_sb.table.side_effect = _ack_table_factory(None)
+    seen: list[dict] = []
+    monkeypatch.setattr(alerts, "on_command_ack", lambda row: seen.append(row))
+    handlers.handle_ack(DEVICE_TEXT, {"msg_id": "cmd-x", "result": "ok"})
+    assert seen == []
+
+
 def _lcd_ack(fake_sb: MagicMock, cmd_row: dict) -> list[dict]:
     """lcd 명령 ACK 처리 후 devices UPDATE 페이로드 목록."""
     fake_sb.table.side_effect = _ack_table_factory(cmd_row)
