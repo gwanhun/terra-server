@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 from scripts.reconcile_r2_orphans import (
     DB_PAGE,
     default_range,
+    _blocker_name,
     find_dangling,
     registered_started_at_keys,
     split_in_flight,
@@ -64,3 +65,11 @@ def test_find_dangling_skips_present_and_young_rows() -> None:
     ]
     out = find_dangling(rows, {"k/b.mp4"}, now, timedelta(minutes=10))
     assert [r["id"] for r in out] == ["a"]
+
+
+def test_blocker_name_picks_child_table_and_append_only() -> None:
+    fk = Exception('Error 23503:\nMessage: update or delete on table "motion_clips" violates foreign key '
+                   'constraint "motion_clip_review_slots_clip_id_fkey" on table "motion_clip_review_slots"\nDetails: x')
+    assert _blocker_name(fk) == "motion_clip_review_slots"
+    assert _blocker_name(Exception("Error 0A000:\nMessage: clip_python_evidence_runs is append-only (insert-only)")) == "clip_python_evidence_runs"
+    assert _blocker_name(Exception("weird")) == "weird"

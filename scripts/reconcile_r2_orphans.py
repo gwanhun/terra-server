@@ -232,19 +232,64 @@ def prune_missing(
     if not apply:
         return len(dangling), 0
 
-    deleted = 0
-    failed_batches = 0
+    # 배치 DELETE 는 한 행이라도 FK/트리거에 걸리면 전체 롤백된다(2026-11-05 실측: 앱팀 테이블
+    # motion_clip_review_slots 가 RESTRICT FK, clip_python_evidence_runs 가 append-only 트리거).
+    # 실패한 배치는 행 단위로 다시 시도해 막힌 행만 사유(테이블명)와 함께 남긴다.
     ids = [r["id"] for r in dangling]
+    deleted: set[str] = set()
+    blocked: dict[str, str] = {}
     for i in range(0, len(ids), 100):
         chunk = ids[i : i + 100]
         try:
             res = sb.table("motion_clips").delete().in_("id", chunk).execute()
-            deleted += len(res.data or [])
-        except Exception as exc:  # noqa: BLE001 — 한 배치 실패가 나머지를 막지 않게
-            failed_batches += 1
-            print(f"  ! 배치 {i // 100 + 1} 삭제 실패: {exc!r}")
-    print(f"완료: {deleted}/{len(ids)}건 삭제" + (f", 실패 배치 {failed_batches}" if failed_batches else ""))
-    return len(dangling), deleted
+            deleted.update(r["id"] for r in res.data or [])
+            continue
+        except Exception:  # noqa: BLE001 — 아래서 행 단위로 분리
+            pass
+        for clip_id in chunk:
+            try:
+                res = sb.table("motion_clips").delete().eq("id", clip_id).execute()
+                if res.data:
+                    deleted.add(clip_id)
+            except Exception as exc:  # noqa: BLE001 — 막힌 행만 기록
+                blocked[clip_id] = _blocker_name(exc)
+    status = {cid: "deleted" for cid in deleted}
+    status.update({cid: f"blocked:{why}" for cid, why in blocked.items()})
+    with out_csv.open("w", newline="", encoding="utf-8-sig") as f:
+        w = csv.writer(f)
+        w.writerow(["clip_id", "key_camera", "r2_key", "thumbnail_key", "file_size", "started_at", "row_created_at", "deleted"])
+        for r in sorted(dangling, key=lambda r: r["r2_key"]):
+            w.writerow([r["id"], r["r2_key"].split("/")[2], r["r2_key"], r.get("thumbnail_key") or "",
+                        r.get("file_size"), r["started_at"], r["created_at"], status.get(r["id"], "unknown")])
+    print(f"완료: {len(deleted)}/{len(ids)}건 삭제, 막힘 {len(blocked)}건 (결과 CSV deleted 열 참고)")
+    if blocked:
+        by_why: dict[str, int] = {}
+        for why in blocked.values():
+            by_why[why] = by_why.get(why, 0) + 1
+        for why, n in sorted(by_why.items(), key=lambda x: -x[1]):
+            print(f"  - {why}: {n}건")
+        print("  → 막힌 행은 참조 테이블 소유자(앱팀)가 참조 행을 정리하거나 FK 를 CASCADE 로 바꿔야 지워진다")
+    return len(dangling), len(deleted)
+
+
+_FK_TABLE_RE = re.compile(r'on table "([^"]+)"')
+_APPEND_ONLY_RE = re.compile(r"(\w+) is append-only")
+
+
+def _blocker_name(exc: Exception) -> str:
+    """PostgREST 오류 문자열에서 막은 테이블명을 뽑는다.
+
+    23503 은 'on table "motion_clips" ... on table "<자식>"' 꼴이라 **마지막** 매치가 자식 테이블.
+    append-only 트리거는 '<테이블> is append-only'. 못 찾으면 오류 첫 줄.
+    """
+    text = str(exc)
+    fk = _FK_TABLE_RE.findall(text)
+    if fk:
+        return fk[-1]
+    m = _APPEND_ONLY_RE.search(text)
+    if m:
+        return m.group(1)
+    return text.splitlines()[0][:60]
 
 
 def reconcile_camera(
