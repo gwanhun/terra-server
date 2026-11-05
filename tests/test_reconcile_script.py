@@ -10,6 +10,7 @@ from scripts.reconcile_r2_orphans import (
     _blocker_name,
     find_dangling,
     registered_started_at_keys,
+    split_by_ledger,
     split_in_flight,
 )
 from tests.fake_sb import FakeSB
@@ -73,3 +74,10 @@ def test_blocker_name_picks_child_table_and_append_only() -> None:
     assert _blocker_name(fk) == "motion_clip_review_slots"
     assert _blocker_name(Exception("Error 0A000:\nMessage: clip_python_evidence_runs is append-only (insert-only)")) == "clip_python_evidence_runs"
     assert _blocker_name(Exception("weird")) == "weird"
+
+
+def test_split_by_ledger_any_state_counts_as_managed() -> None:
+    dangling = [{"id": "a"}, {"id": "b"}, {"id": "c"}]
+    ledgered, unledgered = split_by_ledger(dangling, {"a": "media_deleted", "b": "candidate"})
+    assert [r["id"] for r in ledgered] == ["a", "b"]
+    assert [r["id"] for r in unledgered] == ["c"]
