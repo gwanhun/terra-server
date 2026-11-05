@@ -838,8 +838,8 @@ def _evaluate_v4(device_uuid: str, row: dict[str, Any], device_key: str | None) 
             # Stage R 자동 환기·분무 — v4 판정 뒤에, 실패해도 v4 에 영향 없게
             try:
                 if auto_env_store.auto_env_enabled() and auto_env_store.device_allowed(device_uuid):
-                    auto_env_store.step(c, st.auto, row, th, st.toggles, _wet_mono(c))
-                else:
+                    auto_env_store.step(c, st.auto, row, th, st.toggles, _wet_mono(c), (t_val, h_val))
+                elif st.auto.restored or st.auto.tracker.phase != "idle" or st.auto.wet_latch is not None:
                     st.auto = auto_env_store.AutoDeviceState()   # R10 게이트: 상태만 버림(명령 없음)
             except Exception:  # noqa: BLE001
                 logger.exception("자동 환기·분무 평가 실패 (device=%s)", device_uuid)

@@ -53,6 +53,8 @@ from backend.auto_env import (
     AutoInput,
 )
 from backend.command_service import insert_pending_command
+from backend.daily_analysis import num as _num
+from backend.daily_analysis import parse_ts as _parse
 from backend.env_rules import Thresholds
 from backend.scheduling import compute_prev_run, parse_time_of_day
 
@@ -107,6 +109,7 @@ class AutoDeviceState:
     state_retry_at: float = 0.0
     wet_latch: float | None = None                 # 습기 사이클 detected_at(mono) 최댓값(R3 ②)
     sim_until: float | None = None                 # 섀도 모의 팬: 이 mono 전까지 'ON'(R13)
+    hold_prev: bool = False                        # 직전 샘플의 예약 구간 여부(켜짐 전이 감지)
 
 
 # ---------- 작은 도우미 ----------
@@ -115,33 +118,10 @@ def _iso(dt: datetime) -> str:
     return dt.astimezone(_UTC).isoformat()
 
 
-def _parse(v: Any) -> datetime | None:
-    if not isinstance(v, str) or not v:
-        return None
-    try:
-        dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=_UTC)
-
-
-def _num(v: Any) -> float | None:
-    if v is None or isinstance(v, bool) or not isinstance(v, (int, float)):
-        return None
-    return float(v)
-
-
 def _to_mono(c: Any, dt: datetime | None) -> float | None:
     if dt is None:
         return None
     return c.now_mono - (c.now_wall - dt).total_seconds()
-
-
-def _sample_values(row: dict[str, Any]) -> tuple[float | None, float | None]:
-    """alerts._sample_values 와 같은 규칙(R1): a_ok 거짓 → 둘 다 None."""
-    if not row.get("a_ok"):
-        return None, None
-    return _num(row.get("t_a")), _num(row.get("h_a"))
 
 
 def _kst_midnight(wall: datetime) -> datetime:
@@ -265,18 +245,23 @@ def _restore(c: Any, st: AutoDeviceState) -> bool:
 
     # ② 팬: 마지막 작성자가 자동 fan_on + ACK ok 일 때만 소유
     owned_at: datetime | None = None
+    pending_on: datetime | None = None
     causes: list[str] = []
+    # 상태 무관 가장 최근 자동 환기 명령 — 재시작해도 300초 간격(REFIRE_MIN_SEC)을 지키려고(리뷰 #5)
+    last_cmd = next((_parse(r.get("issued_at")) for r in fan_rows if r.get("source") == AUTO_SOURCE), None)
     for r in fan_rows:      # issued_at 내림차순
         status = r.get("status")
         if status in _NOT_APPLIED or (status == "acked" and r.get("result") != "ok"):
             continue        # 팬에 닿지 않은 명령은 작성자가 아님
-        if (r.get("source") == AUTO_SOURCE and r.get("action") == "fan_on"
-                and status == "acked" and r.get("result") == "ok"):
-            owned_at = _parse(r.get("acked_at")) or _parse(r.get("issued_at"))
-            reason = r.get("reason") or ""
-            if isinstance(reason, str) and reason.startswith("auto_vent:"):
-                causes = [x for x in reason.split(":", 1)[1].split("+") if x in CAUSES]
-        break               # 그 밖(사용자·예약·자동 fan_off·아직 안 끝난 명령)이 마지막이면 소유 없음
+        if r.get("source") == AUTO_SOURCE and r.get("action") == "fan_on":
+            if status == "acked":
+                owned_at = _parse(r.get("acked_at")) or _parse(r.get("issued_at"))
+                reason = r.get("reason") or ""
+                if isinstance(reason, str) and reason.startswith("auto_vent:"):
+                    causes = [x for x in reason.split(":", 1)[1].split("+") if x in CAUSES]
+            elif status in ("pending", "sent"):
+                pending_on = _parse(r.get("issued_at"))   # 아직 ACK 전 — 늦은 ACK ok 면 인수(리뷰 #2)
+        break               # 그 밖(사용자·예약·자동 fan_off·no_ack)이 마지막이면 소유 없음
 
     run_since = None
     if owned_at is not None and vent.get("active") is True:
@@ -291,7 +276,7 @@ def _restore(c: Any, st: AutoDeviceState) -> bool:
         runtime_today_sec=runtime, mist_today=mist_today,
         mist_last=_to_mono(c, mist_last),
         owned_on=_to_mono(c, owned_at), run_since=_to_mono(c, run_since),
-        causes=causes,
+        causes=causes, last_cmd=_to_mono(c, last_cmd), pending_on=_to_mono(c, pending_on),
     )
     st.restored = True
     st.sim_until = None
@@ -384,11 +369,15 @@ def _sync_state(c: Any, st: AutoDeviceState) -> None:
 # ---------- 공개 ----------
 
 def step(c: Any, st: AutoDeviceState, row: dict[str, Any], th: Thresholds,
-         toggles: tuple[bool, bool], wet_mono: float | None) -> None:
-    """샘플 1건. c 는 `alerts._Step`(sb, device_uuid, meta, now_mono, now_wall)."""
+         toggles: tuple[bool, bool], wet_mono: float | None,
+         values: tuple[float | None, float | None]) -> None:
+    """샘플 1건. c 는 `alerts._Step`(sb, device_uuid, meta, now_mono, now_wall).
+
+    values: v4 와 같은 규칙으로 읽은 (온도, 습도) — `alerts._sample_values(row)`(R1). row 는 fan·relay 용.
+    """
     vent_on, mist_on = toggles
     tr = st.tracker
-    temp, humid = _sample_values(row)
+    temp, humid = values
     tele_fan = row.get("fan")
     tele_fan = tele_fan if isinstance(tele_fan, str) else None
 
@@ -410,6 +399,9 @@ def step(c: Any, st: AutoDeviceState, row: dict[str, Any], th: Thresholds,
     hold = _schedule_hold(c, st)
     if hold is None:
         return
+    if hold and not st.hold_prev and not dry_run():
+        _supersede_pending(c)    # 구간 예약이 막 시작 — 아직 안 나간 자동 팬 명령이 예약 팬을 건드리지 않게
+    st.hold_prev = hold
 
     fan = tele_fan
     if dry_run() and st.sim_until is not None:

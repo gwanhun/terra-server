@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.conftest import TEST_USER_ID
@@ -233,3 +234,37 @@ def test_get_defaults_false(app_client: TestClient, fake_sb: MagicMock) -> None:
         assert res.status_code == 200, res.text
         assert res.json()["auto_vent_enabled"] is False
         assert res.json()["auto_mist_enabled"] is False
+
+
+def test_get_before_migration_falls_back(app_client: TestClient, fake_sb: MagicMock) -> None:
+    """리뷰 #4: 마이그레이션 전(토글 컬럼 없음)이면 기존 컬럼만 다시 읽고 토글은 false — 500 아님."""
+    dev = _device_mock()
+    ds = MagicMock()
+    selected: list[str] = []
+    row = {"device_id": DEVICE_UUID, "target_temp_max": 28.0}
+
+    def _select(cols: str) -> MagicMock:
+        selected.append(cols)
+        chain = MagicMock()
+        ex = chain.eq.return_value.limit.return_value.execute
+        if "auto_vent_enabled" in cols:
+            ex.side_effect = RuntimeError("column device_settings.auto_vent_enabled does not exist")
+        else:
+            ex.return_value.data = [row]
+        return chain
+
+    ds.select.side_effect = _select
+    fake_sb.table.side_effect = lambda name: {"devices": dev, "device_settings": ds}[name]
+    res = app_client.get(f"/devices/{DEVICE_UUID}/settings")
+    assert res.status_code == 200, res.text
+    assert res.json()["target_temp_max"] == 28.0 and res.json()["auto_vent_enabled"] is False
+    assert len(selected) == 2 and "auto_vent_enabled" not in selected[1]
+
+
+def test_get_other_db_error_still_raises(app_client: TestClient, fake_sb: MagicMock) -> None:
+    dev = _device_mock()
+    ds = MagicMock()
+    ds.select.return_value.eq.return_value.limit.return_value.execute.side_effect = RuntimeError("timeout")
+    fake_sb.table.side_effect = lambda name: {"devices": dev, "device_settings": ds}[name]
+    with pytest.raises(RuntimeError):
+        app_client.get(f"/devices/{DEVICE_UUID}/settings")

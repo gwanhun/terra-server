@@ -43,12 +43,12 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 
+from backend.daily_analysis import num as _num
 from backend.env_rules import GAP_SEC, Thresholds
 
 # ---------- 상수 (계획 Global Constraints 표가 정본) ----------
@@ -84,16 +84,6 @@ Phase = Literal["idle", "requested", "owned"]
 def humid_end_line(th: Thresholds) -> float:
     """습도 원인 종료선. MAX−MIN 이 5 면 MAX−5 가 MIN 에 닿아 분무와 핑퐁하므로 중간값을 하한으로."""
     return max(th.humid_max - VENT_HUMID_MARGIN, (th.humid_min + th.humid_max) / 2)
-
-
-def _num(v: Any) -> float | None:
-    if v is None or isinstance(v, bool):
-        return None
-    try:
-        f = float(v)
-    except (TypeError, ValueError):
-        return None
-    return f if math.isfinite(f) else None
 
 
 def _kst_day(wall: datetime) -> date:
@@ -171,6 +161,8 @@ class AutoEnvTracker:
     _intent: frozenset[str] = frozenset()                      # 직전 step 이 낸 fan_on 의 원인
     _last_on: float | None = None                              # 마지막 자동 fan_on ACK ok
     _last_cmd: float | None = None                             # 마지막 자동 환기 명령 INSERT
+    _pending_on: float | None = None                           # ACK 안 온 자동 fan_on(늦은 ACK ok 면 인수)
+    _stopping: tuple[float, str] | None = None                 # 자동 fan_off 낸 시각·reason(ACK 대기)
     _retry_after: float | None = None                          # R13
     _paused_until: float | None = None
     _last_end: float | None = None
@@ -207,17 +199,21 @@ class AutoEnvTracker:
         self._last_mono = None
 
     def issued(self, cmd: AutoCmd, mono: float) -> None:
-        """INSERT 성공(또는 섀도 로그). 분무는 step 에서 예산을 이미 썼으므로 할 일 없음."""
+        """INSERT 성공(또는 섀도 로그). 분무는 step 에서 예산을 이미 썼으므로 할 일 없음.
+
+        fan_off 는 ACK ok(또는 텔레메트리 OFF) 를 볼 때까지 소유를 놓지 않는다 — 기기가 거절하면
+        다시 보내야 하므로(추운 날 끄기가 실패하면 찬바람이 1시간 들어감).
+        """
         if cmd.action == "fan_on":
             self._phase = "requested"
             self._causes = set(self._intent) or set(self._causes)
             self._last_cmd = mono
+            self._pending_on = mono
             self._retry_after = None
         elif cmd.action == "fan_off":
             self._last_cmd = mono
-            self._release(mono, end=True)
-            if cmd.reason == "auto_vent_disabled":
-                self._reset_vent()
+            self._stopping = (mono, cmd.reason)
+            self._retry_after = None
 
     def insert_failed(self, cmd: AutoCmd, mono: float) -> None:
         """INSERT 실패(R13). 환기는 상태 그대로 30초 뒤 같은 판정, 분무는 재시도 없음."""
@@ -225,23 +221,39 @@ class AutoEnvTracker:
             self._retry_after = mono + RETRY_SEC
 
     def on_own_ack(self, action: str, ok: bool, mono: float) -> None:
-        """자동 명령의 ACK(R4). fan_on ok 일 때만 소유 확정. 실패는 소유 없음(재판정은 300초 뒤)."""
-        if action != "fan_on" or self._phase != "requested":
-            return   # fan_off 는 issued 때 이미 소유를 놓았다. mist 는 on_mist_ok 로 따로.
-        if ok:
-            self._phase = "owned"
-            self._last_on = mono
-            self._acc_mark = mono
-            self._off_streak = 0
-            if self._run_since is None:
-                self._run_since = mono
-        else:
-            self._release(mono)
+        """자동 명령의 ACK(R4). fan_on ok 일 때만 소유 확정. 실패는 소유 없음(재판정은 300초 뒤).
+
+        fan_on: 요청 중이 아니어도(토글 끔·예약·타임아웃으로 먼저 놓음) 아직 사용자 명령에 밀리지 않은
+        자동 fan_on 의 늦은 ACK ok 면 인수한다 — 켜진 팬을 주인 없이 1시간 두지 않게. 다음 step 이
+        토글·예약·원인을 보고 끈다. fan_off: ok 면 종료 확정, 실패면 30초 뒤 다시 낸다.
+        """
+        if action == "fan_off":
+            if self._stopping is None:
+                return
+            reason = self._stopping[1]
+            self._stopping = None
+            if ok:
+                self._finish_stop(mono, reason)
+            else:
+                self._retry_after = mono + RETRY_SEC
+            return
+        if action != "fan_on":
+            return   # mist 는 on_mist_ok 로 따로
+        pending, self._pending_on = self._pending_on, None
+        if self._phase == "requested":
+            if ok:
+                self._own(mono)
+            else:
+                self._release(mono)
+        elif ok and pending is not None and self._phase == "idle":
+            self._causes = set(self._intent) or set(CAUSES)
+            self._own(mono)
 
     def on_other_ack(self, action: str, source: str, mono: float) -> None:
         """자동이 아닌 명령의 ACK ok(R7). 팬 명령이 아니면 무시."""
         if action not in ("fan_on", "fan_off", "fan_toggle"):
             return
+        self._pending_on = None    # 사용자·예약 명령이 뒤에 왔으니 자동 fan_on 의 늦은 ACK 는 인수 안 함
         if source == "manual":
             if action == "fan_off" or (action == "fan_toggle" and self._phase == "owned"):
                 self._release(mono)
@@ -260,7 +272,8 @@ class AutoEnvTracker:
                 paused_until: float | None = None, last_end: float | None = None,
                 runtime_today_sec: float = 0.0, mist_today: int = 0,
                 mist_last: float | None = None, owned_on: float | None = None,
-                run_since: float | None = None, causes: Iterable[str] = ()) -> None:
+                run_since: float | None = None, causes: Iterable[str] = (),
+                last_cmd: float | None = None, pending_on: float | None = None) -> None:
         """브리지 재시작 복원(R11). 시각 인자는 호출측이 wall → mono 로 바꿔 넘긴다.
 
         day: `auto_env_state.day`. 오늘(KST)과 다르면 runtime·mist_today 는 0. None 이면 오늘 값으로 본다.
@@ -268,8 +281,13 @@ class AutoEnvTracker:
         owned_on: 마지막 작성자 판정을 통과한 자동 fan_on 의 시각(None = 소유 없음).
         run_since: 소유 복원 때 이번 연속 자동 환기 시작(`vent.since`). 없으면 owned_on.
         causes: 소유 복원 때의 원인(명령 reason 에서). 비면 두 원인 다 서 있다고 본다(종료가 더 보수적).
+        last_cmd: 최근 자동 환기 명령(상태 무관) 시각 — 재시작해도 300초 간격(REFIRE_MIN_SEC)을 지킨다.
+        pending_on: 마지막 작성자가 아직 ACK 안 온 자동 fan_on 이면 그 시각 — 늦은 ACK ok 면 인수.
         """
         self.reset_timers()
+        self._last_cmd = last_cmd
+        self._pending_on = pending_on
+        self._stopping = None
         self._ref = (mono, wall)
         self._iso_cache.clear()
         today = _kst_day(wall)
@@ -294,7 +312,7 @@ class AutoEnvTracker:
         self._phase = "owned"
         self._causes = {c for c in causes if c in CAUSES} or set(CAUSES)
         self._last_on = owned_on
-        self._last_cmd = owned_on
+        self._last_cmd = owned_on if last_cmd is None else max(owned_on, last_cmd)
         self._run_since = owned_on if run_since is None else run_since
         # state 의 runtime 은 끝난 환기만 담으므로 지금 도는 환기를 더한다(오늘 0시 이후만).
         midnight = datetime.combine(today, datetime.min.time(), KST)
@@ -407,16 +425,19 @@ class AutoEnvTracker:
         # R10: 환기 토글 끔
         if not inp.vent_on:
             if self._phase == "owned":
-                if blind or retry_wait:
+                if self._stopping is not None and self._stop_pending(now):
+                    return None
+                if self._phase != "owned" or blind or retry_wait:
                     return None
                 return _vent_off_cmd("auto_vent_disabled")
-            self._reset_vent()
+            self._reset_vent()   # 요청 중이면 _pending_on 은 남는다 — 늦은 ACK ok 면 인수 후 위에서 끔
             return None
 
         if self._phase == "requested":
             # ACK 는 TTL·no_ack 로 1분 안에 오지만, 못 받았을 때 영원히 묶이지 않게
             if self._last_cmd is not None and now - self._last_cmd < REFIRE_MIN_SEC:
                 return None
+            self._pending_on = None
             self._release(now)
 
         if self._phase == "owned":
@@ -440,6 +461,9 @@ class AutoEnvTracker:
     def _vent_owned(self, inp: AutoInput, now: float, t: float | None, blind: bool,
                     retry_wait: bool) -> AutoCmd | None:
         th = inp.th
+        # 자동 fan_off 의 ACK 대기 — 그동안 다른 환기 명령 없음(OFF 관측은 외부 끔이 아니라 끄기 성공)
+        if self._stopping is not None and self._stop_pending(now):
+            return None
         # 소유 중 새로 성립한 원인은 합류(종료는 서 있는 원인 전부가 풀려야)
         for c in CAUSES:
             if _held(self._over.get(c), now, HOLD_SEC):
@@ -502,8 +526,39 @@ class AutoEnvTracker:
 
     # ===== 내부 상태 조작 =====
 
+    def _own(self, mono: float) -> None:
+        self._phase = "owned"
+        self._last_on = mono
+        self._acc_mark = mono
+        self._off_streak = 0
+        if self._run_since is None:
+            self._run_since = mono
+
+    def _stop_pending(self, now: float) -> bool:
+        """자동 fan_off ACK 대기 중이면 True(명령 없음). 텔레메트리 OFF 2샘플이면 끄기 성공으로 확정,
+        300초 안에 ACK·OFF 둘 다 없으면 대기를 풀어 다음 판정이 fan_off 를 다시 내게 한다."""
+        assert self._stopping is not None
+        since, reason = self._stopping
+        if self._off_streak >= OFF_STREAK:
+            self._stopping = None
+            self._finish_stop(now, reason)
+            return True
+        if now - since < REFIRE_MIN_SEC:
+            return True
+        self._stopping = None
+        return False
+
+    def _finish_stop(self, now: float, reason: str) -> None:
+        self._release(now, end=True)
+        if reason == "auto_vent_disabled":
+            self._reset_vent()
+
     def _release(self, now: float, *, end: bool = False) -> None:
-        """자동 소유(또는 요청) 해제. end 면 자동 종료로 기록(600초 쉼 기준)."""
+        """자동 소유(또는 요청) 해제. end 면 자동 종료로 기록(600초 쉼 기준).
+
+        `_pending_on` 은 건드리지 않는다 — 놓은 뒤에 온 자동 fan_on 의 ACK ok 를 인수하려고.
+        """
+        self._stopping = None
         self._runtime_done += self._run_acc
         self._run_acc = 0.0
         self._phase = "idle"

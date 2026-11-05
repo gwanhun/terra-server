@@ -46,11 +46,12 @@ _NOT_FOUND = {404: {"description": "본인 디바이스가 아니거나 미존�
 _BAD = {400: {"description": "값 범위/일관성 검증 실패"}}
 
 # setpoint 열만 앱에 노출 (alert_*·schedule 은 별도 관심사).
-_SETTINGS_COLS = (
+_BASE_COLS = (
     "device_id, target_temp_c, target_humidity_pct, "
-    "target_temp_min, target_temp_max, target_humid_min, target_humid_max, "
-    "auto_vent_enabled, auto_mist_enabled, updated_at"
+    "target_temp_min, target_temp_max, target_humid_min, target_humid_max, updated_at"
 )
+_SETTINGS_COLS = _BASE_COLS + ", auto_vent_enabled, auto_mist_enabled"
+_AUTO_COLS = ("auto_vent_enabled", "auto_mist_enabled")
 
 # 단일 목표값: 물리적으로 말이 되는 범위 (사육장 일반 범위보다 넉넉하게).
 _TEMP_RANGE = (-20.0, 60.0)
@@ -132,15 +133,20 @@ def _validate(updates: dict[str, Any], existing: dict[str, Any]) -> None:
         raise HTTPException(status_code=400, detail="target_humid_min 은 target_humid_max 보다 작아야 함")
 
 
-def _fetch_settings(sb: Any, device_uuid: str) -> dict[str, Any] | None:
-    res = (
-        sb.table("device_settings")
-        .select(_SETTINGS_COLS)
-        .eq("device_id", device_uuid)
-        .limit(1)
-        .execute()
-    )
+def _select(sb: Any, device_uuid: str, cols: str) -> dict[str, Any] | None:
+    res = sb.table("device_settings").select(cols).eq("device_id", device_uuid).limit(1).execute()
     return (res.data or [None])[0]
+
+
+def _fetch_settings(sb: Any, device_uuid: str) -> dict[str, Any] | None:
+    """Stage R 토글 컬럼이 아직 없으면(마이그레이션 전 배포) 기존 컬럼만 다시 읽는다 — 토글은 false."""
+    try:
+        return _select(sb, device_uuid, _SETTINGS_COLS)
+    except Exception as exc:  # noqa: BLE001 — supabase-py 예외 타입 넓음
+        if not any(col in str(exc) for col in _AUTO_COLS):
+            raise
+        logger.warning("device_settings 에 자동 토글 컬럼 없음 — 마이그레이션 2026-11-05 전: %s", exc)
+        return _select(sb, device_uuid, _BASE_COLS)
 
 
 @router.get(

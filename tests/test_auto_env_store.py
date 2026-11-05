@@ -93,7 +93,7 @@ class Rig:
         end = self.t + secs
         while self.t < end:
             row = {"device_id": DEV, "t_a": temp, "h_a": humid, "a_ok": True, "fan": fan, "relay": relay}
-            store.step(self.ctx(), self.st, row, TH, self.toggles, wet)
+            store.step(self.ctx(), self.st, row, TH, self.toggles, wet, (temp, humid))
             self.t += step
 
     def ack(self, row: dict[str, Any]) -> None:
@@ -491,8 +491,90 @@ def test_toggle_off_sends_fan_off() -> None:
     rig.run(3, humid=85.0, fan="ON")
     assert [(r["action"], r["reason"]) for r in cmds(sb)] == [
         ("fan_on", "auto_vent:humid_high"), ("fan_off", "auto_vent_disabled")]
+    assert _state_row(sb)["vent"]["active"] is True            # 끄기 ACK 전엔 아직 소유(리뷰 #1)
+    rig.ack(acked(cmds(sb)[1]))
     assert _state_row(sb)["vent"]["active"] is False
     sb.calls.clear()
     rig.run(300, humid=85.0, fan="OFF")
     assert sb.calls == []                                      # 소유 없음 + 토글 꺼짐 → DB 0회
     assert [r["action"] for r in cmds(sb)] == ["fan_on", "fan_off"]
+
+
+# ---------- 코드 리뷰 반영(2026-11-05) ----------
+
+def _owned_rig(sb: SB) -> Rig:
+    rig = Rig(sb)
+    rig.run(183, humid=85.0)
+    rig.ack(acked(cmds(sb)[0]))
+    rig.run(30, humid=85.0, fan="ON")
+    return rig
+
+
+def test_auto_fan_off_rejected_is_retried() -> None:
+    """리뷰 #1: 자동 끄기가 기기에서 거절되면 30초 뒤 다시 낸다(찬바람 1시간 방지)."""
+    sb = SB()
+    rig = _owned_rig(sb)
+    rig.run(63, humid=70.0, fan="ON")                          # 종료선(75) 아래 60초 → auto_vent_end
+    assert [r["reason"] for r in cmds(sb)][-1] == "auto_vent_end"
+    rig.ack(acked(cmds(sb)[-1], result="error"))
+    rig.run(27, humid=70.0, fan="ON")
+    assert len(cmds(sb)) == 2                                   # 30초 안엔 재발행 없음
+    rig.run(6, humid=70.0, fan="ON")
+    assert [r["reason"] for r in cmds(sb)] == ["auto_vent:humid_high", "auto_vent_end", "auto_vent_end"]
+
+
+def test_auto_fan_off_confirmed_by_telemetry() -> None:
+    """리뷰 #1: 끄기 ACK 가 안 와도 텔레메트리 OFF 2샘플이면 끄기 성공 — 외부 끔(30분 쉼)으로 보지 않음."""
+    sb = SB()
+    rig = _owned_rig(sb)
+    rig.run(63, humid=70.0, fan="ON")
+    rig.run(6, humid=70.0, fan="OFF")
+    assert rig.state()["vent"]["active"] is False
+    assert rig.state()["vent"]["paused_until"] is None
+
+
+def test_late_ack_after_toggle_off_is_adopted_and_turned_off() -> None:
+    """리뷰 #2: ACK 전에 토글을 꺼도, 늦게 온 자동 fan_on ok 를 인수해 auto_vent_disabled 로 끈다."""
+    sb = SB()
+    rig = Rig(sb)
+    rig.run(183, humid=85.0)
+    on = cmds(sb)[0]
+    rig.toggles = (False, False)
+    rig.run(3, humid=85.0)                                      # 요청 중 토글 끔 → 놓음
+    rig.ack(acked(on))                                          # 늦은 ACK ok
+    rig.run(3, humid=85.0, fan="ON")
+    assert [(r["action"], r["reason"]) for r in cmds(sb)] == [
+        ("fan_on", "auto_vent:humid_high"), ("fan_off", "auto_vent_disabled")]
+
+
+def test_late_ack_after_manual_command_not_adopted() -> None:
+    """리뷰 #2: 사용자 명령이 뒤에 왔으면 자동 fan_on 의 늦은 ACK 는 인수하지 않는다."""
+    sb = SB()
+    rig = Rig(sb)
+    rig.run(183, humid=85.0)
+    on = cmds(sb)[0]
+    rig.ack({"device_id": DEV, "action": "fan_on", "source": "manual", "result": "ok", "status": "acked"})
+    rig.ack(acked(on))
+    rig.run(3, humid=70.0, fan="ON")
+    assert rig.state()["vent"]["active"] is False
+
+
+def test_restore_keeps_refire_gap() -> None:
+    """리뷰 #5: 재시작 직전 자동 fan_on(busy)이 있었으면 재시작 뒤에도 300초 간격을 지킨다."""
+    sb = SB(commands=[cmd_row("fan_on", "auto", -60, result="busy", reason="auto_vent:humid_high")])
+    rig = Rig(sb)
+    rig.run(200, humid=85.0)                                    # 직전 명령 뒤 260초 — 아직 안 됨
+    assert cmds(sb) == []
+    rig.run(60, humid=85.0)
+    assert [r["action"] for r in cmds(sb)] == ["fan_on"]
+
+
+def test_restore_in_flight_auto_fan_on_adopts_late_ack() -> None:
+    """리뷰 #2: 재시작 때 마지막 작성자가 아직 ACK 안 온 자동 fan_on 이면, 그 ACK ok 를 인수한다."""
+    seed = cmd_row("fan_on", "auto", -5, status="sent", result=None, reason="auto_vent:humid_high")
+    sb = SB(commands=[seed])
+    rig = Rig(sb)
+    rig.run(3, humid=85.0, fan="OFF")
+    assert rig.state()["vent"]["active"] is False
+    rig.ack(acked(seed))
+    assert rig.state()["vent"]["active"] is True

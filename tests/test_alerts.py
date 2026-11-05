@@ -756,7 +756,7 @@ def test_auto_env_wet_latch_from_humid_cycle(monkeypatch: pytest.MonkeyPatch, sb
     monkeypatch.setenv("HUMID_CYCLES_SINCE", at(-100000))
     _auto_settings(sb)
     seen: list[float | None] = []
-    monkeypatch.setattr(auto_env_store, "step", lambda c, st, row, th, tg, wet: seen.append(wet))
+    monkeypatch.setattr(auto_env_store, "step", lambda c, st, row, th, tg, wet, values: seen.append(wet))
     from backend import humid_cycle_store
     monkeypatch.setattr(humid_cycle_store, "step", lambda *a, **k: None)
 
