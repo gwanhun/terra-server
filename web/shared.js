@@ -596,6 +596,12 @@ function otaJobLine(j) {
 
 async function otaRefresh() {
   if (!OTA.id || OTA.busy) return;
+  // 5초마다 #ota-body 를 통째로 다시 그리므로, 사용자가 고른 릴리스·force 체크를 먼저 읽어 두고 그린 뒤 복원한다.
+  // (안 그러면 드롭다운이 매번 첫 항목=최신 버전으로 되돌아간다)
+  const prevSel = document.getElementById('ota-release');
+  const prevRelease = prevSel ? prevSel.value : null;
+  const prevForceEl = document.getElementById('ota-force');
+  const prevForce = prevForceEl ? prevForceEl.checked : false;
   const [jobs, rels] = await Promise.all([
     otaApi('/firmware/jobs?target_uuid=' + OTA.id + '&limit=5'),
     otaApi('/firmware/releases?target=' + OTA.target),
@@ -630,6 +636,10 @@ async function otaRefresh() {
       <div style="display:flex;flex-direction:column;gap:4px;margin-top:6px">${history.map(otaJobLine).join('')}</div></details>`;
   }
   document.getElementById('ota-body').innerHTML = html;
+  const sel = document.getElementById('ota-release');
+  if (sel && prevRelease && [...sel.options].some(o => o.value === prevRelease)) sel.value = prevRelease;
+  const forceEl = document.getElementById('ota-force');
+  if (forceEl) forceEl.checked = prevForce;
 }
 
 async function otaPrepare() {
