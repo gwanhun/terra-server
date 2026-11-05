@@ -30,7 +30,7 @@
 
 - `source='auto'` → `on_own_ack(action, result=='ok')`.
 - 그 밖의 팬 명령 ACK ok → `on_other_ack` + 그 기기의 pending 자동 팬 명령을 `expired/superseded` 로(R7).
-- source 무관 `mist` ACK ok → `on_mist_ok`(R3 ①·R9 간격).
+- source 무관 `mist` ACK ok → `on_mist_ok`(R9 분무 간격 2시간. 환기 판정엔 안 씀 — r3 에서 분무 뒤 보호 삭제).
 - 이 브리지에서 아직 복원하지 않은 기기(`restored=False`)는 무시 — 복원이 DB 에서 같은 사실을 읽는다.
 """
 
@@ -107,7 +107,6 @@ class AutoDeviceState:
     spans_expires: float = 0.0
     last_state: dict[str, Any] | None = None       # 마지막으로 쓴 auto_env_state(updated_at 제외)
     state_retry_at: float = 0.0
-    wet_latch: float | None = None                 # 습기 사이클 detected_at(mono) 최댓값(R3 ②)
     sim_until: float | None = None                 # 섀도 모의 팬: 이 mono 전까지 'ON'(R13)
     hold_prev: bool = False                        # 직전 샘플의 예약 구간 여부(켜짐 전이 감지)
 
@@ -369,7 +368,7 @@ def _sync_state(c: Any, st: AutoDeviceState) -> None:
 # ---------- 공개 ----------
 
 def step(c: Any, st: AutoDeviceState, row: dict[str, Any], th: Thresholds,
-         toggles: tuple[bool, bool], wet_mono: float | None,
+         toggles: tuple[bool, bool],
          values: tuple[float | None, float | None]) -> None:
     """샘플 1건. c 는 `alerts._Step`(sb, device_uuid, meta, now_mono, now_wall).
 
@@ -385,7 +384,7 @@ def step(c: Any, st: AutoDeviceState, row: dict[str, Any], th: Thresholds,
         return AutoInput(
             mono=c.now_mono, wall=c.now_wall, temp=temp, humid=humid, fan=fan,
             has_fan=tele_fan is not None, has_relay=row.get("relay") is not None, th=th,
-            vent_on=vent_on, mist_on=mist_on, schedule_hold=hold, wet_mono=wet_mono,
+            vent_on=vent_on, mist_on=mist_on, schedule_hold=hold,
         )
 
     if not vent_on and not mist_on and tr.phase != "owned":

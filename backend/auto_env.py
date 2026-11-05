@@ -11,11 +11,11 @@
 | 항목 | 규칙 |
 |------|------|
 | 입력(R1) | 온도·습도 값 없음 또는 샘플 간격 > 60초 → 연속 타이머 초기화, 그 샘플은 명령 없음 |
-| 원인(R2) | `temp_high` = 온도 > MAX 연속 180초. `humid_high` = 습도 > MAX **이고** 마지막 습기 신호 뒤 60분 **이고** 온도 > MIN, 이 셋이 연속 180초 |
-| 시작(R4) | 토글 켜짐·`fan` 키 있음·원인 ≥ 1·쉼 아님·예약 켜짐 아님·자동 종료 뒤 600초·오늘 누적 < 12시간·`fan == 'OFF'` → `fan_on {duration_ms: 3600000}` |
+| 원인(R2) | `temp_high` = 온도 > MAX 연속 180초. `humid_high` = 습도 > MAX **이고** 온도 > MIN, 둘이 연속 3600초(v4 과습 주의 진입과 같은 1시간, Figma). 분무·습기 사이클 뒤 보호 시간은 없다 |
+| 시작(R4) | 토글 켜짐·`fan` 키 있음·원인 ≥ 1(원인별 연속 시간: 온도 180초·습도 3600초)·쉼 아님·예약 켜짐 아님·자동 종료 뒤 600초·오늘 누적 < 12시간·`fan == 'OFF'` → `fan_on {duration_ms: 3600000}` |
 | 소유(R4) | 자동 `fan_on` 의 ACK ok 때만 확정. 실패면 소유 없음 + 직전 명령 뒤 300초에 재판정 |
 | 종료(R5) | 서 있던 원인이 모두 종료선 이하 연속 60초 → `auto_vent_end`. 온도 ≤ MIN → 습도 원인 즉시 해제(0개면 `auto_vent_cold`). 누적 12시간 → `auto_vent_cap` |
-| OFF 관측(R6) | 소유 중 `fan == 'OFF'` 2샘플: 타이머 만료(마지막 켬 + 3570초 이후)면 이어서 재발행, 그 전이면 외부 끔 → 소유 해제 + 30분 쉼. 직전 명령 뒤 300초 안이면 기다림 |
+| OFF 관측(R6) | 소유 중 `fan == 'OFF'` 2샘플: 타이머 만료(마지막 켬 + 3570초 이후)면 원인이 지금도 원인별 시간만큼 이어졌을 때(습도는 온도 > MIN 도) 이어서 재발행(없으면 종료), 그 전이면 외부 끔 → 소유 해제 + 30분 쉼. 직전 명령 뒤 300초 안이면 기다림 |
 | 남의 명령(R7) | 수동 `fan_off`(소유 중 `fan_toggle` 포함) → 소유 해제 + 30분 쉼. 그 밖의 팬 명령 → 소유 해제만 |
 | 예약(R8) | 구간 예약 켜짐 중엔 시작·종료·재발행 없음, 소유 해제 |
 | 분무(R9) | 토글·`relay` 키·습도 < MIN 연속 180초·무장·`fan == 'OFF'`·이번 step 에 fan_on 없음·마지막 분무(모든 source) 뒤 2시간·오늘 자동 < 4 → `mist {duration_ms: 3000}`. 낸 순간 예산 소진(+1, 간격 기준, 무장 해제). 습도 ≥ MIN 샘플에서 재무장 |
@@ -28,10 +28,10 @@
 ## 연속 타이머
 
 시작 판정 타이머(원인별 `over`)에는 "자동이 시작을 고려할 수 있음"(토글 켜짐·쉼 아님·예약 아님)도
-함께 들어간다. 그래서 쉼·예약·습기 가드가 끝난 뒤엔 조건을 **다시 180초** 확인한다
-(계획 테스트: 수동 끔 → 30분 + 180초 뒤 켬, 분무 → 60분 + 180초 뒤 켬). 반면 팬이 켜져 있음·600초
-쉼·하루 상한·재시도 간격은 타이머를 끊지 않고 명령만 막는다(분무도 같음 — "팬이 켜져 있으면 보류,
-연속 타이머는 유지").
+함께 들어간다. 그래서 쉼·예약이 끝난 뒤엔 조건을 **원인별 연속 시간만큼 다시** 확인한다
+(온도 180초·습도 3600초, `_hold_sec`. 계획 테스트: 수동 끔 → 30분 + 180초 뒤 켬). 반면 팬이 켜져
+있음·600초 쉼·하루 상한·재시도 간격은 타이머를 끊지 않고 명령만 막는다(분무도 같음 — "팬이 켜져
+있으면 보류, 연속 타이머는 유지"). 원인 합류(소유 중)·타이머 만료 재발행(R6)도 같은 원인별 시간을 쓴다.
 
 ## 호출측 약속
 
@@ -49,11 +49,12 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 
 from backend.daily_analysis import num as _num
-from backend.env_rules import GAP_SEC, Thresholds
+from backend.env_rules import GAP_SEC, OVER_HUMID_ENTRY_SEC, Thresholds
 
 # ---------- 상수 (계획 Global Constraints 표가 정본) ----------
 
-HOLD_SEC = 180                  # 시작 조건(> MAX / < MIN) 연속 성립 시간
+HOLD_SEC = 180                  # 온도 원인(> MAX)·분무(< MIN) 연속 성립 시간
+HUMID_HOLD_SEC = OVER_HUMID_ENTRY_SEC   # 습도 원인(> MAX) 연속 성립 시간 — v4 과습 주의 진입과 같은 1시간
 VENT_HUMID_MARGIN = 5.0         # 습도 종료선 = max(MAX − 5, (MIN + MAX) / 2)
 VENT_TEMP_MARGIN = 0.5          # 온도 종료선 = MAX − 0.5
 END_HOLD_SEC = 60               # 종료선 이하 연속 60초 → 종료
@@ -61,7 +62,6 @@ VENT_DURATION_MS = 3_600_000    # 자동 fan_on 펌웨어 타이머(1시간)
 REFIRE_MIN_SEC = 300            # 직전 자동 명령 뒤 이 시간 안엔 fan_on 재발행 안 함
 VENT_MIN_OFF_SEC = 600          # 자동 환기 종료 뒤 다음 자동 시작까지
 VENT_DAILY_MAX_SEC = 43_200     # KST 하루 자동 환기 누적 상한(12시간)
-POST_MIST_GUARD_SEC = 3600      # 습기 신호 뒤 습도 원인 시작 금지
 MANUAL_PAUSE_SEC = 1800         # 사용자 끔 뒤 자동 환기 쉼
 MIST_DURATION_MS = 3000
 MIST_MIN_INTERVAL_SEC = 7200    # 모든 source 마지막 분무 기준
@@ -96,6 +96,11 @@ def _held(since: float | None, now: float, sec: float) -> bool:
     return since is not None and now - since >= sec
 
 
+def _hold_sec(cause: str) -> float:
+    """원인별 시작 연속 시간. 습도는 v4 과습 주의와 같은 1시간, 온도는 180초."""
+    return HUMID_HOLD_SEC if cause == "humid_high" else HOLD_SEC
+
+
 # ---------- 입출력 ----------
 
 @dataclass(frozen=True)
@@ -104,7 +109,6 @@ class AutoInput:
 
     fan: 텔레메트리 `fan` 값('ON'/'OFF', 키 없으면 None). has_fan/has_relay: 키 존재 여부(C4).
     vent_on/mist_on: 기기 토글. schedule_hold: 구간 예약 켜짐 중(R8, store 가 계산).
-    wet_mono: 습기 사이클 감지 시각(래치된 최댓값, R3 ②). 분무 ACK(①)는 `on_mist_ok` 로 따로 받는다.
     """
 
     mono: float
@@ -118,7 +122,6 @@ class AutoInput:
     vent_on: bool
     mist_on: bool
     schedule_hold: bool
-    wet_mono: float | None
 
 
 @dataclass(frozen=True)
@@ -176,7 +179,6 @@ class AutoEnvTracker:
     # ----- 분무 -----
     _armed: bool = True
     _mist_last: float | None = None                            # 모든 source 마지막 분무(시도·ACK ok)
-    _wet_ok: float | None = None                               # source 무관 분무 ACK ok(R3 ①)
     _mist_today: int = 0
 
     # ----- 날짜·표시 -----
@@ -264,8 +266,7 @@ class AutoEnvTracker:
         self._release(mono)    # schedule·restore 등 — 소유 해제만
 
     def on_mist_ok(self, mono: float) -> None:
-        """모든 source 의 분무 ACK ok(R3 ①·R9 간격)."""
-        self._wet_ok = mono if self._wet_ok is None else max(self._wet_ok, mono)
+        """모든 source 의 분무 ACK ok(R9 간격 — 분무끼리 2시간). 환기 판정엔 영향 없음."""
         self._mist_last = mono if self._mist_last is None else max(self._mist_last, mono)
 
     def restore(self, *, mono: float, wall: datetime, day: date | None = None,
@@ -277,7 +278,7 @@ class AutoEnvTracker:
         """브리지 재시작 복원(R11). 시각 인자는 호출측이 wall → mono 로 바꿔 넘긴다.
 
         day: `auto_env_state.day`. 오늘(KST)과 다르면 runtime·mist_today 는 0. None 이면 오늘 값으로 본다.
-        mist_last: source 무관 마지막 분무 ACK ok — 간격(R9)과 습기 가드(R3 ①) 둘 다에 쓴다.
+        mist_last: source 무관 마지막 분무 ACK ok — 분무 간격(R9)에 쓴다.
         owned_on: 마지막 작성자 판정을 통과한 자동 fan_on 의 시각(None = 소유 없음).
         run_since: 소유 복원 때 이번 연속 자동 환기 시작(`vent.since`). 없으면 owned_on.
         causes: 소유 복원 때의 원인(명령 reason 에서). 비면 두 원인 다 서 있다고 본다(종료가 더 보수적).
@@ -298,7 +299,6 @@ class AutoEnvTracker:
         self._paused_until = paused_until
         self._last_end = last_end
         self._mist_last = mist_last
-        self._wet_ok = mist_last
         self._armed = True
         self._off_streak = 0
         self._retry_after = None
@@ -376,11 +376,10 @@ class AutoEnvTracker:
         th = inp.th
         paused = self._paused_until is not None and now < self._paused_until
         gate = inp.vent_on and not paused and not inp.schedule_hold
-        guard_ok = self._guard_ok(inp, now)
         over = {
             "temp_high": gate and t is not None and t > th.temp_max,
             "humid_high": (gate and h is not None and h > th.humid_max
-                           and t is not None and t > th.temp_min and guard_ok),
+                           and t is not None and t > th.temp_min),
         }
         under = {
             "temp_high": t is not None and t <= th.temp_max - VENT_TEMP_MARGIN,
@@ -404,10 +403,6 @@ class AutoEnvTracker:
         else:
             self._low_since = None
             self._armed = True        # 회복 → 재무장
-
-    def _guard_ok(self, inp: AutoInput, now: float) -> bool:
-        wet = max((w for w in (inp.wet_mono, self._wet_ok) if w is not None), default=None)
-        return wet is None or now - wet >= POST_MIST_GUARD_SEC
 
     def _runtime(self) -> float:
         return self._runtime_done + self._run_acc
@@ -452,7 +447,7 @@ class AutoEnvTracker:
             return None
         if self._runtime() >= VENT_DAILY_MAX_SEC:
             return None
-        causes = [c for c in CAUSES if _held(self._over.get(c), now, HOLD_SEC)]
+        causes = [c for c in CAUSES if _held(self._over.get(c), now, _hold_sec(c))]
         if not causes:
             return None
         self._intent = frozenset(causes)
@@ -466,7 +461,7 @@ class AutoEnvTracker:
             return None
         # 소유 중 새로 성립한 원인은 합류(종료는 서 있는 원인 전부가 풀려야)
         for c in CAUSES:
-            if _held(self._over.get(c), now, HOLD_SEC):
+            if _held(self._over.get(c), now, _hold_sec(c)):
                 self._causes.add(c)
 
         # R6: 소유 중 OFF 관측
@@ -480,10 +475,12 @@ class AutoEnvTracker:
                 return None
             if retry_wait:
                 return None
+            # 서 있는 원인 중 지금도 시작 조건이 원인별 시간(온도 180초·습도 3600초)만큼 이어진 것만.
+            # 습도는 추운 날 금지(온도 > MIN)도 다시 본다.
             refire = [
                 c for c in CAUSES if c in self._causes
-                and (c != "humid_high" or (t is not None and t > th.temp_min
-                                           and self._guard_ok(inp, now)))
+                and _held(self._over.get(c), now, _hold_sec(c))
+                and (c != "humid_high" or (t is not None and t > th.temp_min))
             ]
             if (blind or not refire or not inp.has_fan
                     or self._runtime() >= VENT_DAILY_MAX_SEC):
@@ -634,13 +631,13 @@ __all__ = [
     "END_HOLD_SEC",
     "EXPIRY_SLACK_SEC",
     "HOLD_SEC",
+    "HUMID_HOLD_SEC",
     "KST",
     "MANUAL_PAUSE_SEC",
     "MIST_DAILY_MAX",
     "MIST_DURATION_MS",
     "MIST_MIN_INTERVAL_SEC",
     "OFF_STREAK",
-    "POST_MIST_GUARD_SEC",
     "REFIRE_MIN_SEC",
     "RETRY_SEC",
     "STATE_RETRY_SEC",

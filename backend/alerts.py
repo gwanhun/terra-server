@@ -838,30 +838,15 @@ def _evaluate_v4(device_uuid: str, row: dict[str, Any], device_key: str | None) 
             # Stage R 자동 환기·분무 — v4 판정 뒤에, 실패해도 v4 에 영향 없게
             try:
                 if auto_env_store.auto_env_enabled() and auto_env_store.device_allowed(device_uuid):
-                    auto_env_store.step(c, st.auto, row, th, st.toggles, _wet_mono(c), (t_val, h_val))
-                elif st.auto.restored or st.auto.tracker.phase != "idle" or st.auto.wet_latch is not None:
+                    auto_env_store.step(c, st.auto, row, th, st.toggles, (t_val, h_val))
+                elif st.auto.restored or st.auto.tracker.phase != "idle":
                     st.auto = auto_env_store.AutoDeviceState()   # R10 게이트: 상태만 버림(명령 없음)
             except Exception:  # noqa: BLE001
                 logger.exception("자동 환기·분무 평가 실패 (device=%s)", device_uuid)
 
 
-def _wet_mono(c: _Step) -> float | None:
-    """R3 ② 습기 사이클 감지 시각(mono). 사이클은 끝나면 None 이 되므로 지금까지 본 최댓값을 래치."""
-    st = c.st
-    latch = st.auto.wet_latch
-    if humid_cycles_enabled() and humid_cycles_since() is not None:
-        tracker = st.cycles.tracker
-        cycle = tracker.cycle if tracker is not None else None
-        detected = getattr(cycle, "detected_at", None) if cycle is not None else None
-        if isinstance(detected, datetime):
-            m = c.now_mono - (c.now_wall - detected).total_seconds()
-            latch = m if latch is None else max(latch, m)
-    st.auto.wet_latch = latch
-    return latch
-
-
 def on_command_ack(row: dict[str, Any]) -> None:
-    """commands ACK 확정 행(handlers._ack_device_command 의 UPDATE 결과) → 자동 환기·분무(R4·R7·R3).
+    """commands ACK 확정 행(handlers._ack_device_command 의 UPDATE 결과) → 자동 환기·분무(R4·R7·R9).
 
     스위치가 꺼졌거나 이 브리지가 그 기기 상태를 모르면 아무것도 안 한다.
     """

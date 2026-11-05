@@ -658,7 +658,7 @@ def test_auto_env_end_to_end_insert_and_ack(monkeypatch: pytest.MonkeyPatch, sb:
     monkeypatch.setenv("AUTO_ENV_ENABLED", "true")
     monkeypatch.setenv("AUTO_ENV_DRY_RUN", "false")
     _auto_settings(sb)
-    _auto_run(clock, 0, 183, h_a=85.0)
+    _auto_run(clock, 0, 3603, h_a=85.0)                              # 습도 MAX 초과 1시간 → 3600초에 켬
     cmds = sb.rows("commands")
     assert [(r["action"], r["source"], r["issued_by"], r["reason"]) for r in cmds] == [
         ("fan_on", "auto", OWNER, "auto_vent:humid_high")]
@@ -697,9 +697,9 @@ def test_threshold_change_resets_auto_timers(monkeypatch: pytest.MonkeyPatch, sb
     _auto_settings(sb)
     _auto_run(clock, 0, 120, h_a=85.0)
     sb.rows("device_settings")[0]["target_humid_max"] = 82.0           # 120초 재조회에서 바뀜
-    _auto_run(clock, 120, 183, h_a=85.0)
+    _auto_run(clock, 120, 3720, h_a=85.0)
     assert sb.rows("commands") == []                                  # 타이머가 120초에 다시 시작
-    _auto_run(clock, 183, 303, h_a=85.0)
+    _auto_run(clock, 3720, 3723, h_a=85.0)                            # 120 + 3600
     assert [r["action"] for r in sb.rows("commands")] == ["fan_on"]
 
 
@@ -742,32 +742,3 @@ def test_settings_select_skips_auto_columns_when_off(monkeypatch: pytest.MonkeyP
     assert len(selects) == 2
     assert "auto_vent_enabled" not in selects[0]
     assert "auto_vent_enabled" in selects[1] and "auto_mist_enabled" in selects[1]
-
-
-def test_auto_env_wet_latch_from_humid_cycle(monkeypatch: pytest.MonkeyPatch, sb: FlakySB,
-                                             clock: Clock) -> None:
-    """습기 사이클 detected_at 을 mono 로 바꿔 래치하고, 사이클이 없어져도 유지한다(R3 ②)."""
-    from types import SimpleNamespace
-
-    from backend import auto_env_store
-
-    monkeypatch.setenv("AUTO_ENV_ENABLED", "true")
-    monkeypatch.setenv("HUMID_CYCLES_ENABLED", "true")
-    monkeypatch.setenv("HUMID_CYCLES_SINCE", at(-100000))
-    _auto_settings(sb)
-    seen: list[float | None] = []
-    monkeypatch.setattr(auto_env_store, "step", lambda c, st, row, th, tg, wet, values: seen.append(wet))
-    from backend import humid_cycle_store
-    monkeypatch.setattr(humid_cycle_store, "step", lambda *a, **k: None)
-
-    clock.t = 0
-    st = alerts._states.setdefault(DEV, alerts._DeviceState())
-    st.cycles.tracker = SimpleNamespace(cycle=SimpleNamespace(detected_at=WALL0 - timedelta(seconds=100)))
-    _auto_run(clock, 0, 3)
-    assert seen[-1] == pytest.approx(1000.0 - 100)
-    st.cycles.tracker = SimpleNamespace(cycle=None)
-    _auto_run(clock, 3, 6)
-    assert seen[-1] == pytest.approx(900.0)
-    st.cycles.tracker = None
-    _auto_run(clock, 6, 9)
-    assert seen[-1] == pytest.approx(900.0)

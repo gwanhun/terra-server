@@ -87,13 +87,12 @@ class Rig:
                    now_mono=1000.0 + self.t, now_wall=self.t0 + timedelta(seconds=self.t))
 
     def run(self, secs: float, step: float = 3.0, *, temp: float | None = 24.0,
-            humid: float | None = 60.0, fan: str | None = "OFF", relay: str | None = "OFF",
-            wet: float | None = None) -> None:
+            humid: float | None = 60.0, fan: str | None = "OFF", relay: str | None = "OFF") -> None:
         """[t, t+secs) 를 step 간격 샘플로. 끝나면 t = t+secs."""
         end = self.t + secs
         while self.t < end:
             row = {"device_id": DEV, "t_a": temp, "h_a": humid, "a_ok": True, "fan": fan, "relay": relay}
-            store.step(self.ctx(), self.st, row, TH, self.toggles, wet, (temp, humid))
+            store.step(self.ctx(), self.st, row, TH, self.toggles, (temp, humid))
             self.t += step
 
     def ack(self, row: dict[str, Any]) -> None:
@@ -168,9 +167,9 @@ def test_off_toggles_cost_nothing() -> None:
 def test_insert_auto_command() -> None:
     sb = SB()
     rig = Rig(sb)
-    rig.run(177, humid=85.0)
+    rig.run(3597, humid=85.0)
     assert cmds(sb) == []
-    rig.run(6, humid=85.0)
+    rig.run(6, humid=85.0)                   # t=3600 — 습도 MAX 초과 1시간
     rows = cmds(sb)
     assert len(rows) == 1
     r = rows[0]
@@ -189,21 +188,21 @@ def test_dry_run_logs_only(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCa
     caplog.set_level(logging.INFO, logger="backend.auto_env_store")
     sb = SB()
     rig = Rig(sb)
-    rig.run(183, humid=85.0)                 # 실제 팬 텔레메트리는 계속 OFF
+    rig.run(183, temp=28.0)                  # 실제 팬 텔레메트리는 계속 OFF
 
     def intents() -> list[str]:
         return [r.getMessage() for r in caplog.records if "auto-env intent" in r.getMessage()]
 
     assert sb.rows("commands") == []
-    assert intents() == [f"auto-env intent device={DEV} action=fan_on reason=auto_vent:humid_high"]
+    assert intents() == [f"auto-env intent device={DEV} action=fan_on reason=auto_vent:temp_high"]
     assert "auto_env_state" not in sb.one("devices", id=DEV)    # 앱에 가짜 상태를 보이지 않음
     assert rig.st.tracker.phase == "owned"                      # 즉시 ACK ok 로 봄
 
     # 모의 팬이 켜져 있는 동안엔 실제 텔레메트리 OFF 를 외부 끔으로 보지 않는다. 1시간 뒤 모의 타이머 만료 → 재발행
-    rig.run(3600 - 6, humid=85.0)
+    rig.run(3600 - 6, temp=28.0)
     assert len(intents()) == 1
-    rig.run(12, humid=85.0)
-    assert len(intents()) == 2 and intents()[1].endswith("action=fan_on reason=auto_vent:humid_high")
+    rig.run(12, temp=28.0)
+    assert len(intents()) == 2 and intents()[1].endswith("action=fan_on reason=auto_vent:temp_high")
     assert sb.rows("commands") == []
     assert "auto_env_state" not in sb.one("devices", id=DEV)
 
@@ -212,11 +211,11 @@ def test_insert_failure_retries() -> None:
     sb = SB()
     sb.fail[("commands", "insert")] = 1
     rig = Rig(sb)
-    rig.run(183, humid=85.0)                 # t=180 INSERT 실패
+    rig.run(183, temp=28.0)                  # t=180 INSERT 실패
     assert cmds(sb) == []
-    rig.run(207 - 183, humid=85.0)           # 30초 안
+    rig.run(207 - 183, temp=28.0)            # 30초 안
     assert cmds(sb) == []
-    rig.run(6, humid=85.0)                   # t=210 재시도
+    rig.run(6, temp=28.0)                    # t=210 재시도
     assert [r["action"] for r in cmds(sb)] == ["fan_on"]
 
 
@@ -257,11 +256,11 @@ def test_schedule_reread_before_insert() -> None:
     sb = SB()
     rig = Rig(sb)
     rig.run(30, humid=60.0)                  # t=0 에 예약 캐시(빈 목록) 로드
-    rig.run(165, humid=85.0)                 # t=30 부터 과습. t=180 에 캐시 재로드(여전히 빔)
+    rig.run(165, temp=28.0)                  # t=30 부터 고온. t=180 에 캐시 재로드(여전히 빔)
     sb.rows("schedules").extend([_sched("A", "fan_on", "11:00"), _sched("A", "fan_off", "13:00")])
-    rig.run(18, humid=85.0)                  # t=210 시작 판정 → INSERT 직전 재조회에서 구간 켜짐
+    rig.run(18, temp=28.0)                   # t=210 시작 판정 → INSERT 직전 재조회에서 구간 켜짐
     assert cmds(sb) == []
-    rig.run(9, humid=85.0)
+    rig.run(9, temp=28.0)
     assert cmds(sb) == []
     assert _state_row(sb)["vent"]["schedule_hold"] is True
 
@@ -402,7 +401,7 @@ def test_manual_ack_supersedes_pending_auto() -> None:
 def test_manual_off_ack_pauses_and_failed_manual_ignored() -> None:
     sb = SB()
     rig = Rig(sb)
-    rig.run(183, humid=85.0)
+    rig.run(183, temp=28.0)
     rig.ack(acked(cmds(sb)[0]))
     assert rig.st.tracker.phase == "owned"
     rig.ack({"id": "m-1", "device_id": DEV, "action": "fan_off", "source": "manual",
@@ -417,12 +416,13 @@ def test_manual_off_ack_pauses_and_failed_manual_ignored() -> None:
 def test_own_ack_failure_no_ownership() -> None:
     sb = SB()
     rig = Rig(sb)
-    rig.run(183, humid=85.0)
+    rig.run(183, temp=28.0)
     rig.ack(acked(cmds(sb)[0], result="busy"))
     assert rig.st.tracker.phase == "idle"
 
 
-def test_mist_ack_any_source_feeds_guard() -> None:
+def test_mist_ack_any_source_sets_interval() -> None:
+    """수동 분무 ACK ok 도 자동 분무 2시간 간격(R9)에 들어간다(환기 판정엔 안 씀 — r3)."""
     sb = SB()
     rig = Rig(sb, toggles=(False, True))
     rig.run(3, humid=50.0)
@@ -484,18 +484,18 @@ def test_restore_primes_state_from_db() -> None:
 def test_toggle_off_sends_fan_off() -> None:
     sb = SB()
     rig = Rig(sb)
-    rig.run(183, humid=85.0)
+    rig.run(183, temp=28.0)
     rig.ack(acked(cmds(sb)[0]))
-    rig.run(30, humid=85.0, fan="ON")
+    rig.run(30, temp=28.0, fan="ON")
     rig.toggles = (False, False)
-    rig.run(3, humid=85.0, fan="ON")
+    rig.run(3, temp=28.0, fan="ON")
     assert [(r["action"], r["reason"]) for r in cmds(sb)] == [
-        ("fan_on", "auto_vent:humid_high"), ("fan_off", "auto_vent_disabled")]
+        ("fan_on", "auto_vent:temp_high"), ("fan_off", "auto_vent_disabled")]
     assert _state_row(sb)["vent"]["active"] is True            # 끄기 ACK 전엔 아직 소유(리뷰 #1)
     rig.ack(acked(cmds(sb)[1]))
     assert _state_row(sb)["vent"]["active"] is False
     sb.calls.clear()
-    rig.run(300, humid=85.0, fan="OFF")
+    rig.run(300, temp=28.0, fan="OFF")
     assert sb.calls == []                                      # 소유 없음 + 토글 꺼짐 → DB 0회
     assert [r["action"] for r in cmds(sb)] == ["fan_on", "fan_off"]
 
@@ -503,10 +503,11 @@ def test_toggle_off_sends_fan_off() -> None:
 # ---------- 코드 리뷰 반영(2026-11-05) ----------
 
 def _owned_rig(sb: SB) -> Rig:
+    """온도 원인(180초)으로 자동 소유까지."""
     rig = Rig(sb)
-    rig.run(183, humid=85.0)
+    rig.run(183, temp=28.0)
     rig.ack(acked(cmds(sb)[0]))
-    rig.run(30, humid=85.0, fan="ON")
+    rig.run(30, temp=28.0, fan="ON")
     return rig
 
 
@@ -514,21 +515,21 @@ def test_auto_fan_off_rejected_is_retried() -> None:
     """리뷰 #1: 자동 끄기가 기기에서 거절되면 30초 뒤 다시 낸다(찬바람 1시간 방지)."""
     sb = SB()
     rig = _owned_rig(sb)
-    rig.run(63, humid=70.0, fan="ON")                          # 종료선(75) 아래 60초 → auto_vent_end
+    rig.run(63, temp=24.0, fan="ON")                           # 온도 종료선(26.5) 아래 60초 → auto_vent_end
     assert [r["reason"] for r in cmds(sb)][-1] == "auto_vent_end"
     rig.ack(acked(cmds(sb)[-1], result="error"))
-    rig.run(27, humid=70.0, fan="ON")
+    rig.run(27, temp=24.0, fan="ON")
     assert len(cmds(sb)) == 2                                   # 30초 안엔 재발행 없음
-    rig.run(6, humid=70.0, fan="ON")
-    assert [r["reason"] for r in cmds(sb)] == ["auto_vent:humid_high", "auto_vent_end", "auto_vent_end"]
+    rig.run(6, temp=24.0, fan="ON")
+    assert [r["reason"] for r in cmds(sb)] == ["auto_vent:temp_high", "auto_vent_end", "auto_vent_end"]
 
 
 def test_auto_fan_off_confirmed_by_telemetry() -> None:
     """리뷰 #1: 끄기 ACK 가 안 와도 텔레메트리 OFF 2샘플이면 끄기 성공 — 외부 끔(30분 쉼)으로 보지 않음."""
     sb = SB()
     rig = _owned_rig(sb)
-    rig.run(63, humid=70.0, fan="ON")
-    rig.run(6, humid=70.0, fan="OFF")
+    rig.run(63, temp=24.0, fan="ON")
+    rig.run(6, temp=24.0, fan="OFF")
     assert rig.state()["vent"]["active"] is False
     assert rig.state()["vent"]["paused_until"] is None
 
@@ -537,35 +538,35 @@ def test_late_ack_after_toggle_off_is_adopted_and_turned_off() -> None:
     """리뷰 #2: ACK 전에 토글을 꺼도, 늦게 온 자동 fan_on ok 를 인수해 auto_vent_disabled 로 끈다."""
     sb = SB()
     rig = Rig(sb)
-    rig.run(183, humid=85.0)
+    rig.run(183, temp=28.0)
     on = cmds(sb)[0]
     rig.toggles = (False, False)
-    rig.run(3, humid=85.0)                                      # 요청 중 토글 끔 → 놓음
+    rig.run(3, temp=28.0)                                       # 요청 중 토글 끔 → 놓음
     rig.ack(acked(on))                                          # 늦은 ACK ok
-    rig.run(3, humid=85.0, fan="ON")
+    rig.run(3, temp=28.0, fan="ON")
     assert [(r["action"], r["reason"]) for r in cmds(sb)] == [
-        ("fan_on", "auto_vent:humid_high"), ("fan_off", "auto_vent_disabled")]
+        ("fan_on", "auto_vent:temp_high"), ("fan_off", "auto_vent_disabled")]
 
 
 def test_late_ack_after_manual_command_not_adopted() -> None:
     """리뷰 #2: 사용자 명령이 뒤에 왔으면 자동 fan_on 의 늦은 ACK 는 인수하지 않는다."""
     sb = SB()
     rig = Rig(sb)
-    rig.run(183, humid=85.0)
+    rig.run(183, temp=28.0)
     on = cmds(sb)[0]
     rig.ack({"device_id": DEV, "action": "fan_on", "source": "manual", "result": "ok", "status": "acked"})
     rig.ack(acked(on))
-    rig.run(3, humid=70.0, fan="ON")
+    rig.run(3, temp=24.0, fan="ON")
     assert rig.state()["vent"]["active"] is False
 
 
 def test_restore_keeps_refire_gap() -> None:
     """리뷰 #5: 재시작 직전 자동 fan_on(busy)이 있었으면 재시작 뒤에도 300초 간격을 지킨다."""
-    sb = SB(commands=[cmd_row("fan_on", "auto", -60, result="busy", reason="auto_vent:humid_high")])
+    sb = SB(commands=[cmd_row("fan_on", "auto", -60, result="busy", reason="auto_vent:temp_high")])
     rig = Rig(sb)
-    rig.run(200, humid=85.0)                                    # 직전 명령 뒤 260초 — 아직 안 됨
+    rig.run(200, temp=28.0)                                     # 180초 성립, 직전 명령 뒤 260초 — 아직 안 됨
     assert cmds(sb) == []
-    rig.run(60, humid=85.0)
+    rig.run(60, temp=28.0)
     assert [r["action"] for r in cmds(sb)] == ["fan_on"]
 
 

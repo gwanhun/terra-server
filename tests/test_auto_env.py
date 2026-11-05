@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from backend.auto_env import (
     HOLD_SEC,
+    HUMID_HOLD_SEC,
     MIST_DAILY_MAX,
     MIST_MIN_INTERVAL_SEC,
     VENT_DAILY_MAX_SEC,
@@ -27,6 +28,8 @@ T0 = datetime(2026, 11, 5, 12, 0, tzinfo=KST)   # 계획의 t0
 TH = Thresholds(18.0, 27.0, 40.0, 80.0)          # 기본 기준(18~27℃ / 40~80%)
 
 FAN_ON = AutoCmd("fan_on", {"duration_ms": 3_600_000}, "auto_vent:humid_high")
+FAN_ON_T = AutoCmd("fan_on", {"duration_ms": 3_600_000}, "auto_vent:temp_high")
+H = HUMID_HOLD_SEC                              # 습도 원인 연속 시간(1시간)
 MIST = AutoCmd("mist", {"duration_ms": 3000}, "auto_mist")
 
 
@@ -53,7 +56,7 @@ class Rig:
         out: list[AutoCmd] = []
         while self.now < end:
             kw = dict(temp=24.0, humid=60.0, has_fan=True, has_relay=True, th=TH,
-                      vent_on=True, mist_on=True, schedule_hold=False, wet_mono=None)
+                      vent_on=True, mist_on=True, schedule_hold=False)
             kw["fan"] = self.sim_fan() if self.sim else "OFF"
             kw.update(sample)
             cmds = self.tr.step(AutoInput(mono=self.now, wall=self.wall(), **kw))
@@ -79,37 +82,58 @@ class Rig:
 
 
 def own(r: Rig, **sample) -> None:
-    """습도 85 로 180초 → 자동 fan_on + ACK ok(모의 기기). 끝나면 now = 183."""
+    """습도 85 로 1시간 → 자동 fan_on(humid_high) + ACK ok(모의 기기). 끝나면 now = H + 3."""
     assert r.sim
-    assert r.run(183, humid=85.0, **sample) == [FAN_ON]
+    assert r.run(H + 3, humid=85.0, **sample) == [FAN_ON]
+    assert r.tr.state_json(r.wall())["vent"]["active"] is True
+
+
+def own_t(r: Rig, **sample) -> None:
+    """온도 28 로 180초 → 자동 fan_on(temp_high) + ACK ok(모의 기기). 끝나면 now = 183.
+
+    소유·ACK·쉼·예약처럼 원인 종류와 무관한 규칙은 이걸로 본다(습도 1시간을 기다리지 않게).
+    """
+    assert r.sim
+    assert r.run(183, **{"temp": 28.0, **sample}) == [FAN_ON_T]
     assert r.tr.state_json(r.wall())["vent"]["active"] is True
 
 
 # ---------- 시작 (R2·R4) ----------
 
-def test_humid_high_starts_after_hold():
+def test_humid_high_needs_one_hour():
+    """습도 원인 = MAX 초과 1시간 연속(Figma, v4 과습 주의와 같은 조건)."""
+    assert H == 3600
     r = Rig()
-    assert r.run(180, humid=85.0) == []          # 0~177초
-    assert r.run(3, humid=85.0) == [FAN_ON]      # 180초째
+    assert r.run(3600, humid=85.0) == []         # 0~3597초
+    assert r.run(3, humid=85.0) == [FAN_ON]      # 3600초째
 
 
-def test_post_mist_guard():
+def test_humid_hold_resets_on_dip():
+    r = Rig()
+    assert r.run(3000, humid=85.0) == []         # 50분
+    assert r.run(3, humid=79.0) == []            # MAX 이하 한 샘플 → 연속 끊김
+    assert r.run(H, humid=85.0) == []            # 3003~6600초 — 다시 1시간 전
+    assert r.run(3, humid=85.0) == [FAN_ON]      # 3003 + 3600
+
+
+def test_manual_mist_no_longer_blocks_vent():
+    """r3: 분무 뒤 60분 보호 없음 — 분무 ACK 직후부터 1시간이면 켠다(추가 60분 없음)."""
     r = Rig()
     r.tr.on_mist_ok(0.0)
-    assert r.run(3600 + HOLD_SEC, humid=85.0) == []          # 가드 60분 + 그 뒤 다시 180초
+    assert r.run(H, humid=85.0) == []
     assert r.run(3, humid=85.0) == [FAN_ON]
 
+
+def test_temp_cause_still_three_minutes():
     r = Rig()
-    r.tr.on_mist_ok(0.0)
-    assert r.run(180, humid=85.0, temp=30.0) == []
-    assert r.run(3, humid=85.0, temp=30.0) == [
-        AutoCmd("fan_on", {"duration_ms": 3_600_000}, "auto_vent:temp_high")
-    ]
+    assert r.run(180, temp=28.0) == []
+    assert r.run(3, temp=28.0) == [FAN_ON_T]
+    assert HOLD_SEC == 180
 
 
 def test_cold_blocks_humid_vent():
     r = Rig()
-    assert r.run(600, humid=85.0, temp=17.5) == []
+    assert r.run(H + 600, humid=85.0, temp=17.5) == []
 
     r = Rig(sim=True)
     own(r)
@@ -120,14 +144,23 @@ def test_cold_blocks_humid_vent():
 def test_no_flap_near_max():
     """Review 1 — MAX 근처에서 켜짐·꺼짐이 반복되지 않는다."""
     r = Rig(sim=True)
-    r.run(183, humid=81.0)                  # MAX+1 → 180초째 on
+    r.run(H + 3, humid=81.0)                # MAX+1 → 1시간째 on
     assert r.run(600, humid=79.0) == []     # MAX−1 10분 → 종료선(75) 위라 off 없음
     r.run(63, humid=74.0)                   # 종료선 아래 60초 → off 1회
     end = r.now - 3
     assert r.times("fan_off", "auto_vent_end") == [end]
-    r.run(900, humid=81.0)                  # 다시 MAX+1
-    assert r.times("fan_on") == [180.0, end + 600]   # 600초 쉼 안엔 on 없음
+    r.run(H + 3, humid=81.0)                # 다시 MAX+1 — 1시간 연속을 처음부터
+    assert r.times("fan_on") == [float(H), end + 3 + H]
     assert len(r.times("fan_off")) == 1
+
+    # 600초 쉼은 온도 원인(180초)으로 본다 — 습도는 1시간 연속이 쉼보다 길다
+    r = Rig(sim=True)
+    own_t(r, temp=27.5)
+    r.run(63, temp=26.0)                    # 온도 종료선(26.5) 아래 60초 → off
+    end = r.now - 3
+    assert r.times("fan_off", "auto_vent_end") == [end]
+    r.run(900, temp=27.5)
+    assert r.times("fan_on") == [180.0, end + 600]   # 600초 쉼 안엔 on 없음
 
 
 def test_humid_end_line_midpoint():
@@ -143,7 +176,8 @@ def test_humid_end_line_midpoint():
 
 def test_temp_cause_keeps_running():
     r = Rig(sim=True)
-    assert r.run(183, humid=85.0, temp=28.0) == [
+    assert r.run(H - HOLD_SEC, humid=85.0) == []
+    assert r.run(183, humid=85.0, temp=28.0) == [     # 두 원인이 같은 샘플(3600초)에 성립
         AutoCmd("fan_on", {"duration_ms": 3_600_000}, "auto_vent:humid_high+temp_high")
     ]
     assert r.run(600, humid=70.0, temp=28.0) == []     # 습도는 해소, 온도 원인이 남음
@@ -153,89 +187,115 @@ def test_temp_cause_keeps_running():
 
 def test_fan_on_by_user_no_command():
     r = Rig()
-    assert r.run(600, humid=85.0, fan="ON") == []
+    assert r.run(H + 600, humid=85.0, temp=28.0, fan="ON") == []
     assert r.run(600, humid=60.0, fan="ON") == []
 
 
 def test_ownership_needs_ack():
     # issued 만 하고 ACK 없음 → 소유 아님 → 원인이 풀려도 fan_off 없음
     r = Rig()
-    assert r.run(183, humid=85.0) == [FAN_ON]
-    r.tr.issued(FAN_ON, 180.0)
-    assert r.run(1200, humid=60.0) == []
+    assert r.run(183, temp=28.0) == [FAN_ON_T]
+    r.tr.issued(FAN_ON_T, 180.0)
+    assert r.run(1200, temp=24.0) == []
     assert r.tr.state_json(r.wall())["vent"]["active"] is False
 
     # ACK ok 뒤에만 fan_off
     r = Rig()
-    r.run(183, humid=85.0)
-    r.tr.issued(FAN_ON, 180.0)
+    r.run(183, temp=28.0)
+    r.tr.issued(FAN_ON_T, 180.0)
     r.tr.on_own_ack("fan_on", True, 181.0)
-    assert r.run(60, humid=60.0) == []
-    assert r.run(3, humid=60.0, fan="ON") == [AutoCmd("fan_off", {}, "auto_vent_end")]
+    assert r.run(60, temp=24.0) == []
+    assert r.run(3, temp=24.0, fan="ON") == [AutoCmd("fan_off", {}, "auto_vent_end")]
 
     # ACK 실패 → 소유 없음, 300초 뒤 재판정
     r = Rig()
-    r.run(183, humid=85.0)
-    r.tr.issued(FAN_ON, 180.0)
+    r.run(183, temp=28.0)
+    r.tr.issued(FAN_ON_T, 180.0)
     r.tr.on_own_ack("fan_on", False, 181.0)
-    assert r.run(480 - 183, humid=85.0) == []
-    assert r.run(3, humid=85.0) == [FAN_ON]
+    assert r.run(480 - 183, temp=28.0) == []
+    assert r.run(3, temp=28.0) == [FAN_ON_T]
 
 
 # ---------- 사용자 조작 (Review 2, R6·R7) ----------
 
 def test_manual_off_pauses_30min():
     r = Rig(sim=True)
-    own(r)
-    r.run(600 - 183, humid=85.0)
+    own_t(r)
+    r.run(600 - 183, temp=28.0)
     r.tr.on_other_ack("fan_off", "manual", 600.0)
     r.fan_until = None
     st = r.tr.state_json(r.wall())["vent"]
     assert st["active"] is False and st["paused_until"] is not None
-    assert r.run(1800 + HOLD_SEC, humid=85.0) == []        # 30분 쉼 + 다시 180초
-    assert r.run(3, humid=85.0) == [FAN_ON]
+    assert r.run(1800 + HOLD_SEC, temp=28.0) == []        # 30분 쉼 + 다시 180초
+    assert r.run(3, temp=28.0) == [FAN_ON_T]
     assert r.times("fan_on") == [180.0, 600.0 + 1800 + HOLD_SEC]
 
     # fan_toggle 도 소유 중이면 같음
     r = Rig(sim=True)
-    own(r)
-    r.run(600 - 183, humid=85.0)
+    own_t(r)
+    r.run(600 - 183, temp=28.0)
     r.tr.on_other_ack("fan_toggle", "manual", 600.0)
     r.fan_until = None
-    assert r.run(1800 + HOLD_SEC, humid=85.0) == []
+    assert r.run(1800 + HOLD_SEC, temp=28.0) == []
+    assert r.run(3, temp=28.0) == [FAN_ON_T]
+
+    # 습도 원인이면 쉼 뒤 다시 1시간
+    r = Rig(sim=True)
+    own(r)
+    r.tr.on_other_ack("fan_off", "manual", r.now)
+    r.fan_until = None
+    paused_end = r.now + 1800
+    assert r.run(1800 + H, humid=85.0) == []
     assert r.run(3, humid=85.0) == [FAN_ON]
+    assert r.times("fan_on") == [float(H), paused_end + H]
 
     # 비소유(사용자가 켠 팬)면 쉼 없음 — 끄자마자 자동이 켠다
     r = Rig()
-    assert r.run(600, humid=85.0, fan="ON") == []
+    assert r.run(600, temp=28.0, fan="ON") == []
     r.tr.on_other_ack("fan_toggle", "manual", 600.0)
-    assert r.run(3, humid=85.0) == [FAN_ON]
+    assert r.run(3, temp=28.0) == [FAN_ON_T]
 
 
 def test_expiry_refire():
     r = Rig()
-    assert r.run(183, humid=85.0) == [FAN_ON]
-    r.tr.issued(FAN_ON, 180.0)
-    r.tr.on_own_ack("fan_on", True, 180.0)
-    assert r.run(3750 - 183, humid=85.0, fan="ON") == []    # 3570초(= 3600 − 30)까지 켜짐
+    assert r.run(H + 3, humid=85.0) == [FAN_ON]
+    on = float(H)
+    r.tr.issued(FAN_ON, on)
+    r.tr.on_own_ack("fan_on", True, on)
+    assert r.run(on + 3570 - r.now, humid=85.0, fan="ON") == []   # 켬 + 3570초(= 3600 − 30)까지 켜짐
     assert r.run(3, humid=85.0, fan="OFF") == []            # OFF 1샘플째
     assert r.run(3, humid=85.0, fan="OFF") == [FAN_ON]      # 2샘플째 → 같은 reason, 600초 쉼 없음
-    r.tr.issued(FAN_ON, 3753.0)
-    r.tr.on_own_ack("fan_on", True, 3754.0)
+    r.tr.issued(FAN_ON, r.now - 3)
+    r.tr.on_own_ack("fan_on", True, r.now - 2)
     assert r.tr.state_json(r.wall())["vent"]["active"] is True
+
+
+def test_expiry_refire_needs_hold():
+    """타이머 만료 재발행도 원인별 연속 시간을 다시 본다 — 습도가 MAX 아래(종료선 위)로 내려왔으면
+    이어 켜지 않고 끝낸다(습도 원인 재시작은 다시 1시간)."""
+    r = Rig()
+    assert r.run(H + 3, humid=85.0) == [FAN_ON]
+    on = float(H)
+    r.tr.issued(FAN_ON, on)
+    r.tr.on_own_ack("fan_on", True, on)
+    r.run(on + 3570 - r.now - 300, humid=85.0, fan="ON")
+    assert r.run(300, humid=78.0, fan="ON") == []           # MAX 이하·종료선(75) 위 — 종료 없음
+    assert r.run(6, humid=78.0, fan="OFF") == []            # 만료 OFF 2샘플 → 재발행 없이 종료
+    st = r.tr.state_json(r.wall())["vent"]
+    assert st["active"] is False and st["last_end_at"] is not None and st["paused_until"] is None
 
 
 def test_external_off_before_expiry_pauses():
     r = Rig()
-    r.run(183, humid=85.0)
-    r.tr.issued(FAN_ON, 180.0)
+    r.run(183, temp=28.0)
+    r.tr.issued(FAN_ON_T, 180.0)
     r.tr.on_own_ack("fan_on", True, 180.0)
-    r.run(1380 - 183, humid=85.0, fan="ON")                 # 소유 후 20분
-    assert r.run(6, humid=85.0, fan="OFF") == []            # OFF 2샘플 → 외부 끔
+    r.run(1380 - 183, temp=28.0, fan="ON")                  # 소유 후 20분
+    assert r.run(6, temp=28.0, fan="OFF") == []             # OFF 2샘플 → 외부 끔
     st = r.tr.state_json(r.wall())["vent"]
     assert st["active"] is False and st["paused_until"] is not None
-    assert r.run(1800 + HOLD_SEC - 3, humid=85.0) == []     # 1383 + 1800 + 180 전까지
-    assert r.run(3, humid=85.0) == [FAN_ON]
+    assert r.run(1800 + HOLD_SEC - 3, temp=28.0) == []      # 1383 + 1800 + 180 전까지
+    assert r.run(3, temp=28.0) == [FAN_ON_T]
 
 
 # ---------- 예약 (Review 5, R8) ----------
@@ -243,20 +303,20 @@ def test_external_off_before_expiry_pauses():
 def test_schedule_hold_blocks_all():
     # 시작 없음
     r = Rig()
-    assert r.run(600, humid=85.0, schedule_hold=True) == []
+    assert r.run(H + 600, humid=85.0, temp=28.0, schedule_hold=True) == []
     assert r.tr.state_json(r.wall())["vent"]["schedule_hold"] is True
 
     # 소유 중 예약 켜짐 → 소유 해제, 종료·재발행 없음
     r = Rig(sim=True)
-    own(r)
-    assert r.run(3, humid=85.0, schedule_hold=True, fan="ON") == []
+    own_t(r)
+    assert r.run(3, temp=28.0, schedule_hold=True, fan="ON") == []
     st = r.tr.state_json(r.wall())["vent"]
     assert st["schedule_hold"] is True and st["active"] is False
-    assert r.run(600, humid=60.0, schedule_hold=True, fan="ON") == []        # 종료 없음
-    assert r.run(7200, humid=85.0, schedule_hold=True, fan="OFF") == []      # 재발행·시작 없음
-    # 예약이 끝나면(fan_off) 3분 뒤 다시 켤 수 있다
-    assert r.run(180, humid=85.0) == []
-    assert r.run(3, humid=85.0) == [FAN_ON]
+    assert r.run(600, temp=24.0, schedule_hold=True, fan="ON") == []         # 종료 없음
+    assert r.run(7200, temp=28.0, schedule_hold=True, fan="OFF") == []       # 재발행·시작 없음
+    # 예약이 끝나면(fan_off) 3분 뒤 다시 켤 수 있다(온도 원인)
+    assert r.run(180, temp=28.0) == []
+    assert r.run(3, temp=28.0) == [FAN_ON_T]
     assert r.tr.state_json(r.wall())["vent"]["schedule_hold"] is False
 
 
@@ -346,43 +406,49 @@ def test_no_fan_key_no_vent():
 
 def test_missing_or_gap_resets():
     r = Rig()
-    assert r.run(120, humid=85.0) == []
-    assert r.run(3, humid=None) == []
-    assert r.run(120, humid=85.0) == []
+    assert r.run(120, temp=28.0) == []
+    assert r.run(3, temp=None) == []           # 값 없음 → 그 값의 연속 타이머 초기화
+    assert r.run(120, temp=28.0) == []
 
     r = Rig()
-    assert r.run(123, humid=85.0) == []        # 0~120초
+    assert r.run(123, temp=28.0) == []         # 0~120초
     r.now += 67                                # 다음 샘플까지 70초
-    assert r.run(120, humid=85.0) == []
+    assert r.run(120, temp=28.0) == []
+
+    r = Rig()                                  # 습도 원인도 공백이면 1시간을 처음부터
+    assert r.run(3000, humid=85.0) == []
+    r.now += 67                                # 3067초 샘플(공백 뒤)부터 다시 셈
+    assert r.run(H, humid=85.0) == []
+    assert r.run(3, humid=85.0) == [FAN_ON]    # 3067 + 3600
 
 
 def test_threshold_change_resets():
     r = Rig()
-    assert r.run(123, humid=85.0) == []        # 0~120초
+    assert r.run(123, temp=28.0) == []         # 0~120초
     r.tr.reset_timers()
-    assert r.run(180, humid=85.0) == []        # 123~300초
-    assert r.run(3, humid=85.0) == [FAN_ON]    # 123 + 180
+    assert r.run(180, temp=28.0) == []         # 123~300초
+    assert r.run(3, temp=28.0) == [FAN_ON_T]   # 123 + 180
 
 
 # ---------- 토글·INSERT 실패 (R10·R13) ----------
 
 def test_toggle_off_sends_off_when_owned():
     r = Rig(sim=True)
-    own(r)
-    assert r.run(3, humid=85.0, vent_on=False) == [AutoCmd("fan_off", {}, "auto_vent_disabled")]
-    assert r.run(600, humid=85.0, vent_on=False) == []
+    own_t(r)
+    assert r.run(3, temp=28.0, vent_on=False) == [AutoCmd("fan_off", {}, "auto_vent_disabled")]
+    assert r.run(600, temp=28.0, vent_on=False) == []
     assert r.tr.state_json(r.wall())["vent"]["active"] is False
 
     r = Rig()
-    assert r.run(600, humid=85.0, vent_on=False) == []      # 비소유면 명령 없음
+    assert r.run(H + 600, humid=85.0, temp=28.0, vent_on=False) == []      # 비소유면 명령 없음
 
 
 def test_insert_failed_retry_30s():
     r = Rig()
-    assert r.run(183, humid=85.0) == [FAN_ON]
-    r.tr.insert_failed(FAN_ON, 180.0)
-    assert r.run(27, humid=85.0) == []         # 183~207
-    assert r.run(3, humid=85.0) == [FAN_ON]    # 210
+    assert r.run(183, temp=28.0) == [FAN_ON_T]
+    r.tr.insert_failed(FAN_ON_T, 180.0)
+    assert r.run(27, temp=28.0) == []          # 183~207
+    assert r.run(3, temp=28.0) == [FAN_ON_T]   # 210
 
     r = Rig()
     assert r.run(183, humid=35.0) == [MIST]
@@ -410,12 +476,12 @@ def test_state_json_shape():
     own(r)
     st = r.tr.state_json(r.wall())
     assert st["vent"] == {
-        "active": True, "causes": ["humid_high"], "since": "2026-11-05T03:03:00+00:00",
+        "active": True, "causes": ["humid_high"], "since": "2026-11-05T04:00:00+00:00",
         "paused_until": None, "schedule_hold": False, "last_end_at": None, "runtime_today_sec": 0,
     }
     assert st["mist"] == {"last_at": None, "today_count": 0}
     assert st["day"] == "2026-11-05"
-    assert st["updated_at"] == "2026-11-05T03:03:03+00:00"
+    assert st["updated_at"] == "2026-11-05T04:00:03+00:00"
     # 샘플이 더 와도 updated_at 말고는 그대로(R12 — 바뀔 때만 UPDATE)
     r.run(300, humid=85.0)
     st2 = r.tr.state_json(r.wall())
