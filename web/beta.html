@@ -53,6 +53,10 @@
 .dev .cam-level .live-badge { max-width: none; }
 .dev .cam-level .chip { font-size: 11px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: middle; }
 .dev .actions { display: flex; gap: 4px; flex-wrap: wrap; }
+/* 줄 안 온도 보정 — 입력·적용·현재값 한 묶음 */
+.dev .offset { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted); }
+.dev .offset input[type=number] { width: 58px; font-size: 11px; padding: 2px 5px; }
+.dev .offset small { font-size: 11px; }
 .dev.offline .ident { color: var(--muted); }
 .dev-test-panel { margin: 2px 0 8px 32px; padding: 8px 10px; border-left: 2px solid #3a6a9a; background: rgba(90,170,255,.04); border-radius: 0 6px 6px 0; font-size: 11px; }
 .dev-test-panel button { font-size: 11px; margin: 0 3px 3px 0; padding: 3px 8px; }
@@ -497,21 +501,32 @@ function devRow(email, kind, obj) {
     line.appendChild(fw);
   }
   if (!isCam) {
-    // 온도 보정값을 목록 줄에 바로 표시 (owner 2026-11-08 — 전엔 [테스트] 를 펼쳐야 보였다). 값 변경은 여전히 [테스트] → 🌡보정.
-    // temp_offset_c = 기기가 telemetry 로 보고한 NVS 값(공장 기본 포함). temp_offset_user_c = 공장 기본을 뺀 사용자값(신 앱 화면 수치, Stage S).
+    // 온도 보정을 목록 줄에서 바로 보고·바꾼다 (owner 2026-11-08 — 전엔 [테스트] 를 펼쳐야 했다). [테스트] 패널의 🌡보정과 같은 명령(set_temp_offset).
+    // temp_offset_c = 기기가 telemetry 로 보고한 NVS 값(공장 기본 포함) — 입력칸은 이 값 기준. temp_offset_user_c = 공장 기본을 뺀 사용자값(신 앱 화면 수치, Stage S).
     const fmtOff = v => (v > 0 ? '+' : '') + Number(v).toFixed(1) + '℃';
-    const off = document.createElement('span'); off.className = 'chip'; off.style.cursor = 'pointer';
+    const off = document.createElement('span'); off.className = 'offset';
+    const offIn = document.createElement('input');
+    offIn.type = 'number'; offIn.step = '0.1'; offIn.placeholder = '-1.5';
+    offIn.title = '온도 보정(℃) — 측정값에 더할 값. 2℃ 높게 나오면 -2 입력. 기기 NVS 에 저장돼 LCD·telemetry 에 적용';
+    const offStatus = document.createElement('small');
+    const offBtn = document.createElement('button'); offBtn.className = 'sm ghost'; offBtn.textContent = '적용';
+    offBtn.title = 'set_temp_offset 명령 전송 (그 계정 대행) — 기기가 ACK 하면 상태가 바뀜';
+    offBtn.onclick = () => {
+      const v = parseFloat(offIn.value);
+      if (isNaN(v)) { offStatus.className = 'bad'; offStatus.textContent = ' 숫자 입력'; return; }
+      sendTestCmd(email, obj.id, 'set_temp_offset', { offset_c: v }, offStatus);
+    };
+    offIn.onkeydown = e => { if (e.key === 'Enter') offBtn.click(); };
+    const cur = document.createElement('small'); cur.className = 'muted';
     if (obj.temp_offset_c != null) {
+      offIn.value = obj.temp_offset_c;
       const hasUser = obj.temp_offset_user_c != null;
-      off.innerHTML = `🌡 <code>${fmtOff(obj.temp_offset_c)}</code>${hasUser ? `<span class="muted"> · 앱 ${esc(fmtOff(obj.temp_offset_user_c))}</span>` : ''}`;
-      off.title = '온도 보정 — 기기가 보고한 현재 NVS 값(공장 기본 포함)'
-        + (hasUser ? '. "앱" 은 공장 기본을 뺀 사용자값 — 신 앱 화면에 보이는 수치' : '') + '\n클릭 = [테스트] 펼쳐서 값 변경';
+      cur.textContent = hasUser ? `앱 ${fmtOff(obj.temp_offset_user_c)}` : '';
+      cur.title = '기기가 보고한 현재 값 = 입력칸. "앱" 은 공장 기본을 뺀 사용자값 — 신 앱 화면에 보이는 수치';
     } else {
-      off.style.opacity = '.6';
-      off.innerHTML = '🌡 <code>미보고</code>';
-      off.title = '온도 보정 — 구 펌웨어(2026-10-01 이전)는 현재값을 보고하지 않음. 빌드 기본 -1.5℃ 추정\n클릭 = [테스트] 펼쳐서 값 변경';
+      cur.textContent = '미보고'; cur.title = '구 펌웨어(2026-10-01 이전)는 현재값을 보고하지 않음. 빌드 기본 -1.5℃ 추정';
     }
-    off.onclick = () => test.click();
+    off.append('🌡', offIn, '℃', offBtn, cur, offStatus);
     line.appendChild(off);
   }
   if (isCam) {
