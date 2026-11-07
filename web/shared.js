@@ -340,24 +340,47 @@ function formatCameraLogs(rows) {
 // 계정 목록은 서버가 준다 (2026-10-27): GET /admin/accounts — 가입 계정 전부 + 각 계정의 기기·카메라.
 // 전엔 운영 베타 10계정을 소스에 박아 두고 공통 비밀번호로 계정마다 로그인했지만, 사용자가 직접 가입하면서
 // 비밀번호를 모르게 됐다. 지금은 관리자(.env ADMIN_EMAILS / ADMIN_USER_IDS) 로 한 번 로그인 → 아래 대행(X-Act-As-User).
-// 테스터 이름(2026-10-21 owner 전달). localStorage 'terra-beta-names' ({email: 이름}) 가 있으면 우선.
-const BETA_NAMES_DEFAULT = {
-  '01046590180@test.com': '김태훈', '01053911601@test.com': '손휘윤', '01026448891@test.com': '우지인', '01024896379@test.com': '김창열',
-  '01043576098@test.com': '김대중', '01021120001@test.com': '원인식', '01093115816@test.com': '임영아', '01023636275@test.com': '조세영',
-  '01048533907@test.com': '전영준', '01037689511@test.com': '김희원',
+// 베타 테스터 명단 — 전화번호(숫자만) → { name, cohort(차수) }. 계정 이메일 앞부분의 숫자에 이 번호가 들어 있으면
+// (01046590180@test.com 처럼) 그 테스터로 본다. 서버 group=beta 토글과 별개로 명단만으로 차수 칩·필터가 붙는다.
+//   2차: 2026-10-21 owner 전달 10명 · 3차: 2026-11-07 owner 전달 10명. 늘릴 땐 BETA_COHORT_LABEL 도 같이.
+// 이름만 바꾸려면 localStorage 'terra-beta-names' ({email: 이름}) 가 우선.
+const BETA_TESTERS_DEFAULT = {
+  // 2차
+  '01046590180': { name: '김태훈', cohort: 2 }, '01053911601': { name: '손휘윤', cohort: 2 }, '01026448891': { name: '우지인', cohort: 2 },
+  '01024896379': { name: '김창열', cohort: 2 }, '01043576098': { name: '김대중', cohort: 2 }, '01021120001': { name: '원인식', cohort: 2 },
+  '01093115816': { name: '임영아', cohort: 2 }, '01023636275': { name: '조세영', cohort: 2 }, '01048533907': { name: '전영준', cohort: 2 },
+  '01037689511': { name: '김희원', cohort: 2 },
+  // 3차
+  '01057599851': { name: '이은빈', cohort: 3 }, '01072818228': { name: '박지현', cohort: 3 }, '01040951277': { name: '박수정', cohort: 3 },
+  '01028991691': { name: '김유민', cohort: 3 }, '01094943606': { name: '주수현', cohort: 3 }, '01051912607': { name: '구애지', cohort: 3 },
+  '01072857420': { name: '유소연', cohort: 3 }, '01053995774': { name: '박찬영', cohort: 3 }, '01077486114': { name: '이정욱', cohort: 3 },
+  '01026442206': { name: '양지영', cohort: 3 },
 };
+const BETA_COHORT_LABEL = { 2: '2차', 3: '3차' };
+const BETA_COHORTS = [...new Set(Object.values(BETA_TESTERS_DEFAULT).map(t => t.cohort))].sort();
 function loadBetaNames() {
   try {
     const v = JSON.parse(localStorage.getItem('terra-beta-names') || 'null');
-    if (v && typeof v === 'object') return { ...BETA_NAMES_DEFAULT, ...v };
-  } catch (e) { /* 기본값 */ }
-  return { ...BETA_NAMES_DEFAULT };
+    if (v && typeof v === 'object') return v;
+  } catch (e) { /* 덮어쓰기 없음 */ }
+  return {};
 }
-function testerName(email) { return loadBetaNames()[email] || ''; }
+// 이메일 앞부분의 숫자만 모아 전화번호를 찾는다 — 통째로 번호(01046590180@test.com)거나, 명단 번호가 들어 있는 다른 형식.
+function phoneDigitsOf(email) {
+  const d = String(email || '').split('@')[0].replace(/\D/g, '');
+  if (/^01\d{8,9}$/.test(d)) return d;
+  return Object.keys(BETA_TESTERS_DEFAULT).find(p => d.includes(p)) || '';
+}
+function betaTesterOf(email) { return BETA_TESTERS_DEFAULT[phoneDigitsOf(email)] || null; }
+function testerName(email) { const t = betaTesterOf(email); return loadBetaNames()[email] || (t && t.name) || ''; }
+// 2 | 3 | 0(명단 밖)
+function testerCohort(email) { const t = betaTesterOf(email); return t ? t.cohort : 0; }
+// "2차" | "" — 카드 칩·검색용
+function cohortLabel(email) { const c = testerCohort(email); return c ? (BETA_COHORT_LABEL[c] || c + '차') : ''; }
 // 전화번호 계정(01046590180@test.com) → "4659-0180"
 function phoneOf(email) {
-  const m = /^(\d{3})(\d{4})(\d{4})@/.exec(email);
-  return m ? `${m[2]}-${m[3]}` : '';
+  const d = phoneDigitsOf(email);
+  return d ? `${d.slice(3, -4)}-${d.slice(-4)}` : '';
 }
 // "김태훈 · 4659-0180" (이름 없으면 번호만, 번호 형식 아니면 이메일 앞부분)
 function testerLabel(email) {

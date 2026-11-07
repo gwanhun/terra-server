@@ -7,14 +7,14 @@
 | `index.html` | 메인 콘솔 — 로그인한 계정의 사육장·기기·카메라·예약·설정·텔레메트리·알림. 상단 네비와 로그인 패널의 버튼으로 아래 두 페이지로 이동 |
 | `beta.html` | 🎫 베타 테스터 — **가입 계정 전부**의 기기·카메라 조회·제어(테스트/일괄)·재부팅·OTA·해제·삭제. 2026-10-21 index 의 패널에서 분리, 2026-10-27 관리자 대행으로 전환 |
 | `live.html` | 🎥 라이브 대시보드 — 전 계정 카메라 라이브를 타일 그리드로 동시 시청(계정별 대행으로 WebRTC 각각). beta 의 [▶ 라이브]는 `live.html?cam=<uuid>` 로 그 카메라만 바로 연결 |
-| `shared.js` | esc/toast/OTA 모달/관리자 대행(`loadAdminAccounts`·`regSession`·`regFetch` — 관리자 JWT + `X-Act-As-User`)/상단 네비/테스터 이름(`BETA_NAMES_DEFAULT`, localStorage `terra-beta-names` 가 우선) |
+| `shared.js` | esc/toast/OTA 모달/관리자 대행(`loadAdminAccounts`·`regSession`·`regFetch` — 관리자 JWT + `X-Act-As-User`)/상단 네비/테스터 명단(`BETA_TESTERS_DEFAULT` 전화번호 → 이름·차수(2차/3차), 이메일에 번호가 들어 있으면 매칭; 이름은 localStorage `terra-beta-names` 가 우선) |
 | `shared.css` | 공용 스타일(다크 테마, 네비, 칩, 카드, 모달, 모바일) |
 
 **세 페이지 모두 같은 정책**(2026-10-22): Supabase 로그인(같은 origin·세션)이 있어야 열린다. `beta.html`·`live.html` 은 세션이 없으면 그 자리에 로그인 폼을 띄운다.
 
 **베타·라이브는 관리자 계정이어야 내용이 뜬다**(2026-10-27): 사용자가 직접 가입·기기 등록을 하게 되면서 테스터 공통 비밀번호(`123456`)로 계정마다 로그인하던 방식을 버렸다. 로그인한 계정이 서버 `.env ADMIN_EMAILS`(또는 `ADMIN_USER_IDS`) 에 있으면 `GET /admin/accounts` 로 **가입 계정 전부 + 기기·카메라**를 한 번에 받고, 개별 동작(조회·명령·OTA·해제·라이브)은 기존 API 에 `X-Act-As-User: <uid>` 를 붙여 그 사용자 자격으로 부른다([docs/API.md §4.13](../docs/API.md)). 관리자가 아니면 403 과 함께 내 이메일·uid 를 보여 주니 그 값을 .env 에 넣고 `terra-api` 재시작. 토글·보정 명령은 PostgREST 직접 INSERT 대신 `POST /devices/{id}/commands` 를 쓴다(대행 헤더를 PostgREST 는 모름).
 
-세 페이지는 localStorage 를 공유한다: `terra-config`(apiBase), `terra-beta-names`(테스터 이름 덮어쓰기), `terra-beta-hide-empty`(베타: 등록 없는 계정 숨김), `terra-beta-group`(베타: 전체/베타/그 외 필터), `terra-live-beta-only`(라이브: 베타만), `terra-live-viewer-id`(라이브 "한 기기" 판정용 viewer_id).
+세 페이지는 localStorage 를 공유한다: `terra-config`(apiBase), `terra-beta-names`(테스터 이름 덮어쓰기), `terra-beta-hide-empty`(베타: 등록 없는 계정 숨김), `terra-beta-group`(베타: 전체/베타/2차/3차/그 외 필터), `terra-live-beta-only`(라이브: 베타만), `terra-live-viewer-id`(라이브 "한 기기" 판정용 viewer_id).
 
 > sample_project 의 ESP32 펌웨어 웹페이지 패턴 차용 (Vanilla JS, 인라인 CSS, dark theme).
 > 빌드 도구 없음, npm 의존성 없음. 그냥 정적 파일.
