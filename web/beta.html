@@ -95,7 +95,7 @@
     </div>
     <div class="stats" id="stats" style="margin-top:12px">
       <div class="stat" title="가입 계정 전부 · 그중 기기나 카메라를 등록한 계정"><b id="st-acct">–</b><span>계정 <span id="st-acct-reg" class="good"></span></span></div>
-      <div class="stat" title="[베타] 로 표시한 계정 수 (서버 app_metadata.group=beta)"><b id="st-beta" style="color:var(--accent)">–</b><span>🎫 베타</span></div>
+      <div class="stat" title="베타 테스터 계정 수 — 명단(2차·3차)에 있거나 [베타] 로 표시한 계정 (서버 app_metadata.group=beta)"><b id="st-beta" style="color:var(--accent)">–</b><span>🎫 베타</span></div>
       <div class="stat"><b id="st-dev">–</b><span>기기 <span id="st-dev-on" class="good"></span></span></div>
       <div class="stat"><b id="st-cam">–</b><span>카메라 <span id="st-cam-on" class="good"></span></span></div>
       <div class="stat" title="온라인 카메라 중 지금 조치(🔴)·관찰(🟠) 등급 수. 기준은 메인 콘솔 카메라 표 아래 범례와 같음"><b id="st-cam-lv">–</b><span>카메라 상태</span></div>
@@ -105,9 +105,11 @@
     <div class="notice">⚠️ 해제·삭제·명령은 <b>프로덕션 API</b>(api.terra-server.uk)로 호출해야 mosquitto 계정 정리와 실제 전달이 된다.
       신규 등록(pair)·가입은 앱에서 한다. 이 페이지는 서버 <code>.env ADMIN_EMAILS</code>(또는 <code>ADMIN_USER_IDS</code>) 에 든 계정으로 로그인해야 목록이 뜬다(아니면 403 + 내 이메일·uid 안내).</div>
     <div class="row" style="margin-top:10px;align-items:center;gap:10px;flex-wrap:wrap">
-      <span class="seg" id="grp-seg" title="계정 그룹 — 카드의 [베타] 버튼으로 표시한다. 표시는 서버(auth app_metadata.group)에 저장돼 관리자 모두가 같은 걸 본다">
+      <span class="seg" id="grp-seg" title="계정 그룹 — 2차/3차는 shared.js 전화번호 명단으로 자동. 명단 밖 계정은 카드의 [베타] 버튼으로 표시(서버 auth app_metadata.group, 관리자 공통)">
         <button type="button" data-grp="all" onclick="setGroupFilter('all')">전체</button>
         <button type="button" data-grp="beta" onclick="setGroupFilter('beta')">🎫 베타 테스터</button>
+        <button type="button" data-grp="c2" onclick="setGroupFilter('c2')" title="2026-10-21 전달 명단 10명">2차</button>
+        <button type="button" data-grp="c3" onclick="setGroupFilter('c3')" title="2026-11-07 전달 명단 10명">3차</button>
         <button type="button" data-grp="other" onclick="setGroupFilter('other')">그 외 유저</button>
       </span>
       <small class="muted" id="grp-hint"></small>
@@ -124,8 +126,8 @@
         <input id="reg-apibase" type="text" placeholder="(비우면 설정의 API Base)" style="flex:1;min-width:200px">
         <small class="muted" id="reg-count"></small>
       </div>
-      <small class="muted">테스터 이름은 <code>shared.js BETA_NAMES_DEFAULT</code>(또는 localStorage <code>terra-beta-names</code> {이메일: 이름}) 기준으로 카드에 붙는다.
-        베타/그 외 구분은 카드의 <b>[베타]</b> 토글 → 서버 <code>PATCH /admin/accounts/{id}</code> (관리자 공통).</small>
+      <small class="muted">테스터 이름·차수(2차/3차)는 <code>shared.js BETA_TESTERS_DEFAULT</code>(전화번호 → 이름·차수) 기준 — 계정 이메일에 그 번호가 들어 있으면 붙는다.
+        이름만 덮어쓰려면 localStorage <code>terra-beta-names</code> {이메일: 이름}. 명단 밖 계정의 베타/그 외 구분은 카드의 <b>[베타]</b> 토글 → 서버 <code>PATCH /admin/accounts/{id}</code> (관리자 공통).</small>
     </details>
   </div>
 
@@ -203,7 +205,7 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
-<script src="shared.js?v=20261028"></script>
+<script src="shared.js?v=20261107"></script>
 <script>
 // ─────────────────────────────────────────────────────────────────────────
 // 베타 테스터 페이지 (2026-10-21 index.html 의 "🎫 베타 기기·카메라 등록" 패널을 분리)
@@ -243,26 +245,32 @@ function start() {
 
 // ── 필터 ───────────────────────────────────────────────────────────────────
 // 서버 목록은 가입 계정 전부라 많아질 수 있다. 카드는 전부 그려 두고 CSS 로만 숨긴다(상태·선택 유지).
-// 그룹: 'all' | 'beta'(app_metadata.group === 'beta') | 'other'(그 외). 서버 값이라 관리자 모두 같은 구분.
+// 그룹: 'all' | 'beta'(명단 차수 있음 또는 app_metadata.group === 'beta') | 'c2'·'c3'(명단 차수) | 'other'(그 외).
+// 차수는 shared.js 명단(전화번호)이라 관리자 모두 같고, 서버 표시는 명단 밖 계정을 베타로 넣을 때만 쓴다.
 let GROUP_FILTER = 'all';
+const GROUP_FILTERS = ['all', 'beta', ...BETA_COHORTS.map(c => 'c' + c), 'other'];
 function setGroupFilter(g, silent) {
-  GROUP_FILTER = ['all', 'beta', 'other'].includes(g) ? g : 'all';
+  GROUP_FILTER = GROUP_FILTERS.includes(g) ? g : 'all';
   localStorage.setItem('terra-beta-group', GROUP_FILTER);
   document.querySelectorAll('#grp-seg button').forEach(b => b.classList.toggle('on', b.dataset.grp === GROUP_FILTER));
   if (!silent) applyFilter();
 }
-const isBeta = a => !!(a && a.acct && a.acct.group === 'beta');
+const isBeta = a => !!(a && a.acct && (a.acct.group === 'beta' || testerCohort(accountKey(a.acct)) > 0));
 function applyFilter() {
   const q = (document.getElementById('reg-filter').value || '').trim().toLowerCase();
   const hideEmpty = document.getElementById('reg-hide-empty').checked;
   localStorage.setItem('terra-beta-hide-empty', hideEmpty ? '1' : '0');
   let shown = 0, betaTotal = 0;
+  const cohortTotal = {};
   document.querySelectorAll('#accounts .acct').forEach(card => {
     const email = card.dataset.email, a = ACCT[email] || {};
+    const cohort = testerCohort(email);
     if (isBeta(a)) betaTotal++;
-    const grpHide = GROUP_FILTER === 'beta' ? !isBeta(a) : GROUP_FILTER === 'other' ? isBeta(a) : false;
+    if (cohort) cohortTotal[cohort] = (cohortTotal[cohort] || 0) + 1;
+    const grpHide = GROUP_FILTER === 'beta' ? !isBeta(a) : GROUP_FILTER === 'other' ? isBeta(a)
+      : GROUP_FILTER.startsWith('c') ? cohort !== Number(GROUP_FILTER.slice(1)) : false;
     const empty = !(a.devs || []).length && !(a.cams || []).length;
-    const hay = (email + ' ' + testerName(email) + ' ' + (a.devs || []).map(d => d.device_id + ' ' + (d.name || '')).join(' ')
+    const hay = (email + ' ' + testerName(email) + ' ' + cohortLabel(email) + ' ' + (a.devs || []).map(d => d.device_id + ' ' + (d.name || '')).join(' ')
                  + ' ' + (a.cams || []).map(c => c.camera_id + ' ' + (c.name || '')).join(' ')).toLowerCase();
     const hide = grpHide || (hideEmpty && empty && a.done) || (q && !hay.includes(q));
     card.classList.toggle('hidden', !!hide);
@@ -271,8 +279,10 @@ function applyFilter() {
   const total = Object.keys(ACCT).length;
   document.getElementById('reg-count').textContent = total ? `${shown}/${total} 계정 표시` : '';
   const hint = document.getElementById('grp-hint');
-  hint.textContent = GROUP_FILTER === 'beta' && !betaTotal ? '베타로 표시한 계정이 아직 없음 — [전체] 에서 카드의 [베타] 를 눌러 표시'
-    : GROUP_FILTER === 'all' ? `베타 ${betaTotal} · 그 외 ${total - betaTotal}` : `${shown}개 표시`;
+  const byCohort = BETA_COHORTS.map(c => `${BETA_COHORT_LABEL[c] || c + '차'} ${cohortTotal[c] || 0}`).join(' · ');
+  hint.textContent = GROUP_FILTER === 'beta' && !betaTotal ? '베타 테스터 계정이 아직 없음 — 명단 번호로 가입한 계정이 없고, [베타] 로 표시한 계정도 없음'
+    : GROUP_FILTER === 'all' ? `베타 ${betaTotal} (${byCohort}) · 그 외 ${total - betaTotal}`
+    : GROUP_FILTER === 'beta' ? `${shown}개 표시 · ${byCohort}` : `${shown}개 표시`;
 }
 
 // 카드의 [베타] 토글 → PATCH /admin/accounts/{uid}. 성공하면 그 카드만 갱신(목록 재조회 없음).
@@ -292,8 +302,9 @@ async function toggleGroup(email, btn) {
     a.acct.group = next;
     const srv = ADMIN_ACCOUNTS[email]; if (srv) srv.group = next;
     const card = cardOf(email);
-    if (card) { card.classList.toggle('beta', next === 'beta'); card.querySelector('.acct-title').innerHTML = acctHeadHtml(email, a.acct); }
-    toast(`${testerLabel(email)} → ${next === 'beta' ? '베타 테스터로 표시' : '베타 해제'}`, 'good');
+    if (card) { card.classList.toggle('beta', isBeta(a)); card.querySelector('.acct-title').innerHTML = acctHeadHtml(email, a.acct); }
+    const inList = testerCohort(email) > 0;
+    toast(`${testerLabel(email)} → ${next === 'beta' ? '베타 테스터로 표시' : '베타 해제'}${inList ? ` (명단 ${cohortLabel(email)}라 계정은 그대로 베타)` : ''}`, 'good');
   } catch (e) {
     toast('그룹 변경 실패: ' + (e.message || e), 'bad');
   } finally {
@@ -343,7 +354,9 @@ function acctHeadHtml(email, acct) {
   const when = acct.created_at ? `가입 ${fmtKst(acct.created_at).slice(0, 10)}` : '';
   const seen = acct.last_sign_in_at ? ` · 로그인 ${fmtKst(acct.last_sign_in_at).slice(0, 16)}` : '';
   const del = acct.deleted_at ? ' <span class="chip bad" title="소프트 삭제된 계정 — 로그인 불가, 기기만 남음">삭제됨</span>' : '';
-  const beta = acct.group === 'beta' ? ' <span class="chip good" title="베타 테스터 (서버 app_metadata.group=beta)">🎫 베타</span>' : '';
+  const coh = cohortLabel(email);
+  const beta = coh ? ` <span class="chip good" title="${coh} 베타 테스터 — shared.js 명단(전화번호)${acct.group === 'beta' ? ' · 서버 group=beta 도 표시됨' : ''}">🎫 ${coh} 베타</span>`
+    : acct.group === 'beta' ? ' <span class="chip good" title="베타 테스터 (서버 app_metadata.group=beta — 명단엔 없는 계정)">🎫 베타</span>' : '';
   return `<span class="acct-email"><b class="tester">${esc(title)}</b>${sub ? `<span class="nick">${esc(sub)}</span>` : ''}</span>${beta}${del}
         <small class="muted" title="${esc(acct.user_id || '')}">${esc(when + seen)}</small>`;
 }
@@ -373,7 +386,7 @@ function renderRegAccounts() {
     const email = accountKey(a);
     ACCT[email] = { devs: [], cams: [], done: false, error: null, acct: a };
     const card = acctCard(email);
-    card.classList.toggle('beta', a.group === 'beta');
+    card.classList.toggle('beta', isBeta(ACCT[email]));
     if (!a.email) card.querySelector('.grp').disabled = true;   // 계정 행이 없는 소유자는 표시할 곳이 없다
     card.querySelector('.acct-title').innerHTML = acctHeadHtml(email, a);
     host.appendChild(card);
