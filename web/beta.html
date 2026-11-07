@@ -496,6 +496,24 @@ function devRow(email, kind, obj) {
     fw.title = 'heartbeat 가 보고한 펌웨어 버전' + (otaOk ? ' · OTA 지원' : ' · OTA 미지원(구 펌웨어)');
     line.appendChild(fw);
   }
+  if (!isCam) {
+    // 온도 보정값을 목록 줄에 바로 표시 (owner 2026-11-08 — 전엔 [테스트] 를 펼쳐야 보였다). 값 변경은 여전히 [테스트] → 🌡보정.
+    // temp_offset_c = 기기가 telemetry 로 보고한 NVS 값(공장 기본 포함). temp_offset_user_c = 공장 기본을 뺀 사용자값(신 앱 화면 수치, Stage S).
+    const fmtOff = v => (v > 0 ? '+' : '') + Number(v).toFixed(1) + '℃';
+    const off = document.createElement('span'); off.className = 'chip'; off.style.cursor = 'pointer';
+    if (obj.temp_offset_c != null) {
+      const hasUser = obj.temp_offset_user_c != null;
+      off.innerHTML = `🌡 <code>${fmtOff(obj.temp_offset_c)}</code>${hasUser ? `<span class="muted"> · 앱 ${esc(fmtOff(obj.temp_offset_user_c))}</span>` : ''}`;
+      off.title = '온도 보정 — 기기가 보고한 현재 NVS 값(공장 기본 포함)'
+        + (hasUser ? '. "앱" 은 공장 기본을 뺀 사용자값 — 신 앱 화면에 보이는 수치' : '') + '\n클릭 = [테스트] 펼쳐서 값 변경';
+    } else {
+      off.style.opacity = '.6';
+      off.innerHTML = '🌡 <code>미보고</code>';
+      off.title = '온도 보정 — 구 펌웨어(2026-10-01 이전)는 현재값을 보고하지 않음. 빌드 기본 -1.5℃ 추정\n클릭 = [테스트] 펼쳐서 값 변경';
+    }
+    off.onclick = () => test.click();
+    line.appendChild(off);
+  }
   if (isCam) {
     // 한눈에 보는 상태 점 — 클립 파이프라인 + sys 등급(shared.js camLevel). 오프라인은 등급 없음.
     const lvEl = document.createElement('span'); lvEl.className = 'cam-level';
