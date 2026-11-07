@@ -261,12 +261,12 @@ function applyFilter() {
   const hideEmpty = document.getElementById('reg-hide-empty').checked;
   localStorage.setItem('terra-beta-hide-empty', hideEmpty ? '1' : '0');
   let shown = 0, betaTotal = 0;
-  const cohortTotal = {};
+  const cohortTotal = {}, cohortHidden = {}, seenPhones = new Set();
   document.querySelectorAll('#accounts .acct').forEach(card => {
     const email = card.dataset.email, a = ACCT[email] || {};
     const cohort = testerCohort(email);
     if (isBeta(a)) betaTotal++;
-    if (cohort) cohortTotal[cohort] = (cohortTotal[cohort] || 0) + 1;
+    if (cohort) { cohortTotal[cohort] = (cohortTotal[cohort] || 0) + 1; seenPhones.add(phoneDigitsOf(email)); }
     const grpHide = GROUP_FILTER === 'beta' ? !isBeta(a) : GROUP_FILTER === 'other' ? isBeta(a)
       : GROUP_FILTER.startsWith('c') ? cohort !== Number(GROUP_FILTER.slice(1)) : false;
     const empty = !(a.devs || []).length && !(a.cams || []).length;
@@ -275,14 +275,25 @@ function applyFilter() {
     const hide = grpHide || (hideEmpty && empty && a.done) || (q && !hay.includes(q));
     card.classList.toggle('hidden', !!hide);
     if (!hide) shown++;
+    else if (cohort && !grpHide) cohortHidden[cohort] = (cohortHidden[cohort] || 0) + 1;   // 차수 필터 안에서 숨김(등록 없음·검색)만 센다
   });
   const total = Object.keys(ACCT).length;
   document.getElementById('reg-count').textContent = total ? `${shown}/${total} 계정 표시` : '';
   const hint = document.getElementById('grp-hint');
   const byCohort = BETA_COHORTS.map(c => `${BETA_COHORT_LABEL[c] || c + '차'} ${cohortTotal[c] || 0}`).join(' · ');
+  // 차수 필터: "왜 N명만 보이지?" 에 바로 답하게 — 명단 수·계정 수·숨김 수·아직 계정 없는 이름을 같이 보여준다.
+  const cohortHint = (c) => {
+    const roster = Object.entries(BETA_TESTERS_DEFAULT).filter(([, t]) => t.cohort === c);
+    const missing = roster.filter(([p]) => !seenPhones.has(p)).map(([, t]) => t.name);
+    const acct = cohortTotal[c] || 0, hid = cohortHidden[c] || 0;
+    return `${BETA_COHORT_LABEL[c] || c + '차'} 명단 ${roster.length}명 · 계정 ${acct}개 · 표시 ${acct - hid}개`
+      + (hid ? ` · ${hid}개 숨김(등록 없는 계정 숨기기·검색)` : '')
+      + (missing.length ? ` · 계정 없음 ${missing.length}명: ${missing.join(', ')}` : '');
+  };
   hint.textContent = GROUP_FILTER === 'beta' && !betaTotal ? '베타 테스터 계정이 아직 없음 — 명단 번호로 가입한 계정이 없고, [베타] 로 표시한 계정도 없음'
     : GROUP_FILTER === 'all' ? `베타 ${betaTotal} (${byCohort}) · 그 외 ${total - betaTotal}`
-    : GROUP_FILTER === 'beta' ? `${shown}개 표시 · ${byCohort}` : `${shown}개 표시`;
+    : GROUP_FILTER === 'beta' ? `${shown}개 표시 · ${byCohort}`
+    : GROUP_FILTER.startsWith('c') ? cohortHint(Number(GROUP_FILTER.slice(1))) : `${shown}개 표시`;
 }
 
 // 카드의 [베타] 토글 → PATCH /admin/accounts/{uid}. 성공하면 그 카드만 갱신(목록 재조회 없음).
