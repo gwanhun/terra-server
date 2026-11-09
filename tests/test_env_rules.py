@@ -313,18 +313,18 @@ def test_none_or_nan_resets_timers(bad):
 
 # ---------- 습도 ----------
 
-def test_humid_over_needs_1h_continuous():
+def test_humid_over_needs_2h_continuous():
     tr = ElementTracker("humid")
-    assert feed(tr, seg((0, 85.0), end=3599)) == []
-    assert feed(tr, [(3599, 85.0)]) == []
-    got = feed(tr, [(3600, 85.0)])
+    assert feed(tr, seg((0, 85.0), end=7199)) == []
+    assert feed(tr, [(7199, 85.0)]) == []
+    got = feed(tr, [(7200, 85.0)])
     assert [(a.op, a.kind, a.level, a.push) for _, a in got] == [
         ("open", "env_humid_high", "caution", True)]
     assert got[0][1].threshold == 80.0
-    # 1800초에 80.0 한 건 → 그 뒤로 다시 3600초
+    # 1800초에 80.0 한 건 → 그 뒤로 다시 7200초
     tr = ElementTracker("humid")
-    got = feed(tr, seg((0, 85.0), (1800, 80.0), (1803, 85.0), end=6000))
-    assert [(t, a.op, a.at_mono) for t, a in got] == [(5403, "open", 1803)]
+    got = feed(tr, seg((0, 85.0), (1800, 80.0), (1803, 85.0), end=9600))
+    assert [(t, a.op, a.at_mono) for t, a in got] == [(9003, "open", 1803)]
 
 
 def test_humid_dry_2min_and_recovery():
@@ -415,7 +415,7 @@ def test_sanitize_thresholds():
 
 def test_titles():
     assert title("env_temp_high", "caution", 26.04, 26.0) == "[고온 주의] 적정 온도보다 +0.1℃"
-    assert title("env_humid_high", "caution", 80.4, 80.0) == "[과습 주의] 적정 습도보다 +1%p"
+    assert title("env_humid_high", "caution", 80.4, 80.0) == "[과습 안내] 적정 습도보다 +1%p"
     assert title("env_humid_low", "caution", 33.4, 40.0) == "[건조 주의] 적정 습도보다 -7%p"
     assert title("env_temp_low", "danger", 14.2, None) == (
         "[저온 경고] 온도가 너무 낮아 개체가 위험할 수 있어요")
