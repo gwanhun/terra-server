@@ -345,10 +345,17 @@ def test_mist_low_humid():
     assert r.run(3, humid=35.0) == [MIST]
 
 
-def test_mist_disarms_until_recovery():
+def test_mist_retries_while_dry():
+    # 습도가 회복되지 않아도 2시간 간격·하루 4회로 다시 분무한다(물통 빔 → 하루 최대 12초)
     r = Rig(sim=True)
     r.run(24 * 3600, step=30, humid=30.0)
-    assert len(r.times("mist")) == 1
+    mists = r.times("mist")
+    days: dict[date, int] = {}
+    for t in mists:
+        d = r.wall(t).astimezone(KST).date()
+        days[d] = days.get(d, 0) + 1
+    assert days == {date(2026, 11, 5): MIST_DAILY_MAX, date(2026, 11, 6): MIST_DAILY_MAX}
+    assert all(b - a >= MIST_MIN_INTERVAL_SEC for a, b in zip(mists, mists[1:]))
 
 
 def test_mist_cap_with_recovery():
@@ -453,7 +460,8 @@ def test_insert_failed_retry_30s():
     r = Rig()
     assert r.run(183, humid=35.0) == [MIST]
     r.tr.insert_failed(MIST, 180.0)
-    assert r.run(3 * 3600, humid=35.0) == []
+    assert r.run(7197, humid=35.0) == []       # 183~7377 — 실패해도 간격 안엔 재시도 없음
+    assert r.run(3, humid=35.0) == [MIST]      # 7380 — 2시간 뒤 정규 재시도
 
 
 def test_kst_day_rollover():

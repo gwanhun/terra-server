@@ -18,7 +18,7 @@
 | OFF 관측(R6) | 소유 중 `fan == 'OFF'` 2샘플: 타이머 만료(마지막 켬 + 3570초 이후)면 원인이 지금도 원인별 시간만큼 이어졌을 때(습도는 온도 > MIN 도) 이어서 재발행(없으면 종료), 그 전이면 외부 끔 → 소유 해제 + 30분 쉼. 직전 명령 뒤 300초 안이면 기다림 |
 | 남의 명령(R7) | 수동 `fan_off`(소유 중 `fan_toggle` 포함) → 소유 해제 + 30분 쉼. 그 밖의 팬 명령 → 소유 해제만 |
 | 예약(R8) | 구간 예약 켜짐 중엔 시작·종료·재발행 없음, 소유 해제 |
-| 분무(R9) | 토글·`relay` 키·습도 < MIN 연속 180초·무장·`fan == 'OFF'`·이번 step 에 fan_on 없음·마지막 분무(모든 source) 뒤 2시간·오늘 자동 < 4 → `mist {duration_ms: 3000}`. 낸 순간 예산 소진(+1, 간격 기준, 무장 해제). 습도 ≥ MIN 샘플에서 재무장 |
+| 분무(R9) | 토글·`relay` 키·습도 < MIN 연속 180초·`fan == 'OFF'`·이번 step 에 fan_on 없음·마지막 분무(모든 source) 뒤 2시간·오늘 자동 < 4 → `mist {duration_ms: 3000}`. 낸 순간 예산 소진(+1, 간격 기준). 습도가 회복되지 않아도 2시간 뒤 다시 시도 |
 | 토글 끔(R10) | 환기: 소유 중이면 `auto_vent_disabled` 후 환기 상태 초기화. 분무: 분무 상태만 초기화 |
 | 재시도(R13) | 환기 명령을 낸 뒤 30초 안엔 같은 판정을 다시 내지 않는다(INSERT 실패 재시도 간격). 분무는 재시도 없음 |
 
@@ -180,7 +180,6 @@ class AutoEnvTracker:
     _hold: bool = False                                        # 마지막 샘플의 schedule_hold
 
     # ----- 분무 -----
-    _armed: bool = True
     _mist_last: float | None = None                            # 모든 source 마지막 분무(시도·ACK ok)
     _mist_today: int = 0
 
@@ -302,7 +301,6 @@ class AutoEnvTracker:
         self._paused_until = paused_until
         self._last_end = last_end
         self._mist_last = mist_last
-        self._armed = True
         self._off_streak = 0
         self._retry_after = None
         self._intent = frozenset()
@@ -396,8 +394,7 @@ class AutoEnvTracker:
                     timers.setdefault(c, now)
 
         if not inp.mist_on:
-            self._low_since = None
-            self._armed = True        # R10: 분무 상태만 초기화(오늘 수·마지막 분무는 안전 예산이라 유지)
+            self._low_since = None    # R10: 분무 상태만 초기화(오늘 수·마지막 분무는 안전 예산이라 유지)
         elif h is None:
             self._low_since = None
         elif h < th.humid_min:
@@ -405,7 +402,6 @@ class AutoEnvTracker:
                 self._low_since = now
         else:
             self._low_since = None
-            self._armed = True        # 회복 → 재무장
 
     def _runtime(self) -> float:
         return self._runtime_done + self._run_acc
@@ -516,7 +512,7 @@ class AutoEnvTracker:
         # 자동 환기 요청·소유 중이면 팬이 곧(또는 이미) 켜진다 — 텔레메트리 지연과 무관하게 보류
         if fan != "OFF" or self._phase != "idle":
             return None
-        if not self._armed or not _held(self._low_since, now, HOLD_SEC):
+        if not _held(self._low_since, now, HOLD_SEC):
             return None
         if self._mist_last is not None and now - self._mist_last < MIST_MIN_INTERVAL_SEC:
             return None
@@ -525,7 +521,6 @@ class AutoEnvTracker:
         # 시도 순간 예산 소진 — INSERT 결과와 무관, 재시도 없음
         self._mist_today += 1
         self._mist_last = now
-        self._armed = False
         return AutoCmd("mist", {"duration_ms": MIST_DURATION_MS}, "auto_mist")
 
     # ===== 내부 상태 조작 =====

@@ -1,7 +1,9 @@
 # Stage R — 자동 환기·자동 분무 Implementation Plan
 
 > **구현 방식 (CAOF):** Critical 트랙. 이 계획을 task 단위로 구현한다. Steps use checkbox (`- [ ]`) syntax for tracking.
-> 상태: r3 (2026-11-05) — r2 확정(교차 검수 반영, 사용자 승인) 뒤 Figma 확인으로 습도 원인 변경(아래 변경 기록).
+> 상태: r4 (2026-11-09) — r2 확정(교차 검수 반영, 사용자 승인) 뒤 Figma 확인으로 습도 원인 변경(r3), 분무 재무장 삭제(r4).
+>
+> **r4 변경 (사용자 결정 2026-11-09)**: 분무 "무장(armed)" 삭제 — 습도가 MIN 이상으로 회복되지 않아도 2시간 간격·하루 4회 안에서 다시 분무한다. 섀도 45시간(사육장 2, 습도 내내 36~39%)에서 1회 뒤 멈췄고, 베타 테스터 기대("MIN 아래면 계속 분무")와 어긋났다. 물통이 비어도 하루 최대 4회 × 3초 = 12초라 회복 대기 없이도 폭주 방어는 남는다. 아래 Task 본문의 `armed`·`test_mist_disarms_until_recovery` 는 r3 까지의 기록이다(테스트는 `test_mist_retries_while_dry` 로 교체).
 >
 > **r3 변경 (사용자 결정 2026-11-05, Figma `1657:5406` 디자이너 메모)**: "습도 {Max}% 초과 1시간 이상 유지(습도 주의 이벤트와 같은 조건)에 환기를 시작". 그래서 `humid_high` 연속 시간 = **3600초**(`env_rules.OVER_HUMID_ENTRY_SEC`)로 바꾸고, 분무 뒤 60분 보호(`POST_MIST_GUARD_SEC`·R3 습기 신호·`wet_mono`)는 **삭제**한다. 온도 원인(180초)·분무(180초)·추운 날 금지는 그대로. R6 타이머 만료 재발행도 R4 와 같이 원인별 연속 시간(습도 3600초·온도 180초)을 다시 요구한다 — 만료 시점에 MAX 이하(적정 범위)면 재발행 없이 종료. 아래 Task 본문의 `wet_mono`·`test_post_mist_guard` 등은 r2 구현 기록이며 r3 에서 코드·테스트 모두 제거됐다.
 
@@ -73,7 +75,7 @@
 | R6 | 자동 소유 중 텔레메트리 `fan == 'OFF'` 가 2샘플 연속으로 보이면 두 경우로 나눈다. ⓐ `now ≥ last_on + 3600 − 30`(타이머 만료)이면 원인이 남아 있을 때 R4 조건(600초 쉼 제외)으로 재발행한다. 이건 이어서 켜는 것이다. ⓑ 그보다 이르면 외부 끔(사용자 끔 ACK 유실·로컬 조작·재부팅)으로 보고 소유 해제 + 30분 쉼. 두 경우 모두 직전 자동 명령 뒤 300초 안이면 기다린다. **타이머 중 재발행은 하지 않는다.** 타이머가 걸린 팬에 타이머 명령을 다시 보내면 펌웨어가 `busy` 로 거절한다(§3.3(2)). |
 | R7 | 자동이 아닌 팬 명령의 ACK `result='ok'` 처리. 수동 `fan_off` → 소유 해제 + 30분 쉼. 수동 `fan_toggle` → 자동 소유 중이면 `fan_off` 와 같고, 아니면 무시. 수동 `fan_on` → 소유 해제만. `schedule`·`restore` 의 `fan_*` → 소유 해제만. 위 경우 모두 그 기기의 `source='auto'`·`status='pending'` 팬 명령을 조건부 UPDATE 로 `status='expired', result='superseded'` 로 만든다. 디스패처는 `source='auto'` 행을 발행 직전 다시 읽어 pending 이 아니면 보내지 않는다(코드 리뷰 2026-11-05). 이미 나간 자동 명령과의 경합(수백 ms)은 남는다. |
 | R8 | 구간 예약 켜짐 중의 판정. 대상은 같은 `pair_id` 의 `fan_on`·`fan_off` 두 행이 **둘 다 `enabled`** 인 pair 다. 각 pair 의 `compute_prev_run` 이 더 늦은 행이 `fan_on` 이면 그 pair 는 켜짐 중이다. pair 하나라도 켜짐 중이면 "예약 중"(합집합). 예약 중에는 시작·종료·재발행을 하지 않고 소유를 해제한다. 예약 목록은 기기별 60초 캐시로 두고, 명령 INSERT 직전에는 다시 읽는다. 예약이 끝난 뒤(fan_off) 원인이 남아 있으면 3분 뒤 자동이 다시 켤 수 있다. 의도된 동작이고 앱 회신에 적는다. 단발 예약·`skip_when_*` 으로 건너뛴 회차는 고려하지 않는다(앱 회신에 명시). |
-| R9 | 자동 분무 조건은 아래가 모두 맞을 때다. 분무 토글 켜짐, 텔레메트리에 `relay` 키 있음, 습도 < MIN 연속 180초, 무장(armed) 상태, `fan == 'OFF'`, 같은 step 에서 `fan_on` 을 내지 않음, 모든 source 의 마지막 분무 뒤 2시간 지남, 오늘 자동 분무 < 4. 이때 `mist {duration_ms: 3000}`(reason `auto_mist`)을 낸다. **시도 순간에 예산을 쓴다**: 카운트 +1, 마지막 분무 시각 = 지금, 무장 해제. INSERT 결과와 무관하고 재시도하지 않는다. 습도 ≥ MIN 샘플이 오면 다시 무장한다. 팬이 켜져 있으면 보류한다(연속 타이머는 유지). |
+| R9 | 자동 분무 조건은 아래가 모두 맞을 때다. 분무 토글 켜짐, 텔레메트리에 `relay` 키 있음, 습도 < MIN 연속 180초, `fan == 'OFF'`, 같은 step 에서 `fan_on` 을 내지 않음, 모든 source 의 마지막 분무 뒤 2시간 지남, 오늘 자동 분무 < 4. 이때 `mist {duration_ms: 3000}`(reason `auto_mist`)을 낸다. **시도 순간에 예산을 쓴다**: 카운트 +1, 마지막 분무 시각 = 지금. INSERT 결과와 무관하고 즉시 재시도하지 않는다. 습도가 회복되지 않아도 2시간 간격이 지나면 다시 시도한다(r4). 팬이 켜져 있으면 보류한다(연속 타이머는 유지). |
 | R10 | 토글 끔은 60초 캐시 안에 반영된다. 자동 환기를 끄면 자동 소유일 때 `fan_off`(reason `auto_vent_disabled`)를 내고 환기 상태를 초기화한다. 자동 분무를 끄면 분무 상태만 초기화한다. `AUTO_ENV_ENABLED` 끔·허용목록에서 빠짐·기기 해제는 게이트 분기에서 상태만 버린다(명령 없음, 켜진 팬은 펌웨어 타이머로 꺼짐). |
 | R11 | 브리지 재시작 복원은 토글이 하나라도 켜진 기기에서 첫 샘플 때 1회 한다. ① `devices.auto_env_state` 에서 `paused_until`·`last_end_at`·`runtime_today_sec`·`mist.today_count`·`day` 를 읽는다. ② 정합 확인 쿼리 2개를 낸다. 최근 1시간 그 기기의 `fan_*` 명령 전부(`issued_at` 내림차순, status·result·source)로 **마지막 작성자가 자동 `fan_on` 이고 ACK ok 이며 1시간 안**일 때만 소유를 복원한다. KST 오늘 0시부터의 `mist` 명령(source 무관 ACK ok 마지막 시각 + 자동 시도 수)으로 분무 간격·하루 수를 다시 계산하고, ①과 다르면 큰 쪽을 쓴다. 조회가 실패하면 이 샘플은 판정 보류(다음 샘플 재시도). |
 | R12 | 상태 노출(C3): `devices.auto_env_state` 를 **`updated_at` 을 뺀 내용이 바뀔 때만** UPDATE 하고 `.eq("id", device_uuid)` 를 명시한다. 실패하면 60초 뒤 재시도한다. 모양: `{"vent": {"active", "causes", "since", "paused_until", "schedule_hold", "last_end_at", "runtime_today_sec"}, "mist": {"last_at", "today_count"}, "day": "YYYY-MM-DD"(KST), "updated_at"}`. 앱은 읽기만 하고, 써도 브리지가 덮어쓴다. |
@@ -117,7 +119,7 @@
 
 1. **MAX 근처 플래핑** → Task 1 `test_no_flap_near_max`: 습도 MAX+1 180초 → on. MAX−1 10분 → off 없음. 종료선 아래 60초 → off 1회. 그 뒤 MAX+1 이 다시 와도 600초 안엔 on 없음.
 2. **사용자가 끈 직후·끔 ACK 유실** → Task 1 `test_manual_off_pauses_30min`, `test_external_off_before_expiry_pauses`.
-3. **물통이 빔·센서 고장** → Task 1 `test_mist_disarms_until_recovery`(습도 30% 고정 24시간 → 1회), `test_mist_cap_with_recovery`(회복·하강 반복 → 하루 4회, 간격 ≥ 2시간, KST 0시 리셋), `test_vent_daily_cap`(습도 99 고정 → 누적 12시간에 `auto_vent_cap`, 그날 재시작 없음).
+3. **물통이 빔·센서 고장** → Task 1 `test_mist_retries_while_dry`(습도 30% 고정 24시간 → 날마다 4회, 간격 ≥ 2시간 — r4), `test_mist_cap_with_recovery`(회복·하강 반복 → 하루 4회, 간격 ≥ 2시간, KST 0시 리셋), `test_vent_daily_cap`(습도 99 고정 → 누적 12시간에 `auto_vent_cap`, 그날 재시작 없음).
 4. **재시작 뒤 남의 팬을 자동 소유로 오인** → Task 3 `test_restore_last_writer`.
 5. **예약·사용자 타이머와 겹침** → Task 1 `test_schedule_hold_blocks_all`, Task 3 `test_schedule_span_pairs_union`, `test_manual_ack_supersedes_pending_auto`.
 
@@ -363,7 +365,7 @@ ALTER TABLE public.commands ADD CONSTRAINT commands_source_check
 | 시나리오 | 대응 |
 |---|---|
 | 판정 버그로 팬이 계속 켜짐 | 매 명령 1시간 자동 OFF, 하루 12시간 상한, 스위치·허용목록으로 즉시 차단 |
-| 판정 버그로 분무 폭주 | 시도 순간 예산 소진 + 하루 4회·2시간 간격(모든 source) + 회복 전 재무장 없음 |
+| 판정 버그로 분무 폭주 | 시도 순간 예산 소진 + 하루 4회·2시간 간격(모든 source). 회복 전 재무장 금지는 r4 에서 삭제(하루 최대 12초) |
 | 센서가 99.9% 로 고정 | 하루 12시간 상한(R5), 섀도 게이트 |
 | 자동 `fan_off` 가 사용자 `fan_on` 직후 도착 | 소유는 자동 ACK ok 에서만 확정되고 사용자 ACK 에서 해제된다. pending 자동 팬 명령도 무효화하고, 디스패처가 발행 직전 재확인한다. 이미 나간 명령과의 수백 ms 경합은 남는다 |
 | 재시작 뒤 남의 팬을 자동 소유로 오인 | 마지막 작성자 판정(R11) |
