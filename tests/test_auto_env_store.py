@@ -167,9 +167,9 @@ def test_off_toggles_cost_nothing() -> None:
 def test_insert_auto_command() -> None:
     sb = SB()
     rig = Rig(sb)
-    rig.run(3597, humid=85.0)
+    rig.run(7197, humid=85.0)
     assert cmds(sb) == []
-    rig.run(6, humid=85.0)                   # t=3600 — 습도 MAX 초과 1시간
+    rig.run(6, humid=85.0)                   # t=7200 — 습도 MAX 초과 2시간
     rows = cmds(sb)
     assert len(rows) == 1
     r = rows[0]

@@ -142,7 +142,7 @@ def test_second_pass_picks_backdated(enabled: None) -> None:
     first = report(sb)
     assert first["pass"] == 1 and first["humid_card"] is None
 
-    # Stage N D11: 07:10 시작 과습이 08:10 에 소급 INSERT 됨
+    # Stage N D11: 08:00 전 시작 이벤트가 08시 이후 소급 INSERT 됨
     sb.rows("alerts").append({"id": "a-humid", **alert(
         "dev-0001", "env_humid_high", kst(7, 10), kst(7, 50), peak_value=92, threshold=80)})
     assert runner.tick(kst(8, 30)) == 0          # 1차는 이미 있음, 2차 전

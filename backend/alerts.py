@@ -12,7 +12,7 @@ handle_telemetry 가 INSERT 직후 호출(paho 콜백 스레드, 동기). 경로
 |------|----------------|---------------|
 | kind | `env_temp_high` `env_temp_low` `env_humid_low` `env_humid_high` (`context.rule="v4"`) | `temp_high` `temp_low` `humid_low` |
 | 기준 | `device_settings.target_*` MIN/MAX(없으면 18~27℃ / 40~80%), 경고 15/29℃ 고정 | `device_settings.alert_*` (행 없으면 평가 안 함) |
-| 진입 | 조건 2분 연속(과습 60분). 주의 `warning` / 경고 `critical` | 임계 넘는 즉시, 항상 `warning` |
+| 진입 | 조건 2분 연속(과습 120분). 주의 `warning` / 경고 `critical` | 임계 넘는 즉시, 항상 `warning` |
 | 회복 | 적정 5분 연속(값 여유 없음) | 히스테리시스 ±1℃ / +5%RH 즉시 |
 | 기록 시각 | `triggered_at`/`resolved_at` = 조건 연속 성립 **시작** 시각 | DB 기본값(now) |
 | 푸시 | `env.alert.triggered` started + 1시간 뒤 reminder 1회 (`PUSH_ENV_ALERTS_ENABLED`) | 없음 |
