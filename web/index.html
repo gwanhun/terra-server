@@ -635,6 +635,54 @@ async function ledBrightness(deviceUuid, pct) {
   setTimeout(loadRecentCommands, 1500);
 }
 
+// 온도 보정 인라인 편집기 — beta.html 목록 줄의 🌡 과 같은 명령(set_temp_offset, payload.offset_c = 기기 절대값).
+// 온도 셀은 telemetry 마다 다시 그려져 입력이 지워지니 액션 칸(다시 안 그림)에 둔다. 입력칸 기준값은 기기가
+// 보고한 NVS 값(temp_offset_c, 공장 기본 포함) — 신 앱이 보는 사용자값(temp_offset_user_c)과 다르다(Stage S).
+function tempOffsetEditor(r) {
+  const dis = r.is_online ? '' : 'opacity:.5';
+  const cur = r.temp_offset_c != null ? Number(r.temp_offset_c).toFixed(1) : '';
+  const hint = r.temp_offset_c != null
+    ? '기기가 보고한 현재 보정값(℃). 측정값에 더할 값 — 2℃ 높게 나오면 -2. 기기 NVS 에 저장돼 LCD·telemetry 양쪽에 적용'
+    : '구 펌웨어(2026-10-01 이전)는 현재값 미보고 — 빌드 기본 -1.5 추정. 측정값에 더할 값(℃)';
+  return `<span class="toff" data-toff="${r.id}" style="display:inline-flex;align-items:center;gap:3px;font-size:11px;${dis}" title="${hint}">🌡`
+    + `<input type="number" step="0.1" min="-10" max="10" placeholder="-1.5" value="${cur}" `
+    + `onkeydown="if(event.key==='Enter')setTempOffset('${r.id}')" style="width:58px;font-size:11px;padding:2px 5px">℃`
+    + `<button class="sm ghost" onclick="setTempOffset('${r.id}')" title="set_temp_offset 명령 전송 — 기기가 ACK 하면 ✅. ±10℃ 범위">적용</button>`
+    + `<small class="muted"></small></span>`;
+}
+
+// POST /devices/{id}/commands (서버가 ±10 범위 검증) → GET .../commands/{cmdId} 로 최대 8초 ACK 폴링.
+async function setTempOffset(deviceUuid) {
+  const box = document.querySelector(`[data-toff="${deviceUuid}"]`);
+  if (!box) return;
+  const input = box.querySelector('input'), st = box.querySelector('small');
+  const v = parseFloat(input.value);
+  if (isNaN(v)) { st.className = 'bad'; st.textContent = '숫자 입력'; return; }
+  if (Math.abs(v) > 10) { st.className = 'bad'; st.textContent = '±10 범위'; return; }
+  st.className = 'muted'; st.textContent = '전송…';
+  const r = await api(`/devices/${deviceUuid}/commands`, {
+    method: 'POST',
+    body: JSON.stringify({ action: 'set_temp_offset', payload: { offset_c: v } }),
+  });
+  if (!r || !r.id) { st.className = 'bad'; st.textContent = '실패'; return; }   // 상세는 api() 토스트·로그
+  for (let i = 0; i < 8; i++) {
+    await new Promise(res => setTimeout(res, 1000));
+    const c = await api(`/devices/${deviceUuid}/commands/${r.id}`);
+    if (!c || !['acked', 'no_ack', 'rejected'].includes(c.status)) continue;
+    if (c.status === 'acked') {
+      st.className = 'good'; st.textContent = '✅ ' + (c.result || 'ok');
+      // 구 펌웨어는 temp_offset_c 를 안 보고하니 온도 셀의 '🌡명령' 표기를 바로 갱신. 신 펌웨어는 다음 telemetry 가 덮어씀.
+      LAST_TOFF_CMD[deviceUuid] = { offset_c: v, user: false, status: 'acked', issued_at: new Date().toISOString() };
+      updateDeviceTempCell(deviceUuid);
+    } else if (c.status === 'no_ack') { st.className = 'bad'; st.textContent = '⏳ 무응답(오프라인?)'; }
+    else { st.className = 'bad'; st.textContent = '✖ ' + c.status + ' ' + (c.result || ''); }
+    loadRecentCommands();
+    return;
+  }
+  st.className = 'muted'; st.textContent = '… 응답 지연';
+  loadRecentCommands();
+}
+
 // 기기별 마지막 set_temp_offset 명령 { offset_c, status, issued_at } — devices.temp_offset_c 가 NULL 인
 // 구 펌웨어(2026-10-01 이전)에서 "마지막으로 보낸 보정값" 을 대신 보여주기 위한 캐시.
 // 보드 교체·flash erase 뒤엔 실제 NVS 와 다를 수 있어 '명령' 이라고 표시한다.
@@ -712,6 +760,7 @@ async function loadDevices() {
           <button class="sm" onclick="unlinkDevice('devices','${r.id}')" title="소프트 해제 — 기록 보존, 앱의 '삭제'와 동일">해제</button>
           <button class="sm danger" onclick="deleteDevice('${r.id}')" title="hard delete — 기록까지 삭제(운영용)">삭제</button>
         </div>
+        <div class="act-group">${tempOffsetEditor(r)}</div>
       </td>`;
     tbody.appendChild(tr);
   });
@@ -1302,8 +1351,11 @@ function subscribeRealtime() {
           if (fwCell) fwCell.innerHTML = fwCellHtml(n);   // OTA 뒤 firmware_ver 바뀜
           // is_online 은 offline_monitor 가 180초 무응답 시 false 로 바꾼다 → 온습도 셀을 오프라인 표시로.
           const d = DEVICES.find(x => x.id === n.id);
-          if (d) { d.is_online = n.is_online; d.last_seen_at = n.last_seen_at; d.temp_offset_c = n.temp_offset_c; }
+          if (d) { d.is_online = n.is_online; d.last_seen_at = n.last_seen_at; d.temp_offset_c = n.temp_offset_c; d.temp_offset_user_c = n.temp_offset_user_c; }
           updateDeviceTempCell(n.id);
+          // 보정 입력칸: 사용자가 타이핑 중(포커스)이 아닐 때만 기기 보고값으로 미리채움 갱신
+          const toffIn = document.querySelector(`[data-toff="${n.id}"] input`);
+          if (toffIn && document.activeElement !== toffIn && n.temp_offset_c != null) toffIn.value = Number(n.temp_offset_c).toFixed(1);
         })
     .subscribe();
 
