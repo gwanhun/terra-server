@@ -164,6 +164,80 @@ uv run python scripts/reconcile_r2_orphans.py --prune-missing --camera p4cam-…
 
 ---
 
+## 1-3. 카메라 렌즈 초점 안내 발송 (2026-11-10, 운영자 수동)
+
+> 앱 원문: tera-ai-flutter `docs/ops/camera-focus-notice.md` (앱 0.176.0+). `app_notifications` 스키마는 앱 레포 `supabase/migrations/20260915000000_fcm_notifications.sql`.
+
+영상이 흐린 사용자에게 운영자가 "카메라 렌즈 초점을 맞춰주세요" 안내를 보낸다.
+
+- 받은 사용자: 앱 홈·카메라 탭 라이브 위에 안내 막대 + 알림함(분류 "카메라")에 1건
+- 누르면 카메라 상세(초점 가이드)로 가고 읽음 처리 → 모든 기기에서 사라짐
+- 사람 단위(카메라 지정 없음), **푸시 없음**
+- 앱 0.176.0 미만은 알림함에 "일반 알림"으로만 보이고 막대는 없음
+
+### 왜 `app_notifications` 에 직접 넣나
+
+- `app_notifications` 에는 INSERT 트리거도 `kind` CHECK 도 없다. 직접 넣으면 outbox(푸시)를 타지 않고 앱 알림함에만 생긴다.
+- `notification_events` 로 넣으면 `type` CHECK 위반이다. 트리거 CASE 에 분기를 추가하려면 운영 트리거 함수를 통째로 바꿔야 해서 피했다.
+- 서버가 나중에 자동 판정으로 보낼 때도 같은 INSERT 를 쓴다.
+
+### 계약 (앱이 기대하는 값 — 바꾸지 말 것)
+
+| 컬럼 | 값 |
+|---|---|
+| `kind` | `camera.focus_needed` (앱은 이걸로 분기) |
+| `category` | `camera` |
+| `route` | `/crecam` (기록용) |
+| `title` | `카메라 렌즈 초점을 맞춰주세요` |
+| `body` | `영상이 흐릿하게 보인다면 렌즈 초점을 맞춰주세요` |
+| `source` | `external` |
+| `source_event_id` | 새 uuid |
+| `dedupe_key` | `ops-focus:` + 같은 uuid (`UNIQUE(user_id, dedupe_key)`) |
+| `data` | `{"kind":"camera.focus_needed","source":"external"}` (object 필수) |
+| `read_at` | NULL 로 넣음. 앱이 누르면 채움 |
+
+### 보내기 (Supabase SQL Editor, 이메일만 바꿔 실행)
+
+```sql
+insert into public.app_notifications
+  (user_id, kind, category, title, body, route, data, source, source_event_id, dedupe_key)
+select u.id, 'camera.focus_needed', 'camera',
+       '카메라 렌즈 초점을 맞춰주세요', '영상이 흐릿하게 보인다면 렌즈 초점을 맞춰주세요',
+       '/crecam', jsonb_build_object('kind', 'camera.focus_needed', 'source', 'external'),
+       'external', e.id, 'ops-focus:' || e.id
+from auth.users u, (select gen_random_uuid()::text as id) e
+where u.email = '<대상 이메일>';
+```
+
+결과가 `INSERT 0 1` 인지 꼭 확인한다. `INSERT 0 0` 이면 이메일 오타라 아무것도 안 간 것이다.
+
+### 보낸 기록
+
+```sql
+select n.created_at, u.email, n.read_at
+from public.app_notifications n join auth.users u on u.id = n.user_id
+where n.kind = 'camera.focus_needed'
+order by n.created_at desc limit 50;
+```
+
+`read_at` 이 NULL 이면 아직 안 본 것이다.
+
+### 보기 전 취소
+
+```sql
+update public.app_notifications n set read_at = now()
+from auth.users u
+where u.id = n.user_id and u.email = '<대상 이메일>'
+  and n.kind = 'camera.focus_needed' and n.read_at is null;
+```
+
+### 참고
+
+- 같은 사람에게 다시 보내면 다시 뜬다. 여러 건이 쌓여도 한 번 누르면 전부 읽음 처리된다.
+- 앱은 이 kind 의 최근 20건만 Realtime 으로 구독한다(RLS 로 본인 행만).
+
+---
+
 ## 2. 로그 확인
 
 ### 실시간 (pm2 logs 대체)
@@ -396,3 +470,4 @@ sudo journalctl -u caddy --since "1 day ago" | grep -i renew
 |------|------|
 | 2026-05-29 | 최초 작성 |
 | 2026-11-04 | 1-2 R2 고아 클립 역등록 cron 추가 |
+| 2026-11-10 | 1-3 카메라 렌즈 초점 안내 발송(운영자 수동) 추가 |
