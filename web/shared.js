@@ -166,7 +166,15 @@ function sysLevel(sy) {
   const il = intLevel(sy); if (il) reasons.push([il, `내부 RAM ${Math.round(sy.int_free/1024)}K/${Math.round((sy.int_largest||0)/1024)}K`]);
   const wl = rssiLevel(sy.rssi); if (wl) reasons.push([wl, `rssi ${sy.rssi}`]);
   if (sy.net && sy.net.flap) reasons.push(['bad', 'MQTT 플래핑']);
+  const tl = tempLevel(sy.temp); if (tl) reasons.push([tl, `보드 ${sy.temp}°C`]);
   return { level: maxLevel(...reasons.map(r => r[0])), reasons };
+}
+// 보드(P4 칩) 온도 — clip_stats.sys.temp. 함대 평시 26~50°C(공기 +20°C). 2026-11-10 p4cam-38ffd3ef: 62~69.5°C 구간에서만
+// hosted SDIO 오류·힙 손상 PANIC·deadman 이 8시간에 14회, 50 아래로 식으면 0 — 카메라가 바스킹 램프·햇빛 복사열을 받는 위치.
+// 사육장 공기 온도(사육장 보드 t_a)와 LED 는 무관했으므로 라벨은 카메라 '설치 위치' 점검 신호.
+function tempLevel(t) {
+  if (typeof t !== 'number' || t <= 0) return '';
+  return t >= 60 ? 'bad' : t >= 55 ? 'warn' : '';
 }
 
 // sys_state / clip_stats.sys → 한 줄 텍스트 (가동시간·리셋 사유·힙·RSSI·AP·net 진단). 토큰별로만 색을 입힌다.
@@ -175,6 +183,7 @@ function sysStateText(sy) {
   const rl = resetLevel(sy.reset, sy.uptime_s);
   const resetTxt = `<span class="${rl}" title="${esc(resetTitle(sy.reset))}">reset ${esc(sy.reset || '?')}</span>`;
   const rssiTxt = typeof sy.rssi === 'number' ? ` · <span class="${rssiLevel(sy.rssi)}" title="WiFi RSSI(dBm). -75 이하 약함(주황), -80 이하 매우 약함(빨강)">rssi ${sy.rssi}</span>` : '';
+  const tempTxt = typeof sy.temp === 'number' && sy.temp > 0 ? ` · <span class="${tempLevel(sy.temp)}" title="보드(P4 칩) 온도. 평시 26~50°C(공기 +20). 55 이상 주황, 60 이상 빨강 — 60 넘는 구간에서 SDIO 오류·힙 손상 PANIC·deadman 재부팅이 몰린다(11/10 38ffd3ef). 사육장 공기와 무관하면 카메라가 램프·햇빛 복사열을 받는 위치">${sy.temp}°C</span>` : '';
   const intLv = intLevel(sy);
   const intTxt = typeof sy.int_free === 'number' ? ` · <span class="${intLv}" title="내부 RAM 여유/최대 블록(KB). P4 평시 60~128K/31~42K. 16KB 미만 할당은 내부 RAM 에서만 나와서 최대 블록 16K 미만(또는 여유 32K 미만)이면 할당 실패 시작 → 빨강. 24K/48K 미만 주황">int ${Math.round(sy.int_free/1024)}K/${Math.round((sy.int_largest||0)/1024)}K</span>` : '';
   // 접속 AP(0.3.6~): BSSID 뒤 3옥텟 + 채널. 같은 SSID 의 확장기/공유기 중 어디에 붙었는지.
@@ -192,7 +201,7 @@ function sysStateText(sy) {
     const cpSum = (nd.cp_fail || 0) + (nd.cp_down || 0) + (nd.cp_init || 0);
     if (cpSum > 0) netTxt += ` · <span class="warn" title="C6 코프로세서 링크: 전송 실패 / 전송 다운 / C6 재부팅 횟수(부팅 후). 0 이 아니면 WiFi 가 아니라 보드(SDIO/C6) 쪽. 계속 오르면 보드 점검">c6 ${nd.cp_fail || 0}/${nd.cp_down || 0}/${nd.cp_init || 0}</span>`;
   }
-  return `<span class="muted" title="가동시간 · 마지막 재부팅 사유 · 남은 힙">up ${up} · ${resetTxt}${sy.heap ? ' · heap ' + Math.round(sy.heap/1024) + 'K' : ''}${intTxt}${rssiTxt}${apTxt}${netTxt}</span>`;
+  return `<span class="muted" title="가동시간 · 마지막 재부팅 사유 · 남은 힙">up ${up} · ${resetTxt}${sy.heap ? ' · heap ' + Math.round(sy.heap/1024) + 'K' : ''}${intTxt}${rssiTxt}${tempTxt}${apTxt}${netTxt}</span>`;
 }
 
 // 카메라 행의 클립 파이프라인 요약 (clip_stats + image_state). 카운터는 부팅 후 누적이라 "지금 위험"과 "예전에 한 번"을 구분한다.

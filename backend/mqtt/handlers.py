@@ -361,6 +361,7 @@ def _camera_state(sb: Client, camera_uuid: str) -> dict[str, Any] | None:
 # 직전 clip_stats(프로세스 메모리) — 델타로 스킵/실패 증가를 감지. 재시작 시 초기화되어도 무해.
 _clip_prev: dict[str, dict[str, Any]] = {}
 CLIP_UPLOAD_STUCK_SEC = 300
+CAMERA_TEMP_HIGH_C = 60   # 보드 칩 온도 경고 임계(콘솔 web/shared.js tempLevel 의 빨강과 동일)
 _uptime_prev: dict[str, int] = {}   # uuid → 마지막 uptime_sec (재부팅 감지)
 # hw_id 를 이미 채운 디바이스 uuid. 디바이스 텔레메트리는 3초 주기라 매 건 UPDATE 하면
 # 낭비이고, hw_id 는 보드가 바뀌지 않는 한 불변이므로 프로세스당 1회만 쓴다.
@@ -815,6 +816,14 @@ def _warn_clip_regression(camera_id_text: str, camera_uuid: str, clips: dict[str
     if isinstance(up_busy, (int, float)) and up_busy >= CLIP_UPLOAD_STUCK_SEC:
         logger.warning("camera %s: 업로드 %ss 째 진행 중(정체 의심) clips=%s",
                        camera_id_text, up_busy, clips)
+    # 보드 온도(clips.sys.temp, 0.3.x~): 60°C 진입만 1회 경고(15초 주기 스팸 방지). 2026-11-10 p4cam-38ffd3ef — 62~69.5°C
+    # 구간에서만 SDIO 오류·힙 손상 PANIC·deadman 14회/8h, 사육장 공기(+2~3°C)·LED 와 무관 → 카메라 설치 위치의 복사열.
+    temp = (clips.get("sys") or {}).get("temp")
+    ptemp = ((prev or {}).get("sys") or {}).get("temp")
+    if isinstance(temp, (int, float)) and temp >= CAMERA_TEMP_HIGH_C \
+            and not (isinstance(ptemp, (int, float)) and ptemp >= CAMERA_TEMP_HIGH_C):
+        logger.warning("camera %s: 보드 온도 %s°C ≥ %d (열 유발 재부팅 위험 — 설치 위치 복사열 확인) sys=%s",
+                       camera_id_text, temp, CAMERA_TEMP_HIGH_C, clips.get("sys"))
     if not prev:
         return
     for key, label in (("skip", "슬롯 없음 스킵"), ("skip_lock", "H.264 락 스킵"),
