@@ -503,14 +503,16 @@ function devRow(email, kind, obj) {
   if (!isCam) {
     // 온도 보정을 목록 줄에서 바로 보고·바꾼다 (owner 2026-11-08 — 전엔 [테스트] 를 펼쳐야 했다). [테스트] 패널의 🌡보정과 같은 명령(set_temp_offset).
     // temp_offset_c = 기기가 telemetry 로 보고한 NVS 값(공장 기본 포함) — 입력칸은 이 값 기준. temp_offset_user_c = 공장 기본을 뺀 사용자값(신 앱 화면 수치, Stage S).
+    // Stage T(2026-11-10): 🏭 base = 보드 공장 기본(set_temp_base). **보드 개체차 보정은 🏭 로** — 기기가 적용값도 같이 옮겨
+    // 사용자(앱) 값은 안 움직인다. 🌡 절대값 칸은 디버그용(여기서 바꾸면 사용자값이 같이 움직여 앱에 보임).
     const fmtOff = v => (v > 0 ? '+' : '') + Number(v).toFixed(1) + '℃';
     const off = document.createElement('span'); off.className = 'offset';
     const offIn = document.createElement('input');
     offIn.type = 'number'; offIn.step = '0.1'; offIn.placeholder = '-1.5';
-    offIn.title = '온도 보정(℃) — 측정값에 더할 값. 2℃ 높게 나오면 -2 입력. 기기 NVS 에 저장돼 LCD·telemetry 에 적용';
+    offIn.title = '디버그용: 기기 보정 절대값(℃). 여기서 바꾸면 사용자(앱) 값이 같이 움직인다 — 보드 보정은 🏭 기본 칸으로';
     const offStatus = document.createElement('small');
     const offBtn = document.createElement('button'); offBtn.className = 'sm ghost'; offBtn.textContent = '적용';
-    offBtn.title = 'set_temp_offset 명령 전송 (그 계정 대행) — 기기가 ACK 하면 상태가 바뀜';
+    offBtn.title = 'set_temp_offset 명령 전송 (그 계정 대행, 디버그) — 기기가 ACK 하면 상태가 바뀜';
     offBtn.onclick = () => {
       const v = parseFloat(offIn.value);
       if (isNaN(v)) { offStatus.className = 'bad'; offStatus.textContent = ' 숫자 입력'; return; }
@@ -526,7 +528,23 @@ function devRow(email, kind, obj) {
     } else {
       cur.textContent = '미보고'; cur.title = '구 펌웨어(2026-10-01 이전)는 현재값을 보고하지 않음. 빌드 기본 -1.5℃ 추정';
     }
-    off.append('🌡', offIn, '℃', offBtn, cur, offStatus);
+    const baseIn = document.createElement('input');
+    baseIn.type = 'number'; baseIn.step = '0.1'; baseIn.placeholder = '-1.5';
+    const baseBtn = document.createElement('button'); baseBtn.className = 'sm ghost'; baseBtn.textContent = '기본적용';
+    baseBtn.title = 'set_temp_base 명령 전송 (그 계정 대행) — 보드 공장 기본. 기기가 ACK 하면 다음 telemetry 에 반영';
+    baseBtn.onclick = () => {
+      const v = parseFloat(baseIn.value);
+      if (isNaN(v)) { offStatus.className = 'bad'; offStatus.textContent = ' 숫자 입력'; return; }
+      sendTestCmd(email, obj.id, 'set_temp_base', { base_c: v }, offStatus);
+    };
+    baseIn.onkeydown = e => { if (e.key === 'Enter') baseBtn.click(); };
+    if (obj.temp_offset_base_c != null) {
+      baseIn.value = obj.temp_offset_base_c;
+      baseIn.title = '보드 공장 기본 보정(℃, 운영자용). 2℃ 높게 읽는 보드면 -2 — 기기가 적용값도 같이 옮겨 사용자(앱) 값은 그대로';
+    } else {
+      baseIn.title = '공장 기본 미보고(Stage T 이전 펌웨어 — 서버는 -1.5 로 간주). 신 펌웨어로 OTA 뒤 설정 가능';
+    }
+    off.append('🌡', offIn, '℃', offBtn, ' 🏭', baseIn, '℃', baseBtn, cur, offStatus);
     line.appendChild(off);
   }
   if (isCam) {
@@ -646,10 +664,11 @@ async function toggleDeviceTest(email, dev, hostDiv, btn) {
       .forEach(([t,a,c]) => panel.appendChild(mk(t, c, () => sendTestCmd(email, deviceUuid, a, null, status))));
     [5000,10000].forEach(ms => panel.appendChild(mk('💦'+(ms/1000)+'초', false, () => sendTestMist(email, deviceUuid, ms, status))));
     // 온도 보정 — set_temp_offset 명령. 기기가 NVS 에 저장하고 LCD·telemetry 양쪽에 적용.
+    // Stage T(2026-11-10): 절대값 칸은 디버그용. 보드 개체차 보정은 아래 🏭기본(set_temp_base) — 사용자(앱) 값이 안 움직인다.
     const offIn = document.createElement('input');
     offIn.type = 'number'; offIn.step = '0.1'; offIn.placeholder = '-1.5';
     offIn.style.cssText = 'width:62px;font-size:11px;margin-left:8px;padding:3px 6px';
-    offIn.title = '온도 보정(℃) — 측정값에 더할 값. 2℃ 높게 나오면 -2 입력';
+    offIn.title = '디버그용: 기기 보정 절대값(℃). 여기서 바꾸면 사용자(앱) 값이 같이 움직인다 — 보드 보정은 🏭기본 으로';
     panel.appendChild(document.createTextNode(' 🌡보정'));
     panel.appendChild(offIn);
     panel.appendChild(document.createTextNode('℃ '));
@@ -657,6 +676,19 @@ async function toggleDeviceTest(email, dev, hostDiv, btn) {
       const v = parseFloat(offIn.value);
       if (isNaN(v)) { status.className = 'bad'; status.textContent = ' 보정값(숫자) 입력'; return; }
       sendTestCmd(email, deviceUuid, 'set_temp_offset', { offset_c: v }, status);
+    }));
+    const baseIn = document.createElement('input');
+    baseIn.type = 'number'; baseIn.step = '0.1'; baseIn.placeholder = '-1.5';
+    baseIn.style.cssText = 'width:62px;font-size:11px;margin-left:8px;padding:3px 6px';
+    baseIn.title = '보드 공장 기본 보정(℃, 운영자용). 2℃ 높게 읽는 보드면 -2 — 기기가 적용값도 같이 옮겨 사용자(앱) 값은 그대로';
+    if (dev.temp_offset_base_c != null) baseIn.value = dev.temp_offset_base_c;
+    panel.appendChild(document.createTextNode(' 🏭기본'));
+    panel.appendChild(baseIn);
+    panel.appendChild(document.createTextNode('℃ '));
+    panel.appendChild(mk('기본적용', false, () => {
+      const v = parseFloat(baseIn.value);
+      if (isNaN(v)) { status.className = 'bad'; status.textContent = ' 기본값(숫자) 입력'; return; }
+      sendTestCmd(email, deviceUuid, 'set_temp_base', { base_c: v }, status);
     }));
     // 현재 보정값 표시·미리채움. 펌웨어 보고값(devices.temp_offset_c, 2026-10-01+)이 진실.
     // 구 펌웨어(NULL)의 "마지막 명령값" 조회는 PostgREST 직접 SELECT 였는데 대행에선 RLS 에 막혀 뺐다(2026-10-27) — 메인 콘솔 기기 표의 🌡명령 으로 본다.
@@ -666,8 +698,9 @@ async function toggleDeviceTest(email, dev, hostDiv, btn) {
       offIn.value = dev.temp_offset_c;
       // Stage S(2026-11-05): temp_offset_user_c = 기기값 − 공장 기본(서버만 앎). 신 앱이 보는 값. 콘솔 입력칸은 여전히 기기값(offset_c).
       const userTxt = dev.temp_offset_user_c != null ? ' · 사용자 ' + fmt(dev.temp_offset_user_c) : '';
-      cur.textContent = '(기기 보고: ' + fmt(dev.temp_offset_c) + userTxt + ')';
-      cur.title = '기기가 telemetry 로 보고한 현재 NVS 보정값(입력칸은 이 기기값 기준). "사용자" 는 공장 기본을 뺀 값 — 신 앱 화면에 보이는 수치';
+      const baseTxt = dev.temp_offset_base_c != null ? ' · 기본 ' + fmt(dev.temp_offset_base_c) : ' · 기본 미보고(-1.5 간주)';
+      cur.textContent = '(기기 보고: ' + fmt(dev.temp_offset_c) + userTxt + baseTxt + ')';
+      cur.title = '기기가 telemetry 로 보고한 현재 NVS 보정 절대값(🌡 입력칸 기준). "사용자" = 절대값 − 보드 공장 기본(신 앱 화면 수치). "기본" = 보드가 보고한 공장 기본(Stage T 펌웨어)';
     } else {
       cur.textContent = '(현재값 미보고 — 구 펌웨어, 빌드 기본 -1.5℃ 추정)';
       cur.title = '2026-10-01+ 펌웨어만 현재 보정값을 보고. 보드 교체·flash 후엔 빌드 기본(-1.5℃)으로 돌아갔을 수 있음';

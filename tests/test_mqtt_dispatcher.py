@@ -1075,3 +1075,25 @@ def test_temp_offset_invalid_payload_rejected_before_publish(
     """두 키 동시·숫자 아님 → rejected/invalid_payload (앱은 REST 만 쓰므로 방어용)."""
     updates = _dispatch_temp_offset_expect_reject(fake_sb, fake_bridge, monkeypatch, payload)
     assert updates == [{"status": "rejected", "result": "invalid_payload"}]
+
+
+# ---------- 보드별 공장 기본 base (Stage T, 2026-11-10) ----------
+
+
+def test_temp_offset_sums_with_device_base_from_cache(
+    fake_sb: MagicMock, fake_bridge: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """기기가 base -3 을 보고한 보드: user_offset_c=+1.0 → 기기엔 offset_c=-2.0 (env -1.5 가 아니라)."""
+    from backend import temp_offset
+    monkeypatch.delenv("TEMP_OFFSET_BASE_C", raising=False)
+    temp_offset.remember_base(DEVICE_UUID, -3.0)
+    out = _dispatch_with_payload(fake_sb, fake_bridge, "set_temp_offset", {"user_offset_c": 1.0})
+    assert out["offset_c"] == -2.0
+    assert "user_offset_c" not in out
+
+
+def test_set_temp_base_payload_passes_through_unchanged(fake_sb: MagicMock, fake_bridge: MagicMock) -> None:
+    """set_temp_base 는 서버 변환 없음 — base_c 그대로 기기로. 적용값 이동은 기기 안에서(원자적)."""
+    out = _dispatch_with_payload(fake_sb, fake_bridge, "set_temp_base", {"base_c": -3.0})
+    assert out["action"] == "set_temp_base"
+    assert out["base_c"] == -3.0

@@ -76,7 +76,7 @@ class CommandStatusOut(CommandOut):
 # heater_* 는 dispatcher 가 unsupported_action 으로 거절하지만 콘솔이 그 거절을 보여 주는 용도로 둔다.
 GENERIC_ACTIONS: frozenset[str] = frozenset({
     "relay_toggle", "fan_toggle", "fan2_toggle", "led_toggle",
-    "heater_toggle", "heater_clear", "set_temp_offset",
+    "heater_toggle", "heater_clear", "set_temp_offset", temp_offset.BASE_ACTION,
 })
 TEMP_OFFSET_ACTION = "set_temp_offset"
 TEMP_OFFSET_LIMIT_C = temp_offset.DEVICE_LIMIT_C   # 펌웨어 허용 범위 ±10 (docs/MQTT.md)
@@ -84,22 +84,32 @@ _BAD_ACTION = {400: {"description": "action 화이트리스트 밖 / payload 형
 
 
 class GenericCommandIn(BaseModel):
-    action: str = Field(..., description="relay_toggle | fan_toggle | fan2_toggle | led_toggle | heater_toggle | heater_clear | set_temp_offset")
+    action: str = Field(..., description="relay_toggle | fan_toggle | fan2_toggle | led_toggle | heater_toggle | heater_clear | set_temp_offset | set_temp_base")
     payload: dict[str, Any] | None = Field(
         None,
-        description="set_temp_offset 만: {user_offset_c: 사용자 보정값(신 앱, 서버가 공장 기본을 더해 기기로)} 또는 "
-                    "{offset_c: -10.0~10.0(기기 절대값, 구 앱·콘솔)}. 둘 중 하나만. 나머지 action 은 비움",
+        description="set_temp_offset 만: {user_offset_c: 사용자 보정값(신 앱, 서버가 그 보드의 공장 기본을 더해 기기로)} 또는 "
+                    "{offset_c: -10.0~10.0(기기 절대값, 구 앱·콘솔)}. 둘 중 하나만. "
+                    "set_temp_base(운영자, Stage T): {base_c: -10.0~10.0 보드 공장 기본 — 기기가 적용값도 같이 옮겨 사용자값 불변}. "
+                    "나머지 action 은 비움",
     )
 
 
-def _validate_generic(body: GenericCommandIn) -> dict[str, Any] | None:
-    """허용 action·payload 만 통과. 돌려주는 값이 INSERT 될 payload."""
+def _validate_generic(body: GenericCommandIn, device_uuid: str | None = None) -> dict[str, Any] | None:
+    """허용 action·payload 만 통과. 돌려주는 값이 INSERT 될 payload.
+
+    device_uuid 는 set_temp_offset 합산 범위 검증에 그 보드의 base 를 쓰기 위한 것(Stage T) — 안 넘기면 env 기본으로
+    판정해 dispatcher(보드별 base)와 어긋날 수 있다."""
     if body.action not in GENERIC_ACTIONS:
         raise InvalidCommand(f"허용되지 않은 action: {body.action}")
+    if body.action == temp_offset.BASE_ACTION:
+        try:
+            return {temp_offset.BASE_KEY: temp_offset.resolve_base_payload(body.payload)}
+        except temp_offset.OffsetError as exc:
+            raise InvalidCommand(str(exc)) from exc
     if body.action == TEMP_OFFSET_ACTION:
         # 신 앱(Stage S): user_offset_c — 숫자·합산 범위 검증은 dispatcher 와 같은 함수로. DB 에는 사용자값만.
         try:
-            dev = temp_offset.resolve_device_offset(body.payload)
+            dev = temp_offset.resolve_device_offset(body.payload, device_uuid)
         except temp_offset.OffsetError as exc:
             raise InvalidCommand(str(exc)) from exc
         if dev is not None:
@@ -131,7 +141,7 @@ def generic_command(
     sb = get_supabase_client()
     require_active_device(sb, device_uuid, user_id)
     try:
-        payload = _validate_generic(body)
+        payload = _validate_generic(body, device_uuid)
     except InvalidCommand as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     inserted = insert_pending_command(

@@ -66,6 +66,7 @@
   "reset": "SW:mqtt_reboot",
   "wifi_rssi": -40,
   "temp_offset_c": -1.5,
+  "temp_offset_base_c": -1.5,
   "lcd": { "on": false, "override_until": "2026-11-04T20:00:00+09:00", "image": "3f9a1c2e" }
 }
 ```
@@ -99,10 +100,14 @@
   ±10 밖·숫자 아님은 무시. `set_temp_offset` 이력(commands)은 "보냈다" 일 뿐 보드 교체·flash erase 뒤엔 NVS 와
   어긋나므로 이 보고값만 진실로 친다. 콘솔은 온도 셀에 `🌡보정 -1.5` 로 표시하고, 구 펌웨어(NULL)는 commands 의
   마지막 `set_temp_offset` 값을 `🌡명령 -2.0 2026-09-20` 처럼 구분해 보여준다.
-- `devices.temp_offset_user_c` (2026-11-05+, Stage S): 같은 보고값에서 서버가 **공장 기본**(env `TEMP_OFFSET_BASE_C`,
-  -1.5 = 펌웨어 빌드 기본)을 뺀 **사용자 보정값**(0.1 단위). `temp_offset_c` 와 **같은 UPDATE** 로 쌍으로 쓴다(앱이
-  Realtime 한 이벤트에서 둘을 같이 본다). 신 앱이 읽는 값 — 공장 기본은 앱에 노출하지 않는다. 미보고(구 펌웨어)는 둘 다 NULL.
-  기기·MQTT 는 바뀐 것 없음. 규칙: [specs/stage-s-temp-offset-base.md](../specs/stage-s-temp-offset-base.md).
+- `devices.temp_offset_user_c` (2026-11-05+, Stage S): 같은 보고값에서 서버가 **공장 기본**을 뺀 **사용자 보정값**(0.1 단위).
+  `temp_offset_c` 와 **같은 UPDATE** 로 쌍으로 쓴다(앱이 Realtime 한 이벤트에서 둘을 같이 본다). 신 앱이 읽는 값 — 공장
+  기본은 앱에 노출하지 않는다. 미보고(구 펌웨어)는 둘 다 NULL. 규칙: [specs/stage-s-temp-offset-base.md](../specs/stage-s-temp-offset-base.md).
+- `temp_offset_base_c` (Stage T, 2026-11-10+ 펌웨어): 그 보드의 **공장 기본** 보정(NVS `terra/t_base`, 없으면 빌드 기본
+  `CONFIG_APP_TEMP_OFFSET_MDEG` = -1.5). 서버는 `devices.temp_offset_base_c` 에 저장하고 사용자값을 `temp_offset_c − 이 값`
+  으로 계산한다(세 컬럼 한 UPDATE). 키가 없으면(구 펌웨어) 서버는 `devices.temp_offset_base_c`(이전 보고) → env
+  `TEMP_OFFSET_BASE_C`(-1.5) 순으로 폴백 — Stage S 와 같은 동작. ±10 밖·숫자 아님은 무시. 운영자가 `set_temp_base` 로
+  보드마다 다르게 둘 수 있다(-2, -3 …). 규칙: [specs/stage-t-temp-offset-base-per-device.md](../specs/stage-t-temp-offset-base-per-device.md).
 
 카메라 워커 telemetry (15초 주기, heartbeat 성격 — 서버는 `telemetry` 행을 INSERT 하지 않음):
 
@@ -182,9 +187,15 @@
     범위 밖/숫자 아님은 `result="bad_request"`. 구 펌웨어는 `unknown_action`.
     - **기기는 언제나 절대값 `offset_c` 하나만 받는다.** 서버 `commands.payload` 에는 두 형태가 있다(Stage S, 2026-11-05):
       구 앱·콘솔의 `offset_c`(합산값, 그대로 발행) / 신 앱의 `user_offset_c`(사용자값) — dispatcher 가 **발행 직전**
-      `offset_c = user_offset_c + 공장 기본(TEMP_OFFSET_BASE_C, -1.5)` 로 바꿔 보내고 `user_offset_c` 는 기기로 안 나간다.
+      `offset_c = user_offset_c + 그 보드의 공장 기본` 으로 바꿔 보내고 `user_offset_c` 는 기기로 안 나간다. 공장 기본은
+      `devices.temp_offset_base_c`(기기 보고, Stage T) → 없으면 env `TEMP_OFFSET_BASE_C`(-1.5).
       두 키 동시·숫자 아님 → 발행 전 `rejected / invalid_payload`, 합산 결과 ±10 밖 → `rejected / offset_out_of_range`
       (status·result 한 UPDATE). DB 행은 보낸 값 그대로(사용자값)다.
+  - `set_temp_base` (`base_c`: -10.0~10.0, Stage T 2026-11-10+) — **보드 공장 기본** 보정. 운영자용(콘솔 🏭). 기기는
+    NVS `terra/t_base` 에 저장하면서 **적용값도 같이 옮긴다**: `t_off += 새 base − 옛 base` (사용자값 = t_off − t_base 가
+    불변). 옮긴 적용값이 ±10 을 넘으면 둘 다 안 바꾸고 `result="offset_out_of_range"`. 숫자 아님·범위 밖 `bad_request`,
+    구 펌웨어 `unknown_action`. ack `state="CALIB"`. 서버는 ack ok 때 `devices.temp_offset_base_c` 를 바로 확정하고(브리지
+    캐시도) 다음 telemetry 가 세 값을 덮는다. 서버 변환 없음 — payload 그대로 발행.
   - `reboot` (2026-09-28+) — 원격 재부팅. `POST /devices/{id}/reboot` 가 `ttl_sec` 60 으로 큐잉.
     펌웨어는 ack `state="REBOOT"` 를 먼저 보내고 1.5초 뒤 재부팅(액추에이터는 부팅 초기 블록이 전부 OFF).
     다음 telemetry 의 `reset` 이 `SW:mqtt_reboot`. 구 펌웨어는 `unknown_action`.
@@ -355,6 +366,7 @@ topic read  esp32/picam-b2c3d4e5/command
 | 2026-10-01 | 0.6.2 | IoT telemetry `temp_offset_c`(지금 적용 중인 온도 보정) → `devices.temp_offset_c`. 콘솔 온도 셀·보정 입력칸에 현재값 표시, 구 펌웨어는 commands 마지막 `set_temp_offset` 값으로 폴백 |
 | 2026-10-06 | 0.7.0 | **Terra Hub**(`p4hub-`): 카메라+기기 통합 보드. 한 계정·같은 토픽, payload 모양(`dht22_a`)으로 기기/카메라 경로 분기, ack 는 commands 매칭 여부로 분기. 기기 ack 에 `state`·`ts` 포함(terra-iot 와 동일) |
 | 2026-10-07 | 0.7.1 | **Stage J OTA**: `ota_prepare` / `ota_apply` action(카메라·기기 공통), §3-b `ota` 블록 ack, IoT telemetry `fw` → `devices.firmware_ver`, `capabilities.ota` 게이트 |
+| 2026-11-10 | 0.8.3 | **Stage T 보드별 공장 기본**: IoT telemetry `temp_offset_base_c`(NVS `terra/t_base`) → `devices.temp_offset_base_c`, 사용자값은 `temp_offset_c − 보드 base`(세 컬럼 한 UPDATE). 새 action `set_temp_base {base_c}`(운영자, 기기가 적용값도 같이 옮김). 미보고 기기는 env -1.5 폴백(Stage S 동작) |
 | 2026-11-05 | 0.8.2 | **Stage S 온도 보정 분리**: `commands.payload.user_offset_c`(사용자값) → dispatcher 가 발행 직전 공장 기본(`TEMP_OFFSET_BASE_C` -1.5)을 더해 `offset_c` 로. telemetry `temp_offset_c` → `devices.temp_offset_user_c`(= 기기값 − 공장 기본) 쌍 기록. 기기·MQTT 는 변경 없음, 구 `offset_c` 경로 그대로 |
 | 2026-11-04 | 0.8.1 | IoT telemetry `lcd` 블록 `{on, override_until, image}`(Stage N-4, `capabilities.lcd_override` 펌웨어) → `devices.lcd_screen_on`/`lcd_override_until`, 사진 없음 보고 시 `lcd_image_key` 정리 |
 | 2026-10-28 | 0.8.0 | **Stage N LCD**: `lcd_power` / `lcd_quiet(_clear)` / `lcd_saver` / `lcd_image(_clear)` action, `capabilities.lcd_saver` 게이트. `lcd_image` 는 HTTP 다운로드(기기 토큰) + 지연 ack |
