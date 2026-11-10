@@ -569,6 +569,9 @@ function devRow(email, kind, obj) {
     act.appendChild(mkBtn('▶ 라이브', '라이브 대시보드에서 이 카메라 보기', () => { location.href = 'live.html?cam=' + encodeURIComponent(obj.id); }));
     act.appendChild(mkBtn('재부팅', 'MQTT reboot 명령 1회 발행 — 신 펌웨어(≥0.2.0)만 반응, 구 펌웨어는 rejected 로그만',
       () => rebootRegisteredCamera(email, obj.id, ident)));
+  } else {
+    act.appendChild(mkBtn('재부팅', 'MQTT reboot 명령 1회 큐잉 — 2026-09-28+ 펌웨어만 반응, 구 펌웨어는 unknown_action',
+      () => rebootRegisteredDevice(email, obj.id, ident)));
   }
   const otaOk = !!(obj.capabilities && obj.capabilities.ota);
   const otaB = mkBtn('OTA', (otaOk ? 'OTA (Stage J) — 그 계정 JWT 로 prepare → apply' : '구 펌웨어(capabilities.ota 미보고) — 서버 게이트가 막음. 케이블 리플래시 필요')
@@ -607,6 +610,19 @@ async function rebootRegisteredCamera(email, id, ident) {
     if (!r.ok) { toast('reboot 실패 ' + r.status + ': ' + (typeof r.body === 'string' ? r.body : (r.body.detail || JSON.stringify(r.body))).slice(0, 80), 'bad'); return; }
     toast(r.body.published ? `${ident} reboot 발행 · msg_id ${r.body.msg_id}` : 'reboot 발행 실패(브로커) — 잠시 후 재시도',
           r.body.published ? 'good' : 'bad');
+  } catch (e) {
+    toast('❌ ' + (e.message || e), 'bad');
+  }
+}
+
+// 기기 재부팅 — POST /devices/{id}/reboot (대행, commands 큐잉). 카메라와 달리 commands 테이블을 거쳐
+// ack/no_ack 가 남고, 다음 telemetry 의 sys_state.reset = "SW:mqtt_reboot" 로 확인한다 (index.html rebootDevice 와 같은 계약).
+async function rebootRegisteredDevice(email, id, ident) {
+  if (!confirm(`${ident} 재부팅?\n약 10초간 꺼졌다 켜짐 (액추에이터 전부 OFF). 구 펌웨어는 unknown_action.`)) return;
+  try {
+    const r = await regFetch(email, '/devices/' + id + '/reboot', { method: 'POST' });
+    if (r.status !== 201) { toast('reboot 실패 ' + r.status + ': ' + (typeof r.body === 'string' ? r.body : (r.body.detail || JSON.stringify(r.body))).slice(0, 80), 'bad'); return; }
+    toast(`${ident} reboot 큐잉 · command ${r.body.id}`, 'good');
   } catch (e) {
     toast('❌ ' + (e.message || e), 'bad');
   }
