@@ -105,7 +105,9 @@ telemetry: { "temp_offset_c": -2.0, "temp_offset_base_c": -3.0, ... }
 - [x] 테스트 통과 — 1183 (신규 17: temp_offset 6, handlers 7, API 2, dispatcher 2)
 - [x] 배포 순서 1~2: 마이그레이션 → 서버 배포(6b60997) → 구 펌웨어 기기 Stage S 동작 확인 (2026-11-10)
 - [x] 실기: 배포 순서 3~5 통과 (2026-11-10, terra-cb7cf18a) — OTA 1.2.2→1.3.0 verified, telemetry base -1.5·사용자 0.0 유지 → `set_temp_base -3` → abs -3/base -3/사용자 0 → `user_offset_c +1` → abs -2/사용자 +1 → `set_temp_base -2` → abs -1/base -2/**사용자 +1 유지** → 복원(사용자 0, base -1.5) 전부 ACK ok·기대값 일치
-- [ ] 전개: 나머지 nano 보드 OTA 1.3.0, supermini 트리 반영, 앱팀에 "사용자 범위 보드별" 통지
+- [x] 전개 1차(2026-11-10 06:35 UTC): 3차 베타 온라인 6대 OTA 1.3.0 verified — terra-d2d683d3(이은빈)·9f77c079(박지현)·7511d220(박수정, 사용자 -1.0 유지 확인)·b5b3f646(김유민)·b897e3fe(구애지)·7b3036ce(유소연). 오프라인 1대 terra-f70e8e92(이정욱) 미적용. 주수현·박찬영·양지영 기기 없음
+- [x] 앱팀 통지 문서 `docs/APP_TEMP_OFFSET_2026-11-10.md` (2026-11-10)
+- [ ] 전개 2차: 이정욱 기기 온라인 시 OTA, 나머지 nano 보드(2차 베타·tester01), supermini 트리 반영, SHT 별도 빌드(terra-23b8975f) 별도
 - [x] 문서: MQTT/DATABASE/ENV/API 갱신 (2026-11-10)
 
 ## 학습 노트
