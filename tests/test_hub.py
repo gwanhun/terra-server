@@ -48,9 +48,9 @@ def _hub_pair_tables(fake_sb: MagicMock, *, existing_cam: dict | None = None) ->
     def _table(name: str) -> MagicMock:
         t = MagicMock()
         if name == "cameras":
-            # hw_id 조회 (select→eq→eq→is_→limit)
-            t.select.return_value.eq.return_value.eq.return_value.is_.return_value \
-                .limit.return_value.execute.return_value.data = [existing_cam] if existing_cam else []
+            # hw_id 조회 (select→eq→eq→order→execute, Stage U 부터 활성·해제 행 모두)
+            t.select.return_value.eq.return_value.eq.return_value.order.return_value \
+                .execute.return_value.data = [existing_cam] if existing_cam else []
 
             def _ins(payload):
                 cap["cameras_insert"].append(payload)
@@ -170,6 +170,33 @@ def test_pair_hub_on_board_registered_as_plain_camera_renames_to_p4hub(
     assert cam_patch["camera_id"] == body["camera_id"]
     # devices 행은 새 p4hub- 텍스트로 생성 → 브리지 _resolve_both 가 둘 다 찾는다
     assert cap["devices_insert"][0]["device_id"] == body["camera_id"]
+
+
+def test_pair_hub_revives_unlinked_camera_and_linked_device(app_client: TestClient, fake_sb: MagicMock) -> None:
+    """[Stage U] 해제된 허브를 같은 계정이 재페어링: cameras 행 되살림 + 짝 devices 행도 unlinked_at 해제.
+    한쪽만 활성이면 앱에 카메라만 보이고 센서 차트·예약이 빠진다."""
+    cap = _hub_pair_tables(fake_sb, existing_cam={
+        "id": HUB_CAM_UUID, "camera_id": HUB_TEXT, "device_id": HUB_DEV_UUID,
+        "unlinked_at": "2026-11-01T00:00:00Z", "created_at": "2026-10-01T00:00:00Z",
+    })
+
+    res = app_client.post("/cameras/pair", json={
+        "name": "다시 등록한 허브", "model": "esp32-p4-hub", "hw_id": "30EDA0E22E80",
+    })
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["reused"] is True and body["revived"] is True
+    assert body["camera_id"] == HUB_TEXT
+
+    assert cap["cameras_insert"] == [] and cap["devices_insert"] == []
+    cam_patch = cap["cameras_update"][0]
+    assert cam_patch["unlinked_at"] is None and cam_patch["name"] == "다시 등록한 허브"
+    dev_patch = cap["devices_update"][0]
+    assert dev_patch["unlinked_at"] is None
+    assert dev_patch["unlink_request_id"] is None
+    assert dev_patch["name"] == "다시 등록한 허브"
+    assert dev_patch["enclosure_id"] is None
+    assert dev_patch["token_hash"].startswith("$2")
 
 
 def test_pair_plain_camera_does_not_touch_devices(app_client: TestClient, fake_sb: MagicMock) -> None:

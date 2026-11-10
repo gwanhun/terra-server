@@ -112,6 +112,14 @@ class CameraPairResponse(BaseModel):
             "camera_id 는 종전 값 그대로이고 camera_token 만 새로 발급됐다."
         ),
     )
+    revived: bool = Field(
+        False,
+        description=(
+            "true 면 재사용한 행이 **해제됐던** 행이다(Stage U, 2026-11-10). unlinked_at 을 지우고 "
+            "이름·사육장·회전 설정을 요청값으로 초기화했다. 과거 영상·clip_stats 는 그대로 남는다. "
+            "reused 가 true 일 때만 true."
+        ),
+    )
     id: str = Field(..., description="cameras.id (UUID)")
     camera_id: str = Field(
         ..., description="MQTT client_id 겸 username. 모델별 접두사 (p4cam-/p4hub-/k230cam-/picam-)"
@@ -265,30 +273,40 @@ def _verify_enclosure_owner(sb, enclosure_id: str, user_id: str) -> None:
         raise HTTPException(status_code=400, detail="enclosure_id 가 본인 사육장이 아님.")
 
 
-def _find_by_hw_id(sb, user_id: str, hw_id: str | None) -> dict[str, Any] | None:
-    """같은 소유자의 같은 물리 보드 카메라 행을 찾는다. 없으면 None.
+def _find_by_hw_id(sb, user_id: str, hw_id: str | None) -> tuple[dict[str, Any] | None, bool]:
+    """같은 소유자의 같은 물리 보드 카메라 행을 찾는다. `(행, revived)`. 없으면 `(None, False)`.
 
     hw_id 는 efuse MAC 기반이라 재부팅·NVS 삭제·펌웨어 재설치에도 불변이다.
-    unlinked_at IS NULL 로 제한해 해제된 과거 행은 되살리지 않는다(사용자가 의도적으로
-    해제한 카메라를 페어링이 몰래 복구하면 안 된다 → 그 경우는 새 행이 맞다).
+    우선순위: 활성 행(unlinked_at IS NULL) → 없으면 **가장 최근 해제 행**(revived=True).
+
+    [2026-11-10 Stage U] 예전엔 해제 행을 일부러 되살리지 않았다("사용자가 해제한 카메라를
+    페어링이 몰래 복구하면 안 된다"). 그런데 같은 계정이 같은 보드를 다시 등록하는 건 사용자
+    의도고, 그동안 해제 행이 계정당 수십 개씩 쌓였다(169행 중 132행 해제). 그래서 되살리되
+    이름·사육장·회전은 요청값으로 초기화한다(호출자). 다른 계정의 행은 여기서 보지 않는다 —
+    hw_id 는 검증 없는 본문 값이라 남의 카메라 상태를 바꾸는 근거가 못 된다(offline_monitor 담당).
     구 펌웨어(hw_id 없음)는 항상 None → 기존 동작 그대로 새 행 생성.
     """
     if not hw_id:
-        return None
+        return None, False
     res = (
         sb.table("cameras")
-        .select("id, camera_id, device_id")
+        .select("id, camera_id, device_id, unlinked_at, created_at")
         .eq("owner_id", user_id)
         .eq("hw_id", hw_id)
-        .is_("unlinked_at", "null")
-        .limit(1)
+        .order("created_at", desc=True)
         .execute()
     )
-    rows = res.data or []
-    return rows[0] if rows else None
+    rows = list(res.data or [])
+    active = [r for r in rows if not r.get("unlinked_at")]
+    if active:
+        return active[0], False
+    if rows:
+        return rows[0], True      # created_at desc → 가장 최근 해제 행
+    return None, False
 
 def _ensure_hub_device(
     sb, user_id: str, body: CameraPairRequest, cam_row: dict[str, Any], token_hashed: str,
+    *, revived: bool = False,
 ) -> str | None:
     """Terra Hub: cameras 행의 짝 devices 행을 만들거나 갱신하고 그 UUID 를 돌려준다.
 
@@ -311,6 +329,13 @@ def _ensure_hub_device(
     }
     if body.enclosure_id:
         device_fields["enclosure_id"] = body.enclosure_id
+    if revived:
+        # cameras 행을 해제 상태에서 되살렸으면(Stage U) 짝 devices 행도 같이 되살린다 — 한 보드 =
+        # 두 행인데 한쪽만 활성이면 앱에 카메라만 보이고 센서 차트·예약이 빠진다.
+        device_fields.update({
+            "unlinked_at": None, "unlink_request_id": None,
+            "name": body.name, "enclosure_id": body.enclosure_id,
+        })
 
     linked = cam_row.get("device_id")
     if linked:
@@ -379,7 +404,7 @@ def pair_camera(
 
     # 펌웨어가 보고한 하드웨어 ID 와 같은 보드가 이미 등록돼 있으면 새 행을 만들지 않는다.
     # (재페어링 = WiFi 변경일 뿐인데 매번 새 카메라가 생기던 문제. 2026-09-21)
-    existing = _find_by_hw_id(sb, user_id, body.hw_id)
+    existing, revived = _find_by_hw_id(sb, user_id, body.hw_id)
 
     # 기기가 보고하는 값만 갱신한다. 사용자가 서버/앱에서 바꾼 설정(rotate_180 등)이나
     # 미지정 enclosure_id 를 페어링이 덮어쓰지 않게 한다.
@@ -399,6 +424,16 @@ def pair_camera(
         patch: dict[str, Any] = {"token_hash": token_hashed, **device_fields}
         if body.enclosure_id:          # 미지정이면 기존 사육장 연결을 유지
             patch["enclosure_id"] = body.enclosure_id
+        if revived:
+            # 해제 행 되살리기(Stage U, U2): 해제는 "이 카메라를 그만 쓴다" 였으니 사용자 설정은
+            # 새 등록처럼 요청값으로 돌린다(이름·사육장·회전). 영상·clip_stats·camera_id 는 유지 —
+            # 과거 영상이 다시 보이는 것이 되살리기의 목적이다. superseded 표식도 지운다.
+            patch.update({
+                "unlinked_at": None, "unlink_request_id": None,
+                "name": body.name, "enclosure_id": body.enclosure_id, "rotate_180": False,
+                "superseded_at": None, "superseded_by": None,
+                "supersede_suspect_at": None, "mqtt_revoked_at": None,
+            })
         # 순수 카메라(p4cam-)로 등록됐던 보드를 허브 펌웨어로 리플래시한 경우: 같은 hw_id 라 행은
         # 재사용하되 camera_id 를 p4hub- 로 바꾼다. 브리지가 접두사로 조회 테이블을 고르므로
         # p4cam- 그대로면 센서 telemetry 가 cameras 경로로 빠져 조용히 버려진다. 펌웨어는 응답의
@@ -422,8 +457,8 @@ def pair_camera(
             registry.unregister_device(old_camera_id)
             logger.info("pair: 허브 전환 camera_id %s → %s (옛 MQTT 계정 해지)", old_camera_id, row["camera_id"])
         logger.info(
-            "pair: hw_id=%s 기존 카메라 재사용 camera_id=%s (새 행 미생성)",
-            body.hw_id, row["camera_id"],
+            "pair: hw_id=%s 기존 카메라 재사용 camera_id=%s (새 행 미생성%s)",
+            body.hw_id, row["camera_id"], ", 해제 행 되살림" if revived else "",
         )
     else:
         # camera_id 접두사 — 모델별 구분 (운영 디버깅 편의). 브리지 _resolve_both 가 이 접두사로
@@ -451,7 +486,7 @@ def pair_camera(
     if body.model == HUB_MODEL:
         if existing and "device_id" not in row:
             row["device_id"] = existing.get("device_id")
-        device_uuid = _ensure_hub_device(sb, user_id, body, row, token_hashed)
+        device_uuid = _ensure_hub_device(sb, user_id, body, row, token_hashed, revived=revived)
 
     # Mosquitto 자동 등록 (실패해도 페어링 성공 처리). 허브도 계정은 하나(camera_id).
     registry.register_device(row["camera_id"], camera_token)
@@ -461,6 +496,7 @@ def pair_camera(
         camera_id=row["camera_id"],
         camera_token=camera_token,
         reused=bool(existing),
+        revived=revived,
         device_uuid=device_uuid,
         **_mqtt_connect_info(),
     )
@@ -482,6 +518,7 @@ def list_cameras(
         .select(_CAMERA_OUT_COLUMNS)
         .eq("owner_id", user_id)
         .is_("unlinked_at", "null")            # 소프트 해제된 카메라는 제외 (앱 §1-3)
+        .is_("superseded_at", "null")          # 다른 계정이 가져간 보드의 옛 행 제외 (Stage U, U5)
         .order("created_at", desc=True)
         .execute()
     )

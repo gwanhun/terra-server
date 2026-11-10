@@ -17,7 +17,7 @@
 | `telemetry_1m` | IoT | 분 단위 다운샘플 | (device_id, bucket) |
 | `commands` | IoT | 명령 이력. `source` CHECK: `manual`/`schedule`/`timer`/`guard`/`restore`/`auto`(`auto` = 브리지 자동 환기·분무, `issued_by`=기기 소유자, `reason` 예 `auto_vent:humid_high` — Stage R 2026-11-05) | UUID, device_id FK |
 | `alerts` | IoT | 알림 이력 | UUID, device_id FK |
-| `cameras` | 영상 | 카메라 워커 등록 (ESP32-P4 / RPi). `rotate_180`(180° 회전 설정, 진실) + `capabilities`(펌웨어 보고, NULL=구 펌웨어) — 2026-09-08. `device_id`(Terra Hub 짝 devices 행, NULL=순수 카메라) — 2026-10-06 | UUID, owner_id + enclosure_id FK |
+| `cameras` | 영상 | 카메라 워커 등록 (ESP32-P4 / RPi). `rotate_180`(180° 회전 설정, 진실) + `capabilities`(펌웨어 보고, NULL=구 펌웨어) — 2026-09-08. `device_id`(Terra Hub 짝 devices 행, NULL=순수 카메라) — 2026-10-06. `superseded_at`/`superseded_by`/`supersede_suspect_at`/`mqtt_revoked_at`(다른 계정이 같은 hw_id 보드를 등록하고 이 행이 24시간 이상 오프라인 → 브리지가 목록 숨김, 보드 재접속 시 자동 복구, 30일 뒤 MQTT 해지) — 2026-11-10 Stage U. 같은 계정 재페어링은 가장 최근 해제 행을 되살린다(`unlinked_at=NULL`, 이름·사육장·회전 초기화) | UUID, owner_id + enclosure_id FK, UNIQUE(owner_id, hw_id) WHERE 활성 |
 | `motion_clips` | 영상 | 모션 영상 메타 (R2 키, H.264 mp4) | UUID, camera_id FK |
 | `live_recordings` | 영상 | 앱이 라이브 화면에서 직접 녹화한 영상(≤120초 mp4 + jpg, 2026-10-21 60→120초) — 2026-10-20. `status` pending→ready, `client_id`(앱 멱등 키), `r2_key`/`thumbnail_key`(`terra-clips/recordings/{user_id}/{camera_id}/{id}.mp4·.jpg`), `has_thumbnail`(생성 컬럼 = `thumbnail_key is not null`, INSERT 금지). 계정당 50개(pending+ready), 24시간 넘은 pending 은 서버 스레드가 행·객체 삭제. 보관 무기한 | UUID, user_id FK(auth.users, cascade), camera_id FK(cameras, **on delete set null**), UNIQUE(user_id, client_id) |
 | `firmware_releases` | OTA | 펌웨어 빌드 1건(`target` camera_p4/device_nano/hub_p4(2026-10-14, 허브 model=esp32-p4-hub 전용), `version`=esp_app_desc, R2 키, sha256). `scripts/upload_firmware.py` 가 INSERT — 2026-10-07. `retired_at`/`retired_reason`(2026-10-08) = 퇴역(soft-delete): 목록·OTA 대상·다운로드 제외, `ota_jobs` FK 이력 보존 | UUID, UNIQUE(target, version) |
@@ -104,9 +104,10 @@ auth.users (Supabase Auth)
 
 ## 영상 보관 정책
 
-- **`motion_clips` 메타**: 영구 보관 (R2 키만 저장, 가벼움)
+- **`motion_clips` 메타**: 원칙은 보존이지만 **지워지는 경로가 있다** — DELETE /clips(행 하드 삭제, 앱은 현재 미호출), DELETE /cameras(cascade). 앱의 "삭제" 는 `user_hidden_clips` 숨김이고, 라벨링 웹·보관 정리(petcam-lab)는 행을 남기고 격리 원장에 기록한다(2026-11-09 조사).
 - **R2 영상 파일**: 사실상 무기한 보관 — lifecycle 규칙 **없음**(2026-11-04 확정, docs/ENV.md 권장 셋업 5 참조).
-  삭제는 DELETE /clips(영상+썸네일 먼저, 실패 시 502) · DELETE /cameras(응답 뒤 일괄 삭제) 가 직접 한다.
+  terra-server 쪽 삭제는 DELETE /clips(영상+썸네일 먼저, 실패 시 502) · DELETE /cameras(응답 뒤 일괄 삭제). **petcam-lab 스크립트(보관 정리·게코 없음 일괄 등)도 원본을 지운다**(media_deleted 원장, 2026-11-09 기준 17,172건).
+  해제(unlink)된 카메라의 영상은 사용자가 보거나 지울 수 없는데 R2 에 남는다(48,165개) — 계정 단위 영상 조회 Stage 에서 다룸.
   고아(R2 에만 있는 mp4)는 `scripts/reconcile_r2_orphans.py` cron 이 등록으로 흡수(docs/OPERATIONS.md 1-2).
 - 사용자가 보존하고 싶은 클립은 별도 "favorite" 플래그 추가 (Stage F3)
 - **`live_recordings`**(2026-10-20): 무기한(사용자가 지울 때까지). R2 경로 `terra-clips/recordings/` 는 30일 lifecycle 대상이 **아니어야** 한다(배포 전 대시보드 확인 — 버킷을 petcam-lab 과 공유)
