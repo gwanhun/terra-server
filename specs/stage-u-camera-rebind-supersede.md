@@ -1,6 +1,6 @@
 # Stage U — 카메라 재등록 행 재사용 + 교차 계정 superseded
 
-> 상태: ✅ **서버 배포 완료 2026-11-10 03:34 UTC (main 78427c1, PR #60)**. 마이그레이션 적용·기록 완료. 첫 supersede 스캔: 10행 숨김·충돌 0·에러 0. 후속 PR #61(활성 행 재페어링도 superseded·mqtt_revoked_at 되돌림) **머지·재배포 완료 2026-11-10 (main 83654fc)**. 남은 것: 실기(해제→재페어링 revived)·앱팀 통지·백승수 완료 보고. 서버만 수정, 펌웨어·앱 변경 없음(앱은 §앱팀 통지 1건). 구현: 이관훈(Claude).
+> 상태: ✅ **서버 배포 완료 2026-11-10 03:34 UTC (main 78427c1, PR #60)**. 마이그레이션 적용·기록 완료. 첫 supersede 스캔: 10행 숨김·충돌 0·에러 0. 후속 PR #61(활성 행 재페어링도 superseded·mqtt_revoked_at 되돌림) **머지·재배포 완료 2026-11-10 (main 83654fc)**. 앱 통지 문서는 백승수 앱 코드 대조 수정본(PR #62, 앱 변경 4곳)으로 교체·발송. **남은 것: 실기(해제→재페어링 revived) · 앱 4곳 반영(앱팀) · 12월 10일경 첫 MQTT 해지 로그 확인.** 서버만 수정, 펌웨어·앱 변경 없음(앱은 §앱팀 통지 1건). 구현: 이관훈(Claude).
 > 배경 문서: 백승수 "영상·카메라 DB 현재 문제 정리"(2026-11-09, 레포 밖) §1·§7, 회신 2026-11-10 결정.
 > 활동시간 저장(12시간 칸·finalized_at)·계정 단위 영상 조회·하이라이트 계정+hw_id 예산은 **별도 Stage**(레포 3개 공동, 배치 위치 미정).
 
@@ -77,7 +77,7 @@ POST /cameras/pair (hw_id 있음, 같은 계정)
 1. Supabase SQL Editor 에 마이그레이션 적용 → `MIGRATIONS_APPLIED.md` 기록
 2. PR 머지 → terra-api·terra-bridge 재시작
 3. 확인: (a) 실기 해제 → 재페어링 → `revived: true`, 카메라 목록에 같은 행, 이름 초기화 (b) 브리지 로그 `supersede scan` 1회 이상 (c) 운영 DB `superseded_at IS NOT NULL` 행 수 — 기대값은 "활성 행이 보드 수보다 많은 13행 중 24시간 이상 오프라인인 것"
-4. 앱팀 통지: cameras 조회에 `superseded_at IS NULL` 추가, pair 응답 `revived` 필드
+4. 앱팀 통지: cameras 조회 4곳에 `superseded_at` 조건 추가(앱이 Dart 에서 필터), pair 응답 `revived` 필드 — docs/APP_CAMERA_REBIND_SUPERSEDE_2026-11-10.md
 
 ## 완료 조건
 
@@ -88,7 +88,7 @@ POST /cameras/pair (hw_id 있음, 같은 계정)
 - [x] offline_monitor 가 교차 계정 superseded 를 찍고(테스트+운영 첫 스캔 10행), 보드 재접속 시 풀고(테스트), 30일 뒤 해지(테스트)
 - [ ] GET /cameras 가 superseded 행을 빼고 돌려준다(테스트)
 - [x] DATABASE.md 영상 보관 정책 현실 반영
-- [ ] 앱팀 통지 발송
+- [x] 앱팀 통지 발송 (2026-11-10, PR #62 수정본)
 
 ## 학습 노트
 
