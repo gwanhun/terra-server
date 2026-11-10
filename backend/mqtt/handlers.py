@@ -1107,11 +1107,21 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
     # 앱이 Realtime 한 이벤트에서 두 값을 같이 보므로 쌍이어야 한다. 새 컬럼이 없다고 기억돼 있으면(마이그레이션
     # 누락) 둘 다 뺀다. 단 첫 실패 1회는 _write_heartbeat 가 누락 컬럼만 빼고 재시도해 어긋남 — 마이그레이션이
     # 코드보다 먼저 가야 하는 이유(specs/stage-s-temp-offset-base.md 함정 1).
+    # Stage T(2026-11-10): 보드별 공장 기본 temp_offset_base_c(NVS terra/t_base). 같은 telemetry 에 실려 오면
+    # 그 값으로 사용자값을 계산해(DB 왕복 없이 쌍이 맞음) 세 컬럼을 한 UPDATE 로 쓰고, 프로세스 캐시도 갱신한다
+    # (dispatcher 의 set_temp_offset 합산이 이 캐시를 본다). 키 없음(구 펌웨어) → 캐시/DB/env 순 폴백(Stage S 동작).
     t_off = payload.get("temp_offset_c")
+    t_base = payload.get("temp_offset_base_c")
+    base_ok = isinstance(t_base, (int, float)) and not isinstance(t_base, bool) and -10.0 <= t_base <= 10.0
     if isinstance(t_off, (int, float)) and not isinstance(t_off, bool) and -10.0 <= t_off <= 10.0:
         if _missing_columns.get("devices.temp_offset_user_c", 0.0) <= time.monotonic():
+            if base_ok:
+                temp_offset.remember_base(device_uuid, round(float(t_base), 2))
+                dev_update["temp_offset_base_c"] = round(float(t_base), 2)
+                dev_update["temp_offset_user_c"] = temp_offset.to_user(t_off, base=float(t_base))
+            else:
+                dev_update["temp_offset_user_c"] = temp_offset.to_user(t_off, device_uuid)
             dev_update["temp_offset_c"] = round(float(t_off), 2)
-            dev_update["temp_offset_user_c"] = temp_offset.to_user(t_off, device_uuid)
     # 빌드 식별(Stage J, OTA 지원 펌웨어부터): 카메라 heartbeat `fw` 와 같은 규칙 — 기기는 지금까지
     # 페어링 때만 firmware_ver 를 보내 리플래시 여부를 서버가 몰랐다. 캐시와 다를 때만 UPDATE.
     fw = payload.get("fw")
@@ -1263,6 +1273,7 @@ def _ack_device_command(
                 logger.exception("push 이벤트 적재 실패 (msg_id=%s)", msg_id)
             _commit_lcd_text(sb, res.data[0], device_uuid)
             _commit_lcd_state(sb, res.data[0], device_uuid)
+            _commit_temp_base(sb, res.data[0], device_uuid)
             # Stage R 자동 환기·분무: 자동 명령 소유 확정·사용자 명령 반영·분무 신호.
             # 지연 임포트(순환 회피), 실패해도 ACK 처리는 계속.
             try:
@@ -1380,6 +1391,28 @@ def _commit_lcd_text(sb: Any, command_row: dict[str, Any], device_uuid: str) -> 
         }).eq("id", device_uuid).execute()
     except Exception:  # noqa: BLE001
         logger.exception("devices.lcd_text UPDATE 실패 (device=%s)", device_uuid)
+
+
+def _commit_temp_base(sb: Any, command_row: dict[str, Any], device_uuid: str) -> None:
+    """`set_temp_base` 가 ok 로 ACK 되면 devices.temp_offset_base_c 와 프로세스 캐시를 바로 확정한다 (Stage T).
+
+    다음 telemetry(3초)가 어차피 덮지만, 그 사이 사용자가 set_temp_offset 을 보내면 dispatcher 가 옛 base 로
+    합산해 사용자값이 (새−옛) 만큼 튄다(스펙 함정 5). temp_offset_c/user_c 는 건드리지 않는다 — 기기가 적용값을
+    같이 옮겼으니 사용자값은 그대로가 맞고, 절대값은 telemetry 가 가져온다. 실패해도 ack 처리는 계속.
+    """
+    if command_row.get("action") != temp_offset.BASE_ACTION or command_row.get("result") != "ok":
+        return
+    v = (command_row.get("payload") or {}).get(temp_offset.BASE_KEY)
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not temp_offset.device_in_range(float(v)):
+        return
+    base = round(float(v), 2)
+    temp_offset.remember_base(device_uuid, base)
+    if _missing_columns.get(f"devices.{temp_offset.BASE_COLUMN}", 0.0) > time.monotonic():
+        return
+    try:
+        sb.table("devices").update({temp_offset.BASE_COLUMN: base}).eq("id", device_uuid).execute()
+    except Exception:  # noqa: BLE001
+        logger.exception("devices.%s UPDATE 실패 (device=%s)", temp_offset.BASE_COLUMN, device_uuid)
 
 
 # Stage N LCD 명령 → ACK ok 때 devices.lcd_* 확정 (lcd_text 와 같은 규칙)

@@ -972,7 +972,8 @@ PATCH /admin/accounts/{user_id}        { "group": "beta" }   // 베타 테스터
 POST /devices/{device_uuid}/commands            (JWT, 대행 가능)
 { "action": "led_toggle" }                      // relay_toggle | fan_toggle | fan2_toggle | led_toggle | heater_toggle | heater_clear
 { "action": "set_temp_offset", "payload": { "offset_c": -1.5 } }        // 기기 절대값 ±10.0 — 구 앱·콘솔. 그대로 발행
-{ "action": "set_temp_offset", "payload": { "user_offset_c": 1.0 } }    // 사용자 보정값 — 신 앱(2026-11-05+, Stage S). 끔 = 0
+{ "action": "set_temp_offset", "payload": { "user_offset_c": 1.0 } }    // 사용자 보정값 — 신 앱(2026-11-05+, Stage S). 끔 = 0. 범위는 보드 base 에 따라(기본 -8.5~11.5)
+{ "action": "set_temp_base",   "payload": { "base_c": -3.0 } }          // 보드 공장 기본 — 운영자 콘솔(2026-11-10+, Stage T). 기기가 적용값도 같이 옮겨 사용자값 불변. ±10
      // 서버가 발행 직전 공장 기본(-1.5)을 더해 기기엔 offset_c -0.5 로. 허용 -8.5 ~ +11.5 (= ±10 − 공장 기본, 400 메시지에 표기)
      // 두 키 동시·둘 다 없음·숫자 아님 → 400. 결과 확인은 devices.temp_offset_user_c(사용자값, Realtime)로
 → 201 { "id", "action", "status": "pending" }   // issued_by = 대행 대상 사용자 (앱 이력에 본인 명령으로 보임)

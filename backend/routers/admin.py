@@ -42,7 +42,7 @@ router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(requir
 _FORBIDDEN = {403: {"description": "관리자 아님 — detail 에 호출자 user_id (ADMIN_USER_IDS 에 넣을 값)"}}
 _DEVICE_COLUMNS = (
     "id, device_id, enclosure_id, name, species, firmware_ver, capabilities, sys_state, "
-    "temp_offset_c, temp_offset_user_c, created_at, last_seen_at, is_online, owner_id"
+    "temp_offset_c, temp_offset_user_c, temp_offset_base_c, created_at, last_seen_at, is_online, owner_id"
 )
 _LIST_USERS_PAGE = 1000
 ACCOUNT_GROUPS = ("beta",)          # 콘솔이 쓰는 값. 늘리면 web/beta.html 필터도 같이

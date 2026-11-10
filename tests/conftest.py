@@ -22,6 +22,15 @@ OTHER_USER_ID = "22222222-2222-2222-2222-222222222222"
 
 
 @pytest.fixture(autouse=True)
+def _reset_temp_offset_base_cache() -> None:
+    """보드별 공장 기본(base) 프로세스 캐시(Stage T)가 테스트 사이에 새지 않게."""
+    from backend import temp_offset
+    temp_offset.forget_base()
+    yield
+    temp_offset.forget_base()
+
+
+@pytest.fixture(autouse=True)
 def _set_dev_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """모든 테스트에서 AUTH_MODE=dev + DEV_USER_ID 적용."""
     monkeypatch.setenv("AUTH_MODE", "dev")

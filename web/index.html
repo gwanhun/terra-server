@@ -638,22 +638,36 @@ async function ledBrightness(deviceUuid, pct) {
 // 온도 보정 인라인 편집기 — beta.html 목록 줄의 🌡 과 같은 명령(set_temp_offset, payload.offset_c = 기기 절대값).
 // 온도 셀은 telemetry 마다 다시 그려져 입력이 지워지니 액션 칸(다시 안 그림)에 둔다. 입력칸 기준값은 기기가
 // 보고한 NVS 값(temp_offset_c, 공장 기본 포함) — 신 앱이 보는 사용자값(temp_offset_user_c)과 다르다(Stage S).
+// Stage T(2026-11-10): 🏭 = 보드 공장 기본(base, set_temp_base). **보드 개체차 보정은 여기서** — 기기가 적용값도 같이
+// 옮겨 사용자(앱) 값은 안 움직인다. 🌡 절대값 칸은 디버그용으로 남김(여기서 바꾸면 사용자값이 같이 움직여 앱에 보임).
 function tempOffsetEditor(r) {
   const dis = r.is_online ? '' : 'opacity:.5';
   const cur = r.temp_offset_c != null ? Number(r.temp_offset_c).toFixed(1) : '';
   const hint = r.temp_offset_c != null
-    ? '기기가 보고한 현재 보정값(℃). 측정값에 더할 값 — 2℃ 높게 나오면 -2. 기기 NVS 에 저장돼 LCD·telemetry 양쪽에 적용'
+    ? '디버그용: 기기가 보고한 현재 보정 절대값(℃). 여기서 바꾸면 사용자(앱) 값이 같이 움직인다 — 보드 보정은 🏭 로'
     : '구 펌웨어(2026-10-01 이전)는 현재값 미보고 — 빌드 기본 -1.5 추정. 측정값에 더할 값(℃)';
+  const base = r.temp_offset_base_c != null ? Number(r.temp_offset_base_c).toFixed(1) : '';
+  const baseHint = r.temp_offset_base_c != null
+    ? '보드 공장 기본 보정(℃, 운영자용). 2℃ 높게 읽는 보드면 -2 — 기기가 적용값도 같이 옮겨 사용자(앱) 값은 그대로'
+    : '공장 기본 미보고(Stage T 이전 펌웨어 — 서버는 -1.5 로 간주). 신 펌웨어로 OTA 뒤 설정 가능';
   return `<span class="toff" data-toff="${r.id}" style="display:inline-flex;align-items:center;gap:3px;font-size:11px;${dis}" title="${hint}">🌡`
     + `<input type="number" step="0.1" min="-10" max="10" placeholder="-1.5" value="${cur}" `
     + `onkeydown="if(event.key==='Enter')setTempOffset('${r.id}')" style="width:58px;font-size:11px;padding:2px 5px">℃`
-    + `<button class="sm ghost" onclick="setTempOffset('${r.id}')" title="set_temp_offset 명령 전송 — 기기가 ACK 하면 ✅. ±10℃ 범위">적용</button>`
+    + `<button class="sm ghost" onclick="setTempOffset('${r.id}')" title="set_temp_offset 명령 전송(디버그) — 기기가 ACK 하면 ✅. ±10℃ 범위">적용</button>`
+    + `<small class="muted"></small></span>`
+    + `<span class="toff" data-tbase="${r.id}" style="display:inline-flex;align-items:center;gap:3px;font-size:11px;${dis}" title="${baseHint}">🏭`
+    + `<input type="number" step="0.1" min="-10" max="10" placeholder="-1.5" value="${base}" `
+    + `onkeydown="if(event.key==='Enter')setTempBase('${r.id}')" style="width:58px;font-size:11px;padding:2px 5px">℃`
+    + `<button class="sm ghost" onclick="setTempBase('${r.id}')" title="set_temp_base 명령 전송 — 보드 공장 기본. 기기가 ACK 하면 ✅. ±10℃ 범위">기본적용</button>`
     + `<small class="muted"></small></span>`;
 }
 
 // POST /devices/{id}/commands (서버가 ±10 범위 검증) → GET .../commands/{cmdId} 로 최대 8초 ACK 폴링.
-async function setTempOffset(deviceUuid) {
-  const box = document.querySelector(`[data-toff="${deviceUuid}"]`);
+function setTempOffset(deviceUuid) { return sendTempCmd(deviceUuid, 'toff'); }
+function setTempBase(deviceUuid) { return sendTempCmd(deviceUuid, 'tbase'); }
+async function sendTempCmd(deviceUuid, kind) {
+  const isBase = kind === 'tbase';
+  const box = document.querySelector(`[data-${kind}="${deviceUuid}"]`);
   if (!box) return;
   const input = box.querySelector('input'), st = box.querySelector('small');
   const v = parseFloat(input.value);
@@ -662,7 +676,9 @@ async function setTempOffset(deviceUuid) {
   st.className = 'muted'; st.textContent = '전송…';
   const r = await api(`/devices/${deviceUuid}/commands`, {
     method: 'POST',
-    body: JSON.stringify({ action: 'set_temp_offset', payload: { offset_c: v } }),
+    body: JSON.stringify(isBase
+      ? { action: 'set_temp_base', payload: { base_c: v } }
+      : { action: 'set_temp_offset', payload: { offset_c: v } }),
   });
   if (!r || !r.id) { st.className = 'bad'; st.textContent = '실패'; return; }   // 상세는 api() 토스트·로그
   for (let i = 0; i < 8; i++) {
@@ -671,6 +687,7 @@ async function setTempOffset(deviceUuid) {
     if (!c || !['acked', 'no_ack', 'rejected'].includes(c.status)) continue;
     if (c.status === 'acked') {
       st.className = 'good'; st.textContent = '✅ ' + (c.result || 'ok');
+      if (isBase) { loadRecentCommands(); return; }   // base 는 다음 telemetry 가 devices 를 덮어 셀이 갱신됨
       // 구 펌웨어는 temp_offset_c 를 안 보고하니 온도 셀의 '🌡명령' 표기를 바로 갱신. 신 펌웨어는 다음 telemetry 가 덮어씀.
       LAST_TOFF_CMD[deviceUuid] = { offset_c: v, user: false, status: 'acked', issued_at: new Date().toISOString() };
       updateDeviceTempCell(deviceUuid);
@@ -714,8 +731,10 @@ function tempOffsetHtml(deviceUuid) {
   const fmt = v => (v > 0 ? '+' : '') + Number(v).toFixed(1);
   if (d && d.temp_offset_c != null) {
     // Stage S(2026-11-05): 괄호는 사용자 보정값(= 기기값 − 공장 기본, 신 앱이 보는 수치). 콘솔 명령은 여전히 기기값.
-    const user = d.temp_offset_user_c != null ? ` <span style="opacity:.7">(사용자 ${fmt(d.temp_offset_user_c)})</span>` : '';
-    return `<br><small class="muted" title="기기가 보고한 현재 보정값(NVS) — 2026-10-01+ 펌웨어. 괄호 = 공장 기본을 뺀 사용자 보정값(신 앱 표시값)">🌡보정 ${fmt(d.temp_offset_c)}${user}</small>`;
+    // Stage T(2026-11-10): base = 보드가 보고한 공장 기본(temp_offset_base_c). 미보고(구 펌웨어)면 서버가 -1.5 로 간주.
+    const base = d.temp_offset_base_c != null ? ` 기본 ${fmt(d.temp_offset_base_c)}` : '';
+    const user = d.temp_offset_user_c != null ? ` <span style="opacity:.7">(사용자 ${fmt(d.temp_offset_user_c)}${base})</span>` : '';
+    return `<br><small class="muted" title="기기가 보고한 현재 보정 절대값(NVS) — 2026-10-01+ 펌웨어. 괄호 = 사용자 보정값(신 앱 표시값, = 절대값 − 보드 공장 기본) · 기본 = 보드가 보고한 공장 기본(Stage T 펌웨어)">🌡보정 ${fmt(d.temp_offset_c)}${user}</small>`;
   }
   const c = LAST_TOFF_CMD[deviceUuid];
   if (c) {

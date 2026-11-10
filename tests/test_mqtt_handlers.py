@@ -1985,3 +1985,55 @@ def test_device_telemetry_user_offset_column_missing_drops_both(fake_sb: MagicMo
     assert len(updates) == 1
     assert "temp_offset_c" not in updates[0] and "temp_offset_user_c" not in updates[0]
     assert updates[0]["is_online"] is True
+
+
+# ---------- 보드별 공장 기본 base (Stage T, 2026-11-10) ----------
+
+
+def test_device_telemetry_with_reported_base_writes_triple(fake_sb: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    """telemetry 에 temp_offset_base_c 가 실려 오면 그 값으로 사용자값을 계산해 세 컬럼을 한 UPDATE 로. 캐시도 갱신."""
+    from backend import temp_offset
+    monkeypatch.delenv("TEMP_OFFSET_BASE_C", raising=False)
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _device_table_factory(updates, db_caps=None)
+
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 1, "temp_offset_c": -2.0, "temp_offset_base_c": -3.0})
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 2, "temp_offset_c": -3.0, "temp_offset_base_c": -3.0})
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 3, "temp_offset_c": -1.5, "temp_offset_base_c": 42})   # base 범위 밖 → 캐시(-3) 폴백
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 4, "temp_offset_c": -1.5})                             # 키 없음 → 캐시(-3) 폴백
+
+    triples = [(u.get("temp_offset_c"), u.get("temp_offset_base_c"), u.get("temp_offset_user_c")) for u in updates]
+    assert triples == [(-2.0, -3.0, 1.0), (-3.0, -3.0, 0.0), (-1.5, None, 1.5), (-1.5, None, 1.5)]
+    assert temp_offset.base_c(DEVICE_UUID) == -3.0
+
+
+def test_device_telemetry_old_firmware_uses_env_when_nothing_known(fake_sb: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+    """구 펌웨어(base 미보고)·DB 에도 없음 → Stage S 와 동일하게 env -1.5."""
+    monkeypatch.delenv("TEMP_OFFSET_BASE_C", raising=False)
+    updates: list[dict] = []
+    fake_sb.table.side_effect = _device_table_factory(updates, db_caps=None)
+    handlers.handle_telemetry(DEVICE_TEXT, {"ts": 1, "temp_offset_c": -0.5})
+    assert (updates[0]["temp_offset_c"], updates[0]["temp_offset_user_c"]) == (-0.5, 1.0)
+    assert "temp_offset_base_c" not in updates[0]
+
+
+def test_handle_ack_set_temp_base_ok_commits_base(fake_sb: MagicMock) -> None:
+    """set_temp_base ACK ok → devices.temp_offset_base_c 확정 + 캐시. temp_offset_c/user_c 는 건드리지 않는다."""
+    from backend import temp_offset
+    updates = _lcd_ack(fake_sb, _lcd_row("set_temp_base", "ok", {"base_c": -3.0}))
+    base = [u for u in updates if "temp_offset_base_c" in u]
+    assert base == [{"temp_offset_base_c": -3.0}]
+    assert temp_offset.base_c(DEVICE_UUID) == -3.0
+
+
+@pytest.mark.parametrize("result,payload", [
+    ("offset_out_of_range", {"base_c": -3.0}),   # 기기 거절 — 안 바뀜
+    ("ok", {"base_c": "x"}),
+    ("ok", {"base_c": 42}),
+    ("ok", None),
+])
+def test_handle_ack_set_temp_base_not_ok_or_junk_is_ignored(fake_sb: MagicMock, result: str, payload: dict | None) -> None:
+    from backend import temp_offset
+    updates = _lcd_ack(fake_sb, _lcd_row("set_temp_base", result, payload))
+    assert not [u for u in updates if "temp_offset_base_c" in u]
+    assert temp_offset._base_cache.get(DEVICE_UUID) is None

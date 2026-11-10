@@ -120,7 +120,10 @@ class DeviceOut(BaseModel):
         None, description="기기가 지금 적용 중인 온도 보정(℃, 2026-10-01+ 펌웨어 보고). NULL=미보고(구 펌웨어)"
     )
     temp_offset_user_c: float | None = Field(
-        None, description="사용자 보정값(℃, 0.1 단위) = temp_offset_c − 공장 기본(서버만 앎). 신 앱이 읽는 값(2026-11-05). NULL=미보고"
+        None, description="사용자 보정값(℃, 0.1 단위) = temp_offset_c − 그 보드의 공장 기본. 신 앱이 읽는 값(2026-11-05). NULL=미보고"
+    )
+    temp_offset_base_c: float | None = Field(
+        None, description="보드 공장 기본 보정(℃, 기기 NVS, telemetry 보고, Stage T 2026-11-10). 운영자가 set_temp_base 로 바꿈. NULL=미보고(구 펌웨어, 서버는 env -1.5 로 간주)"
     )
     created_at: str
     last_seen_at: str | None
@@ -284,7 +287,7 @@ def list_devices(
         sb.table("devices")
         .select(
             "id, device_id, enclosure_id, name, species, firmware_ver, "
-            "capabilities, sys_state, temp_offset_c, temp_offset_user_c, created_at, last_seen_at, is_online"
+            "capabilities, sys_state, temp_offset_c, temp_offset_user_c, temp_offset_base_c, created_at, last_seen_at, is_online"
         )
         .eq("owner_id", user_id)
         .is_("unlinked_at", "null")            # 소프트 해제된 기기는 제외 (앱 §1-3)
@@ -311,7 +314,7 @@ def get_device(
         sb.table("devices")
         .select(
             "id, device_id, enclosure_id, name, species, firmware_ver, "
-            "capabilities, sys_state, temp_offset_c, temp_offset_user_c, created_at, last_seen_at, is_online, owner_id, unlinked_at"
+            "capabilities, sys_state, temp_offset_c, temp_offset_user_c, temp_offset_base_c, created_at, last_seen_at, is_online, owner_id, unlinked_at"
         )
         .eq("id", dev_uuid)
         .limit(1)

@@ -209,3 +209,32 @@ def test_generic_command_temp_offset_user_key(app_client: TestClient, fake_sb: M
     out_of_range = app_client.post(f"/devices/{DEVICE_UUID}/commands",
                                    json={"action": "set_temp_offset", "payload": {"user_offset_c": 12}})
     assert "-8.5 ~ 11.5" in out_of_range.json()["detail"]
+
+
+# ---------- 보드별 공장 기본 base (Stage T, 2026-11-10) ----------
+
+
+def test_generic_command_set_temp_base(app_client: TestClient, fake_sb: MagicMock) -> None:
+    """운영자 명령 set_temp_base {base_c}: ±10 숫자만. DB 에 그대로(서버 변환 없음 — 기기가 적용값도 옮긴다)."""
+    cmd = _cmd_tables(fake_sb)
+    ok = app_client.post(f"/devices/{DEVICE_UUID}/commands",
+                         json={"action": "set_temp_base", "payload": {"base_c": -3}})
+    assert ok.status_code == 201, ok.text
+    assert cmd.insert.call_args.args[0]["payload"] == {"base_c": -3.0}
+    for bad in (None, {}, {"base_c": "-3"}, {"base_c": 10.5}, {"base_c": True}):
+        res = app_client.post(f"/devices/{DEVICE_UUID}/commands", json={"action": "set_temp_base", "payload": bad})
+        assert res.status_code == 400, (bad, res.text)
+
+
+def test_generic_command_temp_offset_range_uses_device_base(app_client: TestClient, fake_sb: MagicMock, monkeypatch) -> None:
+    """사전 검증도 그 보드의 base 로 — dispatcher 와 판정이 같아야 한다(env 기준이면 12.5 는 400, -7.5 는 201 이었다)."""
+    from backend import temp_offset
+    monkeypatch.delenv("TEMP_OFFSET_BASE_C", raising=False)
+    temp_offset.remember_base(DEVICE_UUID, -3.0)
+    _cmd_tables(fake_sb)
+    ok = app_client.post(f"/devices/{DEVICE_UUID}/commands",
+                         json={"action": "set_temp_offset", "payload": {"user_offset_c": 12.5}})
+    assert ok.status_code == 201, ok.text
+    bad = app_client.post(f"/devices/{DEVICE_UUID}/commands",
+                          json={"action": "set_temp_offset", "payload": {"user_offset_c": -7.5}})
+    assert bad.status_code == 400 and "-7 ~ 13" in bad.json()["detail"]

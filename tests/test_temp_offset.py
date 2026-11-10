@@ -90,3 +90,85 @@ def test_resolve_out_of_range(v: float) -> None:
         temp_offset.resolve_device_offset({"user_offset_c": v})
     assert ei.value.result == "offset_out_of_range"
     assert "-8.5 ~ 11.5" in str(ei.value)
+
+
+# ---------- 보드별 base (Stage T, 2026-11-10) ----------
+
+DEV = "11111111-1111-1111-1111-aaaaaaaaaaaa"
+
+
+def test_base_per_device_from_cache_then_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """기기가 보고한 base 가 캐시에 있으면 그 값, 없으면(None 보고·조회 실패) env 폴백."""
+    monkeypatch.setattr(temp_offset, "_lookup_base", lambda _uuid: None)
+    assert temp_offset.base_c(DEV) == -1.5                      # 조회 None → env 기본
+    temp_offset.remember_base(DEV, -3.0)
+    assert temp_offset.base_c(DEV) == -3.0
+    assert temp_offset.base_c() == -1.5                         # uuid 없는 호출은 여전히 env
+    temp_offset.remember_base(DEV, None)                        # 구 펌웨어: 미보고도 캐시(DB 재조회 억제)
+    assert temp_offset.base_c(DEV) == -1.5
+
+
+def test_base_cache_expires_then_looks_up_db(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def _lookup(uuid: str) -> float:
+        calls.append(uuid)
+        return -2.0
+
+    monkeypatch.setattr(temp_offset, "_lookup_base", _lookup)
+    assert temp_offset.base_c(DEV) == -2.0 and calls == [DEV]
+    assert temp_offset.base_c(DEV) == -2.0 and calls == [DEV]   # TTL 안: 재조회 없음
+    temp_offset._base_cache[DEV] = (-2.0, 0.0)                  # 만료
+    assert temp_offset.base_c(DEV) == -2.0 and calls == [DEV, DEV]
+
+
+def test_lookup_base_tolerates_db_failure_and_junk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """DB 예외·컬럼 없음·NULL·범위 밖은 전부 None → env 폴백. 예외는 밖으로 안 나간다."""
+    import backend.supabase_client as sc
+
+    class _Boom:
+        def table(self, _n):
+            raise RuntimeError("down")
+
+    monkeypatch.setattr(sc, "get_supabase_client", lambda: _Boom())
+    assert temp_offset._lookup_base(DEV) is None
+
+    from unittest.mock import MagicMock
+    for data in ([{"temp_offset_base_c": -2.5}], [{"temp_offset_base_c": None}], [{"temp_offset_base_c": 42}], [], MagicMock()):
+        sb = MagicMock()
+        sb.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = data
+        monkeypatch.setattr(sc, "get_supabase_client", lambda sb=sb: sb)
+        expect = -2.5 if data and isinstance(data, list) and data[0].get("temp_offset_base_c") == -2.5 else None
+        assert temp_offset._lookup_base(DEV) == expect, data
+
+
+def test_to_user_with_reported_base_and_no_negative_zero() -> None:
+    """같은 telemetry 의 base 를 넘기면 캐시·env 와 무관. -0.0 은 0.0 으로(앱 '-0.0' 표시 방지)."""
+    assert temp_offset.to_user(-2.0, base=-3.0) == 1.0
+    assert temp_offset.to_user(-3.0, base=-3.0) == 0.0
+    assert str(temp_offset.to_user(-1.54)) == "0.0"
+    temp_offset.remember_base(DEV, -3.0)
+    assert temp_offset.to_user(-3.0, DEV) == 0.0
+    assert temp_offset.to_device(1.0, DEV) == -2.0
+    assert temp_offset.user_range(DEV) == (-7.0, 13.0)
+
+
+def test_resolve_user_payload_uses_device_base() -> None:
+    temp_offset.remember_base(DEV, -3.0)
+    assert temp_offset.resolve_device_offset({"user_offset_c": 1.0}, DEV) == -2.0
+    assert temp_offset.resolve_device_offset({"user_offset_c": 12.5}, DEV) == 9.5     # env 기준이면 거절될 값
+    with pytest.raises(temp_offset.OffsetError) as ei:
+        temp_offset.resolve_device_offset({"user_offset_c": -7.5}, DEV)
+    assert "-7 ~ 13" in str(ei.value)
+
+
+def test_resolve_base_payload() -> None:
+    assert temp_offset.resolve_base_payload({"base_c": -3}) == -3.0
+    assert temp_offset.resolve_base_payload({"base_c": -1.55}) == -1.55
+    for bad in ({}, None, {"base_c": "-3"}, {"base_c": True}, {"base_c": None}):
+        with pytest.raises(temp_offset.OffsetError) as ei:
+            temp_offset.resolve_base_payload(bad)
+        assert ei.value.result == "invalid_payload"
+    with pytest.raises(temp_offset.OffsetError) as ei:
+        temp_offset.resolve_base_payload({"base_c": 10.1})
+    assert ei.value.result == "offset_out_of_range"
