@@ -1,6 +1,6 @@
 # Stage T — 기기별 공장 기본 온도 보정(base): 기기가 NVS 에 갖고 보고, 서버는 보드별로 뺀다
 
-> 상태: 🔧 **서버 PR #59 (stage-t/temp-offset-base-per-device, 테스트 1183 통과) · 펌웨어 nano `feat/temp-base` 1.3.0-20261110 빌드 통과 — 2026-11-10**. 마이그레이션 미적용, 미배포, 미플래시, 릴리스 미등록. Stage S([stage-s-temp-offset-base.md](stage-s-temp-offset-base.md)) 의 다음 단계.
+> 상태: ✅ **서버 배포 완료 2026-11-10 02:21 UTC (main 6b60997, PR #59)** — 마이그레이션 적용·기록, API·브리지 재시작, 11/05 이후 보고 19대 사용자값 쌍 불일치 0·브리지 경고 0 확인. 펌웨어 nano `feat/temp-base` 1.3.0-20261110 빌드 통과, **릴리스 미등록·미플래시·실기 미검증**. Stage S([stage-s-temp-offset-base.md](stage-s-temp-offset-base.md)) 의 다음 단계.
 > 사용자 요청(2026-11-09): "보드마다 공장 초기 보정값이 -2, -3 으로 다를 수 있고 나중에 다시 바꿀 수도 있다. 그래도 앱에는 사용자가 바꾼 양만(처음엔 0) 보여야 한다."
 > 비유: 영점 다이얼 두 개. **안쪽(공장용, 운영자만)** + **바깥(사용자용, 앱이 보는 것)**. 기기 실제 보정 = 둘의 합.
 
@@ -99,11 +99,12 @@ telemetry: { "temp_offset_c": -2.0, "temp_offset_base_c": -3.0, ... }
 ## 완료 조건
 
 - [x] 펌웨어: `t_base` NVS, `set_temp_base` 명령(동시 이동·범위 거절), telemetry base 보고, 버전 1.3.0-20261110 — nano `feat/temp-base` 2bd5fdc, 빌드 통과(31% 여유). 릴리스 등록·실기 전
-- [ ] 마이그레이션 적용·기록 (파일: `migrations/2026-11-10_devices_temp_offset_base.sql`)
+- [x] 마이그레이션 적용·기록 (`migrations/2026-11-10_devices_temp_offset_base.sql`, 2026-11-10 SQL Editor)
 - [x] 서버: base 캐시·폴백, handlers 쌍 기록, dispatcher/API `set_temp_base`, API `resolve_device_offset` 에 uuid 전달 (2026-11-10)
 - [x] 콘솔: base 칸(🏭)·표기 — index.html·beta.html (2026-11-10)
 - [x] 테스트 통과 — 1183 (신규 17: temp_offset 6, handlers 7, API 2, dispatcher 2)
-- [ ] 실기: 배포 순서 3~5 통과
+- [x] 배포 순서 1~2: 마이그레이션 → 서버 배포(6b60997) → 구 펌웨어 기기 Stage S 동작 확인 (2026-11-10)
+- [ ] 실기: 배포 순서 3~5 통과 (릴리스 등록 → OTA 1대 → base 변경 시 앱값 불변)
 - [x] 문서: MQTT/DATABASE/ENV/API 갱신 (2026-11-10)
 
 ## 학습 노트
