@@ -602,6 +602,7 @@ ESP32-P4 는 NVS 에 저장 (RPi 는 `/etc/terra-cam/config.json`).
 
 > 2026-11-10 이전엔 해제 행의 `hw_id` 로 페어링하면 항상 새 행이 생겼다(해제 행이 계정당 수십 개 누적).
 > `GET /cameras` 는 `superseded_at IS NOT NULL` 행도 제외한다. **앱이 `cameras` 를 PostgREST 로 직접 읽는다면 같은 필터를 추가해야 한다.**
+> superseded 카메라가 있던 그룹을 앱에서 저장하면(이름만 바꿔도) `redesign_save_group_v1(p_camera_id=NULL)` 이 숨긴 카메라의 `enclosure_id` 를 NULL 로 바꿔 사육장 배정이 풀리고 열린 반려동물 배정이 닫힌다. 숨김이 풀려도 그룹 밖이다 — 의도된 수용(2026-11-10 앱팀), 수정 없음.
 
 **앱에 주는 함의**: 앱이 "WiFi 변경" 흐름에서 JWT 를 생략하면 페어링 자체가 일어나지 않아
 가장 깔끔하다(펌웨어가 JWT 없을 때 pair 를 호출하지 않음). `hw_id` 는 앱이 그 매핑을 잃었을

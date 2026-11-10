@@ -58,7 +58,7 @@ POST /cameras/pair (hw_id 있음, 같은 계정)
 - 문서: `docs/DATABASE.md`(cameras 컬럼, 영상 보관 정책 107·109줄 현실 반영), `docs/API.md`(pair 응답 `revived`), `MIGRATIONS_APPLIED.md`
 
 ### Out (안 함)
-- 활동시간 저장·finalized_at, 계정 단위 영상 조회, 하이라이트 예산 → 별도 Stage
+- 활동시간 저장·finalized_at, 계정 단위 영상 조회, 하이라이트 예산 → 별도 Stage. **활동시간 테이블·채우는 배치·finalized_at 확정은 전부 petcam-lab**(2026-11-10 백승수 제안·이관훈 동의: 08:00 공개 highlight_ready.py·격리 원장·fn_highlight_featured 가 거기 있어 스케줄러 하나로 순서 보장). terra-server 는 이번엔 할 일 없음, 서버 API 가 필요해지면 그때
 - devices(센서 기기) 교차 계정 superseded — 같은 구조지만 이번 결정 범위 밖. 허브 짝 행은 cameras 쪽 판정에 따라감(계정이 하나)
 - 구 펌웨어(hw_id NULL) 행 정리
 - 라벨링 웹(petcam-lab) superseded 기준 통일 — 컬럼이 생겼으니 그쪽에서 읽으면 됨(통지)
@@ -70,7 +70,8 @@ POST /cameras/pair (hw_id 있음, 같은 계정)
 2. **되살리기와 (owner_id, hw_id) 부분 UNIQUE**: 활성 행이 있으면 활성 행을 쓰므로 충돌 없음. 해제 행 되살리기는 활성 행이 없을 때만.
 3. **MOSQUITTO_REGISTRY_ENABLED 는 브리지도 읽는다**(같은 .env). 해지(U7)는 브리지 프로세스에서 `sudo` 헬퍼를 부른다 — terra-bridge 도 ubuntu 로 돌고 sudoers 는 사용자 기준이라 동작해야 하지만, **첫 해지 로그를 확인**할 것. 비활성이면 True 반환·로그만.
 4. **테스트 mock 체인**: pair 의 hw_id 조회 체인이 `select→eq→eq→is_→limit` 에서 `select→eq→eq→order→execute` 로 바뀜. `_hw_lookup`(test_cameras_api)·`_hub_pair_tables`(test_hub) 갱신.
-5. **자동 복구 신호는 is_online** — offline_monitor 가 superseded 행도 `is_online=false` 로 뒤집으므로(활성 행 스캔 그대로), 복구 판정은 "직전 스캔 뒤 다시 true 로 올라온 행" 이다. 10분 스캔 사이에 15초 heartbeat 가 오면 true 로 잡힌다.
+5. **superseded 상태에서 앱이 그룹을 저장하면 사육장 배정이 풀릴 수 있다**(앱팀 확인 2026-11-10). 앱은 superseded 카메라를 숨기므로 그 그룹이 "카메라 없음" 으로 보이고, 이름만 바꿔 저장해도 `redesign_save_group_v1(p_camera_id=NULL)` 이 호출된다. RPC 의 떼어내기 단계(`2026-09-16_app_redesign_02_redesign_groups.sql:201`, `enclosure_id=NULL WHERE enclosure_id=target AND id IS DISTINCT FROM p_camera_id`)가 숨긴 카메라의 `enclosure_id` 도 NULL 로 바꾸고, 트리거가 열린 반려동물 배정을 닫는다. 숨김이 풀리면 그 카메라는 그룹 밖에 있다. **의도된 수용** — 조건이 다 겹치는 경우가 드물고, RPC 에서 superseded 행을 빼면 복구 때 한 그룹에 카메라 2대가 된다. 서버·앱 모두 수정 안 함.
+6. **자동 복구 신호는 is_online** — offline_monitor 가 superseded 행도 `is_online=false` 로 뒤집으므로(활성 행 스캔 그대로), 복구 판정은 "직전 스캔 뒤 다시 true 로 올라온 행" 이다. 10분 스캔 사이에 15초 heartbeat 가 오면 true 로 잡힌다.
 
 ## 배포 순서
 
