@@ -146,9 +146,13 @@ def _build_acl_content() -> str:
     # telemetry: 15초 heartbeat(last_seen/is_online) + rotate_180/capabilities 보고.
     # 2026-09-08 이전엔 빠져 있어 Mosquitto 가 카메라 telemetry 를 조용히 버렸다
     # (last_seen 이 ack 로만 갱신되던 원인). 기존 카메라는 regenerate_acl() 로 재생성 필요.
-    cam_res = sb.table("cameras").select("camera_id").execute()
+    # Stage U(2026-11-10): superseded 30일 뒤 해지된 계정(mqtt_revoked_at)은 ACL 에서도 뺀다 —
+    # unregister 는 password 만 지우므로 여기서 빼지 않으면 다음 재생성 때 ACL 블록이 되살아난다.
+    cam_res = sb.table("cameras").select("camera_id, mqtt_revoked_at").execute()
     camera_ids: set[str] = set()
     for row in cam_res.data or []:
+        if row.get("mqtt_revoked_at"):
+            continue
         cid = row["camera_id"]
         camera_ids.add(cid)
         buf.write(_acl_block(cid, ["telemetry", "motion_event", "ack", "alert"], ["command"]))

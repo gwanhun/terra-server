@@ -566,9 +566,13 @@ Content-Type: application/json
   "id": "...",
   "camera_id": "p4cam-a1b2c3d4",
   "camera_token": "Yc4d8E...",
-  "reused": false
+  "reused": false,
+  "revived": false
 }
 ```
+
+- `reused`: true 면 같은 `hw_id` 의 기존 행을 재사용(새 행 없음, 아래 참고)
+- `revived`: true 면 그 행이 **해제됐던** 행이라 되살렸다(2026-11-10~, 아래 참고). `reused` 가 true 일 때만 true
 
 `camera_token` 으로 이후 `/cameras/{id}/clips/*`, `/snapshot`, `/webrtc/*` 호출 시 Bearer 인증.
 ESP32-P4 는 NVS 에 저장 (RPi 는 `/etc/terra-cam/config.json`).
@@ -588,11 +592,16 @@ ESP32-P4 는 NVS 에 저장 (RPi 는 `/etc/terra-cam/config.json`).
 | `hw_id` 없음 (구 펌웨어) | 항상 새 행 생성 (종전 동작) |
 | 처음 보는 `hw_id` | 새 행 생성 + `hw_id` 저장 |
 | 이미 등록된 `hw_id` | 기존 행 갱신, `reused: true`, 새 토큰 발급 |
-| 해제(unlink)된 행의 `hw_id` | 새 행 생성 — 사용자가 뗀 카메라를 몰래 되살리지 않는다 |
+| 같은 계정의 해제(unlink)된 행의 `hw_id` (활성 행 없음) | **가장 최근 해제 행을 되살림**(2026-11-10~, Stage U): `unlinked_at=NULL`, `reused: true`, `revived: true`. 이름·사육장·`rotate_180` 은 요청값으로 초기화, `camera_id`·과거 영상·`clip_stats` 는 유지. 더 오래된 해제 행은 그대로 |
+| 다른 계정의 행이 있는 `hw_id` | 페어링은 본인 계정 기준으로만 동작(새 행 또는 재사용). 이전 계정 행은 **여기서 건드리지 않는다** — 브리지가 "새 행 온라인 + 이전 행 24시간 이상 오프라인" 을 확인한 뒤 `superseded_at` 으로 목록에서 숨기고, 보드가 옛 자격증명으로 돌아오면 자동 복구, 30일 뒤 MQTT 해지 |
 
-재사용 시 갱신되는 값은 기기가 보고하는 것(`name`/`model`/`firmware_ver`/`resolution`/
-`fps`/`clip_sec`)뿐이다. `enclosure_id` 는 요청에 있을 때만 바뀌고, 사용자가 서버·앱에서
-설정한 값(`rotate_180` 등)은 페어링이 덮어쓰지 않는다.
+재사용(활성 행) 시 갱신되는 값은 기기가 보고하는 것(`model`/`firmware_ver`/`resolution`/
+`fps`/`clip_sec`)뿐이다. `name` 은 유지(2026-09-23), `enclosure_id` 는 요청에 있을 때만 바뀌고,
+사용자가 서버·앱에서 설정한 값(`rotate_180` 등)은 페어링이 덮어쓰지 않는다.
+**되살리기(`revived`)는 예외** — 해제는 "그만 쓴다" 였으므로 새 등록처럼 이름·사육장·회전을 요청값으로 돌린다.
+
+> 2026-11-10 이전엔 해제 행의 `hw_id` 로 페어링하면 항상 새 행이 생겼다(해제 행이 계정당 수십 개 누적).
+> `GET /cameras` 는 `superseded_at IS NOT NULL` 행도 제외한다. **앱이 `cameras` 를 PostgREST 로 직접 읽는다면 같은 필터를 추가해야 한다.**
 
 **앱에 주는 함의**: 앱이 "WiFi 변경" 흐름에서 JWT 를 생략하면 페어링 자체가 일어나지 않아
 가장 깔끔하다(펌웨어가 JWT 없을 때 pair 를 호출하지 않음). `hw_id` 는 앱이 그 매핑을 잃었을

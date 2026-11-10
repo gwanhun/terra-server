@@ -64,11 +64,18 @@ def test_pair_camera_success(app_client: TestClient, fake_sb: MagicMock) -> None
 
 
 def _hw_lookup(fake_sb: MagicMock):
-    """/cameras/pair 의 hw_id 조회 체인 (select→eq→eq→is_→limit→execute)."""
+    """/cameras/pair 의 hw_id 조회 체인 (select→eq→eq→order→execute).
+
+    Stage U(2026-11-10)부터 활성·해제 행을 한 번에 읽어(created_at desc) Python 에서 고른다.
+    """
     return (
         fake_sb.table.return_value.select.return_value
-        .eq.return_value.eq.return_value.is_.return_value.limit.return_value.execute.return_value
+        .eq.return_value.eq.return_value.order.return_value.execute.return_value
     )
+
+
+def _update_chain(fake_sb: MagicMock):
+    return fake_sb.table.return_value.update.return_value.eq.return_value.execute.return_value
 
 
 def test_pair_camera_new_hw_id_inserts_and_stores_it(
@@ -153,6 +160,67 @@ def test_pair_camera_reuse_keeps_enclosure_when_not_given(
     assert "enclosure_id" not in patch
 
 
+def test_pair_camera_revives_latest_unlinked_row(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """[Stage U] 같은 계정·같은 보드, 활성 행 없음 → 가장 최근 해제 행을 되살린다(새 행 X).
+    설정은 요청값으로 초기화, camera_id 는 유지."""
+    _hw_lookup(fake_sb).data = [    # created_at desc — 첫 행이 최근
+        {"id": CAMERA_UUID, "camera_id": "p4cam-aabbccdd", "device_id": None,
+         "unlinked_at": "2026-11-01T00:00:00Z", "created_at": "2026-10-01T00:00:00Z"},
+        {"id": "older", "camera_id": "p4cam-00000000", "device_id": None,
+         "unlinked_at": "2026-09-01T00:00:00Z", "created_at": "2026-08-01T00:00:00Z"},
+    ]
+    _update_chain(fake_sb).data = [_camera_row()]
+
+    res = app_client.post(
+        "/cameras/pair",
+        json={"name": "새 이름", "model": "esp32-p4", "hw_id": "30EDA0E22E80"},
+    )
+    assert res.status_code == 201, res.text
+    body = res.json()
+    assert body["reused"] is True
+    assert body["revived"] is True
+    assert body["camera_id"] == "p4cam-aabbccdd"
+    fake_sb.table.return_value.insert.assert_not_called()
+
+    # 최근 해제 행(CAMERA_UUID)을 UPDATE 했다
+    assert fake_sb.table.return_value.update.return_value.eq.call_args.args == ("id", CAMERA_UUID)
+    patch = fake_sb.table.return_value.update.call_args.args[0]
+    assert patch["unlinked_at"] is None
+    assert patch["unlink_request_id"] is None
+    assert patch["name"] == "새 이름"             # 되살리기는 이름 초기화(재사용과 다름)
+    assert patch["enclosure_id"] is None          # 요청에 없음 → NULL (기존 연결 복구 X)
+    assert patch["rotate_180"] is False
+    assert patch["superseded_at"] is None and patch["superseded_by"] is None
+    assert patch["mqtt_revoked_at"] is None
+    assert patch["token_hash"].startswith("$2")
+
+
+def test_pair_camera_prefers_active_row_over_unlinked(
+    app_client: TestClient, fake_sb: MagicMock
+) -> None:
+    """활성 행과 해제 행이 섞여 있으면(과거 중복) 활성 행을 재사용하고 되살리기는 하지 않는다."""
+    _hw_lookup(fake_sb).data = [
+        {"id": "newer-unlinked", "camera_id": "p4cam-11111111", "device_id": None,
+         "unlinked_at": "2026-11-01T00:00:00Z", "created_at": "2026-10-20T00:00:00Z"},
+        {"id": CAMERA_UUID, "camera_id": "p4cam-aabbccdd", "device_id": None,
+         "unlinked_at": None, "created_at": "2026-10-01T00:00:00Z"},
+    ]
+    _update_chain(fake_sb).data = [_camera_row()]
+
+    res = app_client.post(
+        "/cameras/pair",
+        json={"name": "거실 카메라", "model": "esp32-p4", "hw_id": "30EDA0E22E80"},
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["reused"] is True
+    assert res.json()["revived"] is False
+    assert fake_sb.table.return_value.update.return_value.eq.call_args.args == ("id", CAMERA_UUID)
+    patch = fake_sb.table.return_value.update.call_args.args[0]
+    assert "unlinked_at" not in patch and "name" not in patch
+
+
 def test_pair_camera_without_hw_id_never_reuses(
     app_client: TestClient, fake_sb: MagicMock
 ) -> None:
@@ -217,12 +285,18 @@ def test_pair_camera_rpi_model_prefix(
 
 
 def test_list_cameras(app_client: TestClient, fake_sb: MagicMock) -> None:
-    chain = fake_sb.table.return_value.select.return_value.eq.return_value.is_.return_value.order.return_value
+    sel = fake_sb.table.return_value.select.return_value
+    chain = sel.eq.return_value.is_.return_value.is_.return_value.order.return_value
     chain.execute.return_value.data = [_camera_row()]
 
     res = app_client.get("/cameras")
     assert res.status_code == 200
     assert len(res.json()) == 1
+    # 해제 행 + superseded 행(다른 계정이 가져간 보드의 옛 행, Stage U) 둘 다 제외
+    is_calls = [c.args for c in sel.eq.return_value.is_.call_args_list]
+    assert ("unlinked_at", "null") in is_calls
+    second = sel.eq.return_value.is_.return_value.is_.call_args_list
+    assert ("superseded_at", "null") in [c.args for c in second]
 
 
 def _selected_columns(fake_sb: MagicMock) -> set[str]:
