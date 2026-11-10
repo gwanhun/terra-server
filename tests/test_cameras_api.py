@@ -219,6 +219,10 @@ def test_pair_camera_prefers_active_row_over_unlinked(
     assert fake_sb.table.return_value.update.return_value.eq.call_args.args == ("id", CAMERA_UUID)
     patch = fake_sb.table.return_value.update.call_args.args[0]
     assert "unlinked_at" not in patch and "name" not in patch
+    # 활성 행 재사용이라도 superseded·MQTT 해지 표식은 되돌린다 — 30일 해지 뒤 재페어링한 보드가
+    # register_device 로 비밀번호는 받았는데 ACL 재생성에서 빠지는 일을 막는다
+    assert patch["superseded_at"] is None and patch["superseded_by"] is None
+    assert patch["mqtt_revoked_at"] is None
 
 
 def test_pair_camera_without_hw_id_never_reuses(

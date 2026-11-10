@@ -421,18 +421,24 @@ def pair_camera(
         # 라벨링 트리거가 붙인 접미사(· 8636)를 WiFi 변경용 재페어링이 지워버렸다 — 펌웨어는
         # 프로비저닝 때 받은 이름을 매번 다시 보낸다. petcam 트리거는 행 생성 30분 뒤의 이름
         # 변경엔 접미사를 다시 붙이지 않으므로(v3) 서버가 안 쓰는 게 맞다. 이름 변경은 PATCH 로.
-        patch: dict[str, Any] = {"token_hash": token_hashed, **device_fields}
+        patch: dict[str, Any] = {
+            "token_hash": token_hashed, **device_fields,
+            # 재페어링 = 사용자가 이 계정으로 이 보드를 다시 쓰겠다는 뜻(Stage U). 다른 계정에 밀려
+            # 숨겨졌거나(superseded) 30일 지나 MQTT 가 해지된(mqtt_revoked_at) 행이라도 여기서 되돌린다 —
+            # 아래 register_device 가 비밀번호를 다시 넣는데 mqtt_revoked_at 이 남아 있으면 다음 ACL
+            # 재생성에서 빠져 보드가 publish 를 못 한다. 의심 표식(supersede_suspect_at)은 운영 기록이라 유지.
+            "superseded_at": None, "superseded_by": None, "mqtt_revoked_at": None,
+        }
         if body.enclosure_id:          # 미지정이면 기존 사육장 연결을 유지
             patch["enclosure_id"] = body.enclosure_id
         if revived:
             # 해제 행 되살리기(Stage U, U2): 해제는 "이 카메라를 그만 쓴다" 였으니 사용자 설정은
             # 새 등록처럼 요청값으로 돌린다(이름·사육장·회전). 영상·clip_stats·camera_id 는 유지 —
-            # 과거 영상이 다시 보이는 것이 되살리기의 목적이다. superseded 표식도 지운다.
+            # 과거 영상이 다시 보이는 것이 되살리기의 목적이다.
             patch.update({
                 "unlinked_at": None, "unlink_request_id": None,
                 "name": body.name, "enclosure_id": body.enclosure_id, "rotate_180": False,
-                "superseded_at": None, "superseded_by": None,
-                "supersede_suspect_at": None, "mqtt_revoked_at": None,
+                "supersede_suspect_at": None,
             })
         # 순수 카메라(p4cam-)로 등록됐던 보드를 허브 펌웨어로 리플래시한 경우: 같은 hw_id 라 행은
         # 재사용하되 camera_id 를 p4hub- 로 바꾼다. 브리지가 접두사로 조회 테이블을 고르므로
