@@ -43,10 +43,13 @@ HUB_MODEL = "esp32-p4-hub"
 TARGET_HUB = "hub_p4"
 # target 별 esp_app_desc.project_name(CMake project()). 카메라·허브가 같은 esp32p4 라 chip_id 로는
 # 못 가르므로 release.project_name 과 교차 검증한다(스펙 J C6). None 이면(구 릴리스) 검사 생략.
-EXPECTED_PROJECT_NAME: dict[str, str] = {
-    "camera_p4": "firebeetle2_p4_yr030",
-    "device_nano": "terra-iot",
-    TARGET_HUB: "terra_hub_p4",
+# device_nano 는 두 프로젝트를 받는다: terra-iot(1.8" ST7735S) 와 그 포크 terra-iot-20(2.0" ST7789,
+# 버전 접두어 `terra-fw-20`, 접미어 -sht/-dht 는 온습도 센서 변종). 같은 보드·같은 계약이라 target 은
+# 하나지만 **패널·센서가 다른 기기에 올리면 화면·온습도가 죽는다** — 릴리스를 고를 때 버전 문자열을 볼 것.
+EXPECTED_PROJECT_NAME: dict[str, tuple[str, ...]] = {
+    "camera_p4": ("firebeetle2_p4_yr030",),
+    "device_nano": ("terra-iot", "terra-iot-20"),
+    TARGET_HUB: ("terra_hub_p4",),
 }
 
 
@@ -250,7 +253,7 @@ def create_job(
         )
     pn = release.get("project_name")
     exp_pn = EXPECTED_PROJECT_NAME.get(want)
-    if pn and exp_pn and pn != exp_pn:
+    if pn and exp_pn and pn not in exp_pn:
         raise OtaError(
             f"release project_name {pn!r} ≠ {want} 기대값 {exp_pn!r} — 다른 프로젝트 빌드", 400
         )

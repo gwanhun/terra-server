@@ -455,3 +455,22 @@ def test_create_job_rejects_project_name_mismatch() -> None:
     with pytest.raises(svc.OtaError) as ei:
         svc.create_job(sb, kind="camera", entity=_camera(), release_id=REL_CAM, issued_by=None)
     assert ei.value.status_code == 400 and "project_name" in ei.value.detail
+
+
+def test_create_job_device_nano_accepts_both_projects() -> None:
+    # device_nano 는 terra-iot(1.8") 와 포크 terra-iot-20(2.0") 두 프로젝트를 받는다 (2026-11-11)
+    for i, (pn, ver) in enumerate([("terra-iot", "terra-fw 1.3.0-20261110"),
+                                   ("terra-iot-20", "terra-fw-20 1.3.0-20261111-sht")]):
+        rid = f"rel-nano-{i}"
+        rel = {**_release(rid, target="device_nano", version=ver), "project_name": pn}
+        sb = FakeSB(firmware_releases=[rel])
+        _, release, payload = svc.create_job(sb, kind="device", entity=_device(), release_id=rid, issued_by=None)
+        assert release["project_name"] == pn and payload["version"] == ver
+
+
+def test_create_job_device_nano_rejects_other_project() -> None:
+    rel = {**_release("rel-nano-x", target="device_nano", version="x 1.0"), "project_name": "terra_hub_p4"}
+    sb = FakeSB(firmware_releases=[rel])
+    with pytest.raises(svc.OtaError) as ei:
+        svc.create_job(sb, kind="device", entity=_device(), release_id="rel-nano-x", issued_by=None)
+    assert ei.value.status_code == 400 and "project_name" in ei.value.detail

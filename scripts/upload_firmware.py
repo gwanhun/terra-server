@@ -215,7 +215,7 @@ def cmd_upload(args: argparse.Namespace) -> int:
         return 2
     # 카메라·허브는 둘 다 esp32p4 라 chip_id 로 못 가른다 → project_name(CMake project()) 으로 교차 검증.
     exp_pn = EXPECTED_PROJECT_NAME.get(args.target)
-    if exp_pn and desc.project_name != exp_pn:
+    if exp_pn and desc.project_name not in exp_pn:
         print(f"거절: project_name={desc.project_name!r} 인데 target {args.target} 은 {exp_pn!r} 빌드여야 함 "
               f"(카메라 bin 을 hub_p4 로, 허브 bin 을 camera_p4 로 올리는 실수 차단)", file=sys.stderr)
         return 2
