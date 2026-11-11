@@ -75,15 +75,39 @@ def show(sb, job_id: str | None) -> None:
                 print(f"      {k}: {j.get(k)}")
 
 
+def show_logs(sb, camera_id: str, n: int) -> int:
+    """대시보드 '로그' 버튼과 같은 camera_logs 를 터미널로 — 테스트 기기 원격 진단용(2026-11-11)."""
+    from datetime import timedelta
+    col = "id" if camera_id.count("-") == 4 else "camera_id"
+    cams = sb.table("cameras").select("id, camera_id").eq(col, camera_id).limit(1).execute().data or []
+    if not cams:
+        print(f"camera not found: {camera_id}", file=sys.stderr)
+        return 1
+    rows = sb.table("camera_logs").select("created_at, uptime_s, prev_boot, count, msg") \
+        .eq("camera_id", cams[0]["id"]).order("created_at", desc=True).limit(max(1, min(n, 500))).execute().data or []
+    kst = timezone(timedelta(hours=9))
+    for r in reversed(rows):
+        ts = datetime.fromisoformat(r["created_at"].replace("Z", "+00:00")).astimezone(kst).strftime("%m-%d %H:%M:%S")
+        pb = "[이전] " if r.get("prev_boot") else ""
+        up = f"up{r['uptime_s']}s " if r.get("uptime_s") is not None else ""
+        cnt = f" x{r['count']}" if (r.get("count") or 1) > 1 else ""
+        print(f"{ts} {pb}{up}{r['msg']}{cnt}")
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--watch", action="store_true")
     p.add_argument("--job")
+    p.add_argument("--logs", metavar="CAMERA_ID", help="camera_logs 최근 N줄을 시간순으로 (JWT 없이, 읽기 전용)")
+    p.add_argument("-n", type=int, default=80, help="--logs 줄 수(기본 80)")
     a = p.parse_args()
     from postgrest.exceptions import APIError
 
     from backend.supabase_client import get_supabase_client
     sb = get_supabase_client()
+    if a.logs:
+        return show_logs(sb, a.logs, a.n)
     try:
         sb.table("ota_jobs").select("id").limit(1).execute()
     except APIError as exc:
