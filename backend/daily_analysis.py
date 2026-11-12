@@ -35,6 +35,14 @@ v4 일일 온습도 분석 카드 — Stage P (기획 v4 2-1~2-3).
 | 이벤트 없음 + 사이클 0 | HUM_NO_MIST | caution | 습기가 감지되지 않았어요 |
 
 `cycles` 가 None(Stage O 전·켜기 전 구간)이면 이벤트 없는 날 습도 카드는 없다(P9).
+
+## 수집 부족 안내 (앱 요청 2026-11-12, Figma 1736:5264)
+
+위 규칙으로 카드가 없고 그 지표가 유효 수집일이 아니면, 그 지표 카드 자리에
+`ERR_DISCONNECT`(caution) `데이터 수집이 원활하지 않았어요` / `일일 분석을 위한 데이터가 충분하지 않아요.
+전원과 Wi-Fi 연결 상태를 확인해 주세요`. 이벤트 카드가 있으면 카드만(주간 Q4 r2 와 같은 방향).
+등록 시각이 구간 시작 뒤(등록 첫날)거나 모르면 내지 않는다 — 덜 모인 게 당연한 날이다.
+주간 `ERR_DISCONNECT`(유효일 ≥ 3·누락률 ≥ 50%, `notices`)와 이름만 같고 기준·자리는 다르다.
 사이클 카드(Stage O)는 그날 습도가 유효 수집일일 때만. 사이클 소속은 `cycle_window`(05:00~05:00, O-f),
 건기 도달 수는 카드 구간 끝(다음 날 08:00)까지 도달한 것만 — 2차 생성 시점에 따라 바뀌지 않게.
 status 는 환기 지연 줄이 하나라도 있으면 danger(기획 3-3 HUM_DELAY = 경고, 주간과 같은 어휘),
@@ -468,6 +476,25 @@ def build_humid_card(events: list[dict[str, Any]], buckets: list[dict[str, Any]]
         return Card("humid", "HUM_NORMAL", "normal", "건습 사이클이 건강하게 유지됐어요",
                     [f"습기 {wet}번, 건기 {reached}번이 기록됐어요"], data)
     return None   # 사이클은 있는데 도달 0 — 기획 문구 없음(보통 환기 지연 이벤트가 먼저 잡힌다)
+
+
+_DISCONNECT = ("ERR_DISCONNECT", "데이터 수집이 원활하지 않았어요",
+               "일일 분석을 위한 데이터가 충분하지 않아요. 전원과 Wi-Fi 연결 상태를 확인해 주세요")
+
+
+def with_disconnect(card: Card | None, element: Element, buckets: list[dict[str, Any]],
+                    window: Window, registered_at: datetime | str | None) -> Card | None:
+    """카드가 없고 그 지표가 유효 수집일이 아니면 수집 부족 안내 카드로 채운다(등록 첫날·등록 시각 모름 제외)."""
+    if card is not None:
+        return card
+    reg = _parse_ts(registered_at)
+    if reg is None or reg > window[0]:
+        return None
+    metric: Literal["t_a", "h_a"] = "t_a" if element == "temp" else "h_a"
+    if is_valid_day(buckets, window, metric):
+        return None
+    code, title, body = _DISCONNECT
+    return Card(element, code, "caution", title, [body], {"events": [], "valid_day": False})
 
 
 def cycle_window(window: Window) -> Window:

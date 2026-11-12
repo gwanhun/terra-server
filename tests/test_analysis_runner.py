@@ -323,6 +323,18 @@ def test_buckets_feed_daynight_card(enabled: None) -> None:
     assert temp["data"]["diff_daynight"] == 3.3
 
 
+def test_disconnect_card_uses_registration(enabled: None) -> None:
+    # 앱 요청 2026-11-12: 수집이 모자란 날은 카드 자리에 ERR_DISCONNECT. 등록 시각은 devices.created_at
+    sb = FakeSB(devices=[dev(1, created_at=iso(kst(12, day=1))),       # 구간 전 등록
+                         dev(2, created_at=iso(kst(15, day=2)))])      # 구간 중 등록
+    assert AnalysisRunner(sb=sb).tick(kst(8, 16)) == 2
+    row = report(sb, "dev-0001")
+    assert row["temp_card"]["code"] == "ERR_DISCONNECT" and row["humid_card"]["code"] == "ERR_DISCONNECT"
+    assert row["temp_card"]["title"] == "데이터 수집이 원활하지 않았어요"
+    other = report(sb, "dev-0002")
+    assert other["temp_card"] is None and other["humid_card"] is None
+
+
 def test_humid_cycles_flag_off_not_queried(enabled: None) -> None:
     sb = RecordingSB(devices=[dev(1)])
     assert AnalysisRunner(sb=sb).tick(kst(8, 16)) == 1

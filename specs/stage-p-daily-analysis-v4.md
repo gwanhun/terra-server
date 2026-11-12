@@ -37,6 +37,7 @@
 | P10 | 대상 기기: `unlinked_at IS NULL` 이고 `owner_id` 있음. 한 tick 최대 200기기, 기기 id 순 커서로 순회(실패 기기가 뒤 기기를 막지 않게) | 운영 | 불필요 |
 | P11 | 같은 `chain_root` 를 가진 행(경고 → 무음 주의(D3) → 무음 재경고(D14))은 한 줄: 구간 = 첫 행 시작 ~ 마지막 행 종료, 레벨 = 경고, `{temp}` = chain 내 가장 극단 peak | Stage N D3 확정(2026-11-02) | 불필요 |
 | P12 | 카드 `status`: 경고 이벤트 있으면 `danger`, 주의만 `caution`, 주야간 1.5~6 `normal` / 그 외 `caution` | alerts severity("warning"=주의)와 어휘 충돌 방지 | 앱 핸드오프 |
+| P13 | 수집 부족 안내(2026-11-12 추가): P7·P9 로 카드가 None 이고 그 지표가 `is_valid_day` 아니면 카드 자리에 `ERR_DISCONNECT`(caution, Figma 1736:5264 문구). 이벤트 카드 우선. 등록 시각 > 구간 시작(등록 첫날)·등록 시각 모름은 제외. 배포 전 행 소급 없음 | 앱 요청 `tera-ai-flutter/docs/handoffs/2026-11-12-env-report-notices-server-request.md` ① | 앱 핸드오프 |
 
 ## 유저 체험 시뮬레이션 (11/3 아침 앱을 연 사용자)
 
