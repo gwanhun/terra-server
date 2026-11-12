@@ -96,6 +96,7 @@ from backend.daily_analysis import (
     build_temp_card,
     cycle_window,
     report_window,
+    with_disconnect,
 )
 from backend.humid_cycle import humid_cycles_enabled, humid_cycles_since
 from backend.supabase_client import get_supabase_client
@@ -252,8 +253,10 @@ def generate_daily(sb: Any, device: dict[str, Any], report_date: date, now: date
     events = _fetch_events(sb, device_id, window)
     buckets = _fetch_buckets(sb, device_id, window)
     cycles = _fetch_cycles(sb, device_id, window)
-    temp = build_temp_card(events, buckets, window)
-    humid = build_humid_card(events, buckets, window, cycles=cycles)
+    reg = device.get("created_at")
+    temp = with_disconnect(build_temp_card(events, buckets, window), "temp", buckets, window, reg)
+    humid = with_disconnect(build_humid_card(events, buckets, window, cycles=cycles), "humid",
+                            buckets, window, reg)
     temp_json = temp.to_json() if temp else None
     humid_json = humid.to_json() if humid else None
     if (pass_no == 2 and existing is not None

@@ -18,6 +18,7 @@ from backend.daily_analysis import (
     build_humid_card,
     build_temp_card,
     report_window,
+    with_disconnect,
 )
 from backend.env_rules import ElementTracker, Thresholds, display_diff
 
@@ -366,6 +367,54 @@ def test_vent_delay_line_split_documented():
     assert card.code == "HUM_DELAY" and card.lines == ["03:00에 분무 후 사육장이 충분히 마르지 않음"]
 
 
+# ---------- 수집 부족 안내 (ERR_DISCONNECT, 앱 요청 2026-11-12) ----------
+
+REG_BEFORE = kst(1, 12)      # 구간(11/2 08:00) 전에 등록
+
+
+def test_disconnect_card_when_invalid_day_and_no_card():
+    buckets = day_night_buckets(25.1, 21.8, count=100)            # 4,800 < 23,040
+    card = with_disconnect(None, "temp", buckets, W, iso(REG_BEFORE))
+    assert card is not None
+    assert card.to_json() == {
+        "element": "temp", "code": "ERR_DISCONNECT", "status": "caution",
+        "title": "데이터 수집이 원활하지 않았어요",
+        "lines": ["일일 분석을 위한 데이터가 충분하지 않아요. 전원과 Wi-Fi 연결 상태를 확인해 주세요"],
+        "data": {"events": [], "valid_day": False},
+    }
+    assert with_disconnect(None, "humid", [], W, iso(REG_BEFORE)).element == "humid"   # 버킷 0 도 안내
+
+
+def test_disconnect_keeps_existing_card():
+    # 수집이 모자라도 이벤트 카드가 있으면 카드만(주간 Q4 r2 와 같은 방향)
+    event_card = build_temp_card([ev("d1", "env_temp_high", "danger", kst(2, 14), None, peak_value=29.6)], [], W)
+    assert with_disconnect(event_card, "temp", [], W, iso(REG_BEFORE)) is event_card
+
+
+def test_disconnect_not_on_valid_day():
+    # 유효 수집일인데 카드가 없는 경우(습도 스위치 꺼짐 등)는 안내하지 않는다
+    assert with_disconnect(None, "humid", day_night_buckets(25.0, 22.0), W, iso(REG_BEFORE)) is None
+
+
+def test_disconnect_per_metric_validity():
+    buckets = day_night_buckets(25.1, 21.8)
+    for b in buckets:
+        b["h_a_count"] = 0                                        # 습도만 비는 날
+    assert with_disconnect(None, "temp", buckets, W, iso(REG_BEFORE)) is None
+    assert with_disconnect(None, "humid", buckets, W, iso(REG_BEFORE)).code == "ERR_DISCONNECT"
+
+
+@pytest.mark.parametrize("registered_at", [kst(2, 8, 1), kst(2, 15), None])
+def test_disconnect_skips_registration_day_and_unknown(registered_at):
+    # 구간 중간에 등록한 날은 표본이 모자란 게 당연 — "Wi-Fi 확인" 오안내 금지. 등록 시각 모르면 안 냄
+    reg = iso(registered_at) if registered_at else None
+    assert with_disconnect(None, "temp", [], W, reg) is None
+
+
+def test_disconnect_registered_exactly_at_window_start():
+    assert with_disconnect(None, "temp", [], W, iso(kst(2, 8))).code == "ERR_DISCONNECT"
+
+
 # ---------- 직렬화 ----------
 
 def test_card_json_has_element_code_status():
@@ -373,6 +422,7 @@ def test_card_json_has_element_code_status():
         build_temp_card([ev("d1", "env_temp_high", "danger", kst(2, 14), None, peak_value=29.6)], [], W),
         build_temp_card([], day_night_buckets(25.1, 21.8), W),
         build_humid_card([], day_night_buckets(25.0, 22.0), W, cycles=[]),
+        with_disconnect(None, "temp", [], W, iso(REG_BEFORE)),
     ]
     for c in cards:
         j = c.to_json()
