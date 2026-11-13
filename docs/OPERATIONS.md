@@ -164,16 +164,16 @@ uv run python scripts/reconcile_r2_orphans.py --prune-missing --camera p4cam-…
 
 ---
 
-## 1-3. 카메라 렌즈 초점 안내 발송 (2026-11-10, 운영자 수동)
+## 1-3. 카메라 렌즈 초점 안내 발송 (2026-11-10, 2026-11-11 카메라 단위로 변경, 운영자 수동)
 
-> 앱 원문: tera-ai-flutter `docs/ops/camera-focus-notice.md` (앱 0.176.0+). `app_notifications` 스키마는 앱 레포 `supabase/migrations/20260915000000_fcm_notifications.sql`.
+> 앱 원문: tera-ai-flutter `docs/ops/camera-focus-notice.md` (앱 **0.177.0+**). `app_notifications` 스키마는 앱 레포 `supabase/migrations/20260915000000_fcm_notifications.sql`.
 
-영상이 흐린 사용자에게 운영자가 "카메라 렌즈 초점을 맞춰주세요" 안내를 보낸다.
+영상이 흐린 **카메라**의 주인에게 운영자가 "카메라 렌즈 초점을 맞춰주세요" 안내를 보낸다.
 
-- 받은 사용자: 앱 홈·카메라 탭 라이브 위에 안내 막대 + 알림함(분류 "카메라")에 1건
-- 누르면 카메라 상세(초점 가이드)로 가고 읽음 처리 → 모든 기기에서 사라짐
-- 사람 단위(카메라 지정 없음), **푸시 없음**
-- 앱 0.176.0 미만은 알림함에 "일반 알림"으로만 보이고 막대는 없음
+- 받은 사용자: **그 카메라의** 라이브 위(홈·카메라 탭)에만 안내 막대가 뜬다. 다른 카메라 라이브에는 안 뜬다. 알림함(분류 "카메라")에도 1건 남는다.
+- 누르면 카메라 상세(초점 가이드)로 가고, **그 카메라 안내만** 읽음 처리돼 모든 기기에서 사라진다. 다른 카메라 안내는 그대로다.
+- **푸시 없음.**
+- 0.176.x(사람 단위였던 버전)는 고려하지 않는다(2026-11-11 결정).
 
 ### 왜 `app_notifications` 에 직접 넣나
 
@@ -185,36 +185,45 @@ uv run python scripts/reconcile_r2_orphans.py --prune-missing --camera p4cam-…
 
 | 컬럼 | 값 |
 |---|---|
+| `user_id` | **그 카메라의 `cameras.owner_id`** |
 | `kind` | `camera.focus_needed` (앱은 이걸로 분기) |
 | `category` | `camera` |
-| `route` | `/crecam` (기록용) |
+| `route` | `/crecam/cameras/<cameras.id>/live` (기록용) |
 | `title` | `카메라 렌즈 초점을 맞춰주세요` |
 | `body` | `영상이 흐릿하게 보인다면 렌즈 초점을 맞춰주세요` |
 | `source` | `external` |
 | `source_event_id` | 새 uuid |
 | `dedupe_key` | `ops-focus:` + 같은 uuid (`UNIQUE(user_id, dedupe_key)`) |
-| `data` | `{"kind":"camera.focus_needed","source":"external"}` (object 필수) |
+| `data` | object. **`camera_id` = 그 카메라의 `cameras.id`(uuid 문자열) 필수.** `device_id`·`camera_name` 은 사람이 읽을 용도(선택) |
 | `read_at` | NULL 로 넣음. 앱이 누르면 채움 |
 
-### 보내기 (Supabase SQL Editor, 이메일만 바꿔 실행)
+`data.camera_id` 가 없으면 막대가 어디에도 안 뜨고 알림함에만 남는다.
+
+### 보내기 (Supabase SQL Editor, 기기 ID 만 바꿔 실행)
+
+카메라는 기기 ID(`cameras.camera_id`, 예: `p4cam-a1b2c3d4`, DB 전체에서 UNIQUE)로 지정한다.
 
 ```sql
 insert into public.app_notifications
   (user_id, kind, category, title, body, route, data, source, source_event_id, dedupe_key)
-select u.id, 'camera.focus_needed', 'camera',
+select c.owner_id, 'camera.focus_needed', 'camera',
        '카메라 렌즈 초점을 맞춰주세요', '영상이 흐릿하게 보인다면 렌즈 초점을 맞춰주세요',
-       '/crecam', jsonb_build_object('kind', 'camera.focus_needed', 'source', 'external'),
+       '/crecam/cameras/' || c.id || '/live',
+       jsonb_build_object('kind', 'camera.focus_needed', 'source', 'external',
+                          'camera_id', c.id, 'device_id', c.camera_id, 'camera_name', c.name),
        'external', e.id, 'ops-focus:' || e.id
-from auth.users u, (select gen_random_uuid()::text as id) e
-where u.email = '<대상 이메일>';
+from public.cameras c, (select gen_random_uuid()::text as id) e
+where c.camera_id = '<기기 ID>'
+  and c.unlinked_at is null and c.superseded_at is null and c.owner_id is not null;
 ```
 
-결과가 `INSERT 0 1` 인지 꼭 확인한다. `INSERT 0 0` 이면 이메일 오타라 아무것도 안 간 것이다.
+결과가 `INSERT 0 1` 인지 꼭 확인한다. `INSERT 0 0` 이면 아무것도 안 간 것이다. 원인은 기기 ID 오타, 연결 해제된 카메라(`unlinked_at`), 다른 계정으로 넘어간 카메라(`superseded_at`, Stage U) 중 하나다.
 
 ### 보낸 기록
 
 ```sql
-select n.created_at, u.email, n.read_at
+select n.created_at, u.email, n.data->>'device_id' as device_id,
+       n.data->>'camera_name' as camera, n.read_at
 from public.app_notifications n join auth.users u on u.id = n.user_id
 where n.kind = 'camera.focus_needed'
 order by n.created_at desc limit 50;
@@ -225,15 +234,14 @@ order by n.created_at desc limit 50;
 ### 보기 전 취소
 
 ```sql
-update public.app_notifications n set read_at = now()
-from auth.users u
-where u.id = n.user_id and u.email = '<대상 이메일>'
-  and n.kind = 'camera.focus_needed' and n.read_at is null;
+update public.app_notifications set read_at = now()
+where kind = 'camera.focus_needed' and read_at is null
+  and data->>'camera_id' = (select id::text from public.cameras where camera_id = '<기기 ID>');
 ```
 
 ### 참고
 
-- 같은 사람에게 다시 보내면 다시 뜬다. 여러 건이 쌓여도 한 번 누르면 전부 읽음 처리된다.
+- 같은 카메라에 다시 보내면 다시 뜬다. 같은 카메라 안내가 여러 건 쌓여도 한 번 누르면 전부 읽음 처리된다.
 - 앱은 이 kind 의 최근 20건만 Realtime 으로 구독한다(RLS 로 본인 행만).
 
 ---
@@ -471,3 +479,4 @@ sudo journalctl -u caddy --since "1 day ago" | grep -i renew
 | 2026-05-29 | 최초 작성 |
 | 2026-11-04 | 1-2 R2 고아 클립 역등록 cron 추가 |
 | 2026-11-10 | 1-3 카메라 렌즈 초점 안내 발송(운영자 수동) 추가 |
+| 2026-11-11 | 1-3 초점 안내를 카메라 단위로 변경(`data.camera_id` 필수, 앱 0.177.0+) |
