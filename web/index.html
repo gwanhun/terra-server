@@ -1004,15 +1004,22 @@ async function createSchedule() {
   if (r) { toast('⏰ 예약 추가', 'good'); loadSchedules(); }
 }
 
+// 예약이 많으면(시간마다 분무 등) 표가 길어져 아래 패널을 밀어낸다 — 처음 SCH_FOLD 개만 보이고 나머지는
+// "N개 더 보기" 줄로 접는다. 펼친 상태는 같은 디바이스에서 추가·삭제 뒤 다시 그릴 때 유지, 디바이스를 바꾸면 다시 접힘.
+const SCH_FOLD = 5;
+let schExpanded = false, schExpandedDevice = null;
 async function loadSchedules() {
   const sel = document.getElementById('sch-device');
   const tbody = document.querySelector('#sch-table tbody');
   if (!sel || !tbody) return;
   const deviceId = sel.value;
   if (!deviceId) { tbody.innerHTML = ''; return; }
+  if (schExpandedDevice !== deviceId) { schExpanded = false; schExpandedDevice = deviceId; }
   const rows = await api(`/devices/${deviceId}/schedules`);
   tbody.innerHTML = '';
-  (rows || []).forEach(s => {
+  const total = (rows || []).length;
+  const folded = total > SCH_FOLD && !schExpanded;
+  (rows || []).forEach((s, i) => {
     const label = DEV_LABEL[s.device_id] || s.device_id.slice(0, 8);
     const actLabel = (s.action === 'mist' && s.payload?.duration_ms)
       ? `💦 ${s.payload.duration_ms / 1000}s` : s.action;
@@ -1029,8 +1036,16 @@ async function loadSchedules() {
       <td><small>${esc(fmtKst(s.last_run_at))}</small></td>
       <td>${s.enabled ? '<span class="good">●</span>' : '<span class="muted">○</span>'}</td>
       <td><button class="danger" onclick="deleteSchedule('${s.id}')" style="font-size:11px;padding:2px 8px">삭제</button></td>`;
+    if (folded && i >= SCH_FOLD) tr.classList.add('hidden');
     tbody.appendChild(tr);
   });
+  if (total > SCH_FOLD) {
+    const tr = document.createElement('tr');
+    const label = folded ? `▾ ${total - SCH_FOLD}개 더 보기 (전체 ${total}개)` : `▴ 접기 (처음 ${SCH_FOLD}개만)`;
+    tr.innerHTML = `<td colspan="8" style="text-align:center;padding:4px"><button class="sm ghost" style="font-size:11px;padding:2px 10px">${label}</button></td>`;
+    tr.querySelector('button').onclick = () => { schExpanded = !schExpanded; loadSchedules(); };
+    tbody.appendChild(tr);
+  }
   loadScheduleHistory();
 }
 
