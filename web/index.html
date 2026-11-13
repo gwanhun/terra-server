@@ -1004,10 +1004,20 @@ async function createSchedule() {
   if (r) { toast('⏰ 예약 추가', 'good'); loadSchedules(); }
 }
 
-// 예약이 많으면(시간마다 분무 등) 표가 길어져 아래 패널을 밀어낸다 — 처음 SCH_FOLD 개만 보이고 나머지는
-// "N개 더 보기" 줄로 접는다. 펼친 상태는 같은 디바이스에서 추가·삭제 뒤 다시 그릴 때 유지, 디바이스를 바꾸면 다시 접힘.
-const SCH_FOLD = 5;
-let schExpanded = false, schExpandedDevice = null;
+// 긴 표 접기 — 예약·실행 내역·활성 알림 표가 길어지면 아래 패널을 밀어내서, 처음 TABLE_FOLD 개만 보이고
+// 나머지는 "N개 더 보기" 줄로 접는다. 펼친 상태는 같은 대상에서 다시 그릴 때 유지, 디바이스를 바꾸면 다시 접힘.
+const TABLE_FOLD = 5;
+let schExpanded = false, schExpandedDevice = null;        // 예약 표
+let schHistExpanded = false, schHistExpandedDevice = null; // 실행 내역 표 (따로 접힘)
+// 표 끝에 "N개 더 보기 / 접기" 줄을 붙인다. total <= TABLE_FOLD 면 아무것도 안 붙임.
+function appendFoldRow(tbody, total, expanded, colspan, onToggle) {
+  if (total <= TABLE_FOLD) return;
+  const tr = document.createElement('tr');
+  const label = expanded ? `▴ 접기 (처음 ${TABLE_FOLD}개만)` : `▾ ${total - TABLE_FOLD}개 더 보기 (전체 ${total}개)`;
+  tr.innerHTML = `<td colspan="${colspan}" style="text-align:center;padding:4px"><button class="sm ghost" style="font-size:11px;padding:2px 10px">${label}</button></td>`;
+  tr.querySelector('button').onclick = onToggle;
+  tbody.appendChild(tr);
+}
 async function loadSchedules() {
   const sel = document.getElementById('sch-device');
   const tbody = document.querySelector('#sch-table tbody');
@@ -1018,7 +1028,7 @@ async function loadSchedules() {
   const rows = await api(`/devices/${deviceId}/schedules`);
   tbody.innerHTML = '';
   const total = (rows || []).length;
-  const folded = total > SCH_FOLD && !schExpanded;
+  const folded = total > TABLE_FOLD && !schExpanded;
   (rows || []).forEach((s, i) => {
     const label = DEV_LABEL[s.device_id] || s.device_id.slice(0, 8);
     const actLabel = (s.action === 'mist' && s.payload?.duration_ms)
@@ -1036,16 +1046,10 @@ async function loadSchedules() {
       <td><small>${esc(fmtKst(s.last_run_at))}</small></td>
       <td>${s.enabled ? '<span class="good">●</span>' : '<span class="muted">○</span>'}</td>
       <td><button class="danger" onclick="deleteSchedule('${s.id}')" style="font-size:11px;padding:2px 8px">삭제</button></td>`;
-    if (folded && i >= SCH_FOLD) tr.classList.add('hidden');
+    if (folded && i >= TABLE_FOLD) tr.classList.add('hidden');
     tbody.appendChild(tr);
   });
-  if (total > SCH_FOLD) {
-    const tr = document.createElement('tr');
-    const label = folded ? `▾ ${total - SCH_FOLD}개 더 보기 (전체 ${total}개)` : `▴ 접기 (처음 ${SCH_FOLD}개만)`;
-    tr.innerHTML = `<td colspan="8" style="text-align:center;padding:4px"><button class="sm ghost" style="font-size:11px;padding:2px 10px">${label}</button></td>`;
-    tr.querySelector('button').onclick = () => { schExpanded = !schExpanded; loadSchedules(); };
-    tbody.appendChild(tr);
-  }
+  appendFoldRow(tbody, total, !folded, 8, () => { schExpanded = !schExpanded; loadSchedules(); });
   loadScheduleHistory();
 }
 
@@ -1057,6 +1061,7 @@ async function loadScheduleHistory() {
   const deviceId = document.getElementById('sch-device')?.value;
   if (!tbody) return;
   if (!deviceId) { tbody.innerHTML = ''; return; }
+  if (schHistExpandedDevice !== deviceId) { schHistExpanded = false; schHistExpandedDevice = deviceId; }
   const { data, error } = await sb
     .from('commands')
     .select('id, action, payload, status, result, reason, source, issued_at, acked_at')
@@ -1070,7 +1075,8 @@ async function loadScheduleHistory() {
     tbody.innerHTML = '<tr><td colspan="6" class="muted">실행 내역 없음</td></tr>';
     return;
   }
-  data.forEach(c => {
+  const folded = data.length > TABLE_FOLD && !schHistExpanded;
+  data.forEach((c, i) => {
     const statusColor = {
       pending: 'muted', sent: 'good', acked: 'good',
       rejected: 'bad', expired: 'bad', skipped: 'muted',
@@ -1086,8 +1092,10 @@ async function loadScheduleHistory() {
       <td><span class="${statusColor}">${esc(c.status)}</span></td>
       <td><small>${esc(c.reason || c.result || '-')}</small></td>
       <td><small>${esc(c.acked_at ? fmtKst(c.acked_at) : '-')}</small></td>`;
+    if (folded && i >= TABLE_FOLD) tr.classList.add('hidden');
     tbody.appendChild(tr);
   });
+  appendFoldRow(tbody, data.length, !folded, 6, () => { schHistExpanded = !schHistExpanded; loadScheduleHistory(); });
 }
 
 async function deleteSchedule(id) {
@@ -1463,6 +1471,7 @@ function renderTelemetry() {
 // ─────────────────────────────────────────────────────────────────────────
 // 알림 (Stage D) — 활성 알림만 표시
 // ─────────────────────────────────────────────────────────────────────────
+let alertsExpanded = false;  // 접힘 상태 — 리얼타임 갱신으로 다시 그려도 유지
 async function loadAlerts() {
   if (!sb) return;
   const { data, error } = await sb
@@ -1479,7 +1488,8 @@ async function loadAlerts() {
     return;
   }
   tbody.innerHTML = '';
-  data.forEach(a => {
+  const folded = data.length > TABLE_FOLD && !alertsExpanded;
+  data.forEach((a, i) => {
     const cls = a.severity === 'critical' ? 'bad' : (a.severity === 'warning' ? '' : 'muted');
     const dev = DEV_LABEL[a.device_id] || a.device_id.slice(0, 8);
     const tr = document.createElement('tr');
@@ -1490,8 +1500,11 @@ async function loadAlerts() {
       <td><code>${esc(dev)}</code></td>
       <td><small>${esc(a.triggered_at?.slice(11,19) || '-')}</small></td>
       <td><button onclick="resolveAlert('${a.id}')" style="font-size:11px;padding:2px 8px">해제</button></td>`;
+    if (folded && i >= TABLE_FOLD) tr.classList.add('hidden');
     tbody.appendChild(tr);
   });
+  // 최신순이라 접혀도 가장 새 알림이 보인다. 배너의 건수는 접힘과 무관하게 전체 기준.
+  appendFoldRow(tbody, data.length, !folded, 6, () => { alertsExpanded = !alertsExpanded; loadAlerts(); });
   renderAlertsBanner(data);
 }
 
