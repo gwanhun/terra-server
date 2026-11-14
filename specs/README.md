@@ -26,6 +26,7 @@
 |------|-----|-------|
 | ⏸️ | [stage-f-camera-ingest.md](stage-f-camera-ingest.md) | ESP32-P4 카메라 워커 → H.264 mp4 → R2 + motion_clips 메타 |
 | ⏸️ | [stage-g-live-streaming.md](stage-g-live-streaming.md) | 라이브 스트리밍 (G1 JPEG → G2 WebRTC 단계적) |
+| 🚧 | [stage-v-camera-weak-signal-notice.md](stage-v-camera-weak-signal-notice.md) | 카메라 네트워크 신호 약함 안내 — RSSI −75 이하 10분이면 그 카메라 화면 막대(`app_notifications` 직접 INSERT, 푸시 없음), −70 이상 회복 시 내림. `NET_WEAK_NOTICE_ENABLED` 기본 꺼짐·드라이런 기본 켜짐 |
 
 ### 공통 (카메라 + IoT 기기)
 

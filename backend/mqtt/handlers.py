@@ -47,6 +47,7 @@ from typing import Any
 from postgrest.exceptions import APIError
 from supabase import Client
 
+from backend import net_weak
 from backend import ota_service
 from backend.db_helpers import parse_uuid
 from backend.mqtt.camera_commands import ACTION_OTA_APPLY, ACTION_OTA_PREPARE, rotation_command
@@ -306,6 +307,7 @@ def reset_device_cache() -> None:
     _device_caps_cache.clear()
     _device_lcd_cache.clear()
     _uptime_prev.clear()
+    net_weak.get_tracker().reset()
     from backend import schedule_restore  # 지연 import (schedule_restore → command_service, handlers 미참조)
     schedule_restore.reset()
 
@@ -1037,6 +1039,14 @@ def handle_telemetry(device_id_text: str, payload: dict[str, Any]) -> None:
         _ota_verify_from_heartbeat(
             sb, entity_uuid, fw, bool(written is not None and "firmware_ver" in written)
         )
+
+        # 신호 약함 안내(Stage V): _write_heartbeat 뒤 — 안내 처리가 느리거나 실패해도
+        # 온라인 표시는 이미 써져 있어야 한다. 스위치(NET_WEAK_NOTICE_ENABLED) 꺼짐이면 no-op.
+        if sys_state is not None and "rssi" in sys_state:
+            try:
+                net_weak.on_camera_rssi(sb, entity_uuid, device_id_text, sys_state["rssi"])
+            except Exception:  # noqa: BLE001
+                logger.exception("신호 약함 안내 처리 실패 (camera=%s)", device_id_text)
 
         # 하드웨어 ID(2026-09-21): 구 펌웨어로 등록돼 NULL 인 행을 새 펌웨어 하트비트가 한 번
         # 채운다. 보드가 바뀌지 않는 한 불변이라 성공 후엔 캐시에 반영해 다시 쓰지 않는다.

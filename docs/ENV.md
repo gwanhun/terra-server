@@ -171,6 +171,18 @@ Edge Function 으로 이벤트를 보낸다. 브리지가 `push_outbox` 에 적�
 - 켜는 순서: 계획서 "켜는 순서" — 섀도 2~3일(게이트 4개) → 펌웨어 확인 + `HUMID_CYCLES_ENABLED` 켜진 뒤 `AUTO_ENV_DRY_RUN=false`(테스트 기기 1대) → 앱 토글 출시 + `AUTO_ENV_DEVICES` 비움.
 - 롤백: `AUTO_ENV_ENABLED=false` + 브리지 재시작. 켜져 있던 자동 팬은 펌웨어 타이머(1시간)로 꺼진다.
 
+### 카메라 네트워크 신호 약함 안내 (Stage V, 2026-11-14)
+
+브리지가 카메라 heartbeat 의 `wifi_rssi` 가 −75dBm 이하로 10분 넘게 이어지면 `app_notifications` 에 안내 행(`kind='camera.weak_signal'`, 푸시 없음)을 넣고, −70dBm 이상으로 회복하면 `read_at` 을 채워 내린다. 규칙: [specs/stage-v-camera-weak-signal-notice.md](../specs/stage-v-camera-weak-signal-notice.md). 바꾸면 브리지 재시작. 마이그레이션 없음.
+
+| 변수 | 필수 | 설명 |
+|------|:---:|------|
+| `NET_WEAK_NOTICE_ENABLED` | X | `true/1/yes/on` 이면 판정. **기본 꺼짐** — 꺼져 있으면 RSSI 를 보지도 않는다 |
+| `NET_WEAK_NOTICE_DRY_RUN` | X | **기본 켜짐**. 켜져 있으면 행을 넣지 않고 `net-weak intent camera=… rssi=…` 로그만 남기며, 회복 때 읽음 처리도 하지 않는다. `0/false/no/off` 일 때만 실제 INSERT/UPDATE — 오타는 드라이런으로 남는다 |
+
+- 켜는 순서·보낸 기록·롤백 SQL: [OPERATIONS.md 1-4](OPERATIONS.md).
+- 롤백: `NET_WEAK_NOTICE_ENABLED=false` + 브리지 재시작. 이미 뜬 막대는 OPERATIONS.md 1-4 의 일괄 읽음 처리 SQL 로 내린다(드라이런으로만 되돌린 경우도 같다).
+
 ### 운영 카메라 재부팅 (2026-10-20)
 
 petcam-lab 감시 스크립트가 `POST /ops/cameras/{id}/reboot` 를 부를 때 `X-Ops-Secret` 헤더로 보내는 서버 시크릿.

@@ -1627,6 +1627,60 @@ def test_camera_telemetry_sys_state_txpwr(fake_sb: MagicMock, published: list) -
         assert "txpwr_q4" not in sy, bad
 
 
+# ---------- 카메라 신호 약함 안내 연결 (specs/stage-v-camera-weak-signal-notice.md) ----------
+
+
+def test_camera_heartbeat_feeds_net_weak(
+    fake_sb: MagicMock, published: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """wifi_rssi 가 있는 카메라 heartbeat → net_weak.on_camera_rssi 1회."""
+    calls: list[tuple] = []
+    monkeypatch.setattr(handlers.net_weak, "on_camera_rssi", lambda *a: calls.append(a))
+    fake_sb.table.side_effect = _camera_state_table_factory([], rotate_180=True)
+    handlers.handle_telemetry(CAMERA_TEXT, {"uptime_sec": 300, "wifi_rssi": -78, "clips": {"rec": 1}})
+    assert calls == [(fake_sb, CAMERA_UUID, CAMERA_TEXT, -78)]
+
+
+def test_camera_heartbeat_without_rssi_skips_net_weak(
+    fake_sb: MagicMock, published: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """wifi_rssi 없는 heartbeat(9/28 이전 펌웨어) → 판정 안 함."""
+    calls: list[tuple] = []
+    monkeypatch.setattr(handlers.net_weak, "on_camera_rssi", lambda *a: calls.append(a))
+    fake_sb.table.side_effect = _camera_state_table_factory([], rotate_180=True)
+    handlers.handle_telemetry(CAMERA_TEXT, {"uptime_sec": 300, "clips": {"rec": 1}})
+    assert calls == []
+
+
+def test_camera_heartbeat_without_uptime_skips_net_weak(
+    fake_sb: MagicMock, published: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """uptime_sec 없는 heartbeat 는 sys 상태를 안 만든다 → wifi_rssi 가 있어도 판정 안 함."""
+    calls: list[tuple] = []
+    monkeypatch.setattr(handlers.net_weak, "on_camera_rssi", lambda *a: calls.append(a))
+    fake_sb.table.side_effect = _camera_state_table_factory([], rotate_180=True)
+    handlers.handle_telemetry(CAMERA_TEXT, {"wifi_rssi": -78, "clips": {"rec": 1}})
+    assert calls == []
+
+
+def test_notice_error_does_not_break_heartbeat(
+    fake_sb: MagicMock, published: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """안내 처리가 예외를 던져도 handle_telemetry 는 끝나고 온라인 표시는 이미 써져 있다."""
+    seen: list[int] = []
+    updates: list[dict] = []
+
+    def _boom(*_a) -> None:
+        seen.append(len(updates))          # 호출 시점에 heartbeat UPDATE 가 끝나 있었는지
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(handlers.net_weak, "on_camera_rssi", _boom)
+    fake_sb.table.side_effect = _camera_state_table_factory(updates, rotate_180=True)
+    handlers.handle_telemetry(CAMERA_TEXT, {"uptime_sec": 300, "wifi_rssi": -78, "clips": {"rec": 1}})
+    assert seen == [1]
+    assert updates[0]["is_online"] is True and "last_seen_at" in updates[0]
+
+
 # ---------- 운영 재부팅 기록 ack (petcam-lab 요청 6, specs/stage-m-ops-camera-reboot.md) ----------
 
 OPS_MSG = "88888888-8888-8888-8888-888888888888"
