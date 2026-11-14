@@ -238,6 +238,97 @@ where u.id = n.user_id and u.email = '<대상 이메일>'
 
 ---
 
+## 1-4. 카메라 네트워크 신호 약함 안내 (2026-11-14, 브리지 자동)
+
+> 규칙·계획: [specs/stage-v-camera-weak-signal-notice.md](../specs/stage-v-camera-weak-signal-notice.md). 앱 계약(안): [APP_CAMERA_WEAK_SIGNAL_2026-11-13.md](APP_CAMERA_WEAK_SIGNAL_2026-11-13.md). 코드: `backend/net_weak.py`.
+
+카메라 WiFi 신호가 −75dBm 이하로 10분 넘게 이어지면 브리지가 그 카메라 화면 막대에 "네트워크 신호가 약하니 점검해 주세요"를 띄우고, −70dBm 이상으로 회복하면 내린다.
+
+- 1-3 초점 안내와 같은 경로다 — `app_notifications` 에 직접 INSERT, **푸시 없음**. 다른 점은 운영자 SQL 이 아니라 브리지가 heartbeat(15초)의 `wifi_rssi` 를 보고 자동으로 넣는다는 것.
+- 카메라 단위: `data.camera_id` 가 가리키는 카메라 화면에만 뜬다. 카메라당 24시간에 1회(안내가 처음 뜬 시각 기준), 안 읽은 안내가 남아 있으면 새로 넣지 않는다.
+- 내리기 = 서버가 그 행의 `read_at` 을 채운다. 사용자가 막대를 눌러도 같은 컬럼이 채워진다.
+- 스위치 2개([ENV.md](ENV.md)): `NET_WEAK_NOTICE_ENABLED`(기본 꺼짐), `NET_WEAK_NOTICE_DRY_RUN`(기본 켜짐 — 행을 넣지 않고 로그만).
+
+### 계약 (앱이 기대하는 값 — 바꾸지 말 것)
+
+| 컬럼 | 값 |
+|---|---|
+| `kind` | `camera.weak_signal` |
+| `category` | `camera` |
+| `route` | `/crecam` |
+| `title` | `네트워크 신호가 약하니 점검해 주세요` |
+| `body` | `공유기와 카메라 사이 거리나 장애물을 확인해 주세요` |
+| `source` | `external` |
+| `source_event_id` | 새 uuid |
+| `dedupe_key` | `net-weak:` + 카메라 uuid + `:` + 같은 uuid |
+| `data` | `{"kind":"camera.weak_signal","source":"external","camera_id":"<cameras.id>","rssi":<dBm>}` |
+| `read_at` | NULL 로 넣음. 앱이 누르거나 서버가 회복을 보면 채움 |
+
+### 켜는 순서 (배포·스위치는 이관훈님)
+
+1. PR 머지·배포 — 스위치 꺼짐이라 동작 변화 없음.
+2. `NET_WEAK_NOTICE_ENABLED=true` (드라이런 기본 켜짐) + 브리지 재시작 → 2~3일 `net-weak intent` 로그로 대상 수 확인(아래 "드라이런 로그").
+3. `NET_WEAK_NOTICE_DRY_RUN=false` 는 아래 **셋이 모두** 끝난 뒤에만:
+   - 앱 답변: 이 `kind` 의 알림함 노출 처리(요청서 3-1)와 기존 1분 화면 안내와의 관계(3-2).
+   - 수동 확인: 테스트 계정에 계약 행을 SQL 로 1건 넣어 그 카메라 화면에만 막대가 뜨는지, `read_at` 을 SQL 로 채우면 막대가 내려가는지 본다(테스트의 가짜 DB 는 실제 제약·Realtime 을 검증하지 못한다).
+   - 드라이런 대상 수 합의.
+4. 롤백: `NET_WEAK_NOTICE_ENABLED=false` + 브리지 재시작. 이미 뜬 막대는 아래 "일괄 읽음 처리" SQL 로 내린다. `NET_WEAK_NOTICE_DRY_RUN=true` 로만 되돌려도 같다 — 드라이런은 읽음 처리도 하지 않으므로 같은 SQL 을 돌린다.
+
+스위치 변경은 시나리오 C 와 같다 — `.env` 수정 뒤 브리지 재시작.
+
+```bash
+vim ~/terra-server/.env
+sudo systemctl restart terra-bridge
+```
+
+### 드라이런 로그
+
+```bash
+# 발송 대상이 된 기록 (드라이런 중에는 행을 넣지 않고 이 로그만 남는다)
+sudo journalctl -u terra-bridge --since "3 days ago" --no-pager | grep "net-weak intent"
+
+# 대상 카메라 수 — 카메라 중복을 빼고 센다
+sudo journalctl -u terra-bridge --since "3 days ago" --no-pager \
+  | grep "net-weak intent" | grep -o "camera=[^ ]*" | sort -u | wc -l
+```
+
+드라이런은 행을 남기지 않아서 브리지를 재시작할 때마다 같은 카메라가 다시 찍힌다. 그래서 줄 수가 아니라 카메라 수로 본다. `camera=` 값은 `cameras.id`(uuid)다.
+
+실발송 뒤에는 `net-weak sent camera=…`(넣음), `net-weak cleared camera=… n=…`(내림) 로그가 남는다.
+
+### 보낸 기록
+
+```sql
+select n.created_at, u.email, n.data->>'camera_id' as camera_id, n.data->>'rssi' as rssi, n.read_at
+from public.app_notifications n join auth.users u on u.id = n.user_id
+where n.kind = 'camera.weak_signal'
+order by n.created_at desc limit 50;
+```
+
+`read_at` 이 NULL 이면 막대가 아직 떠 있는 것이다(신호가 회복되지 않았고 사용자도 누르지 않음).
+
+### 일괄 읽음 처리 (롤백용)
+
+스위치를 끄거나 드라이런으로 되돌리면 브리지가 더는 막대를 내리지 않는다. 떠 있는 막대를 한 번에 내린다.
+
+```sql
+update public.app_notifications set read_at = now()
+where kind = 'camera.weak_signal' and read_at is null;
+```
+
+결과의 `UPDATE n` 이 내린 막대 수다.
+
+### 참고
+
+- 10분을 세는 방식: −75 이하 샘플이 10분 넘게 이어져야 한다. −70 이상 샘플이 오면 처음부터 다시 세고, −74~−71 은 흔들림으로 보고 끊지 않는다. heartbeat 가 5분 넘게 비면 처음부터 다시 센다.
+- `wifi_rssi` 가 0·양수이거나 −120 미만이면 잘못된 보고값으로 보고 무시한다(회복으로 치지 않는다).
+- 브리지를 재시작하면 10분을 처음부터 다시 센다. 24시간 제한은 DB 조회라 재시작해도 유지된다.
+- 카메라가 아예 오프라인이면 RSSI 가 안 와서 안내도, 자동 내리기도 없다. 이미 뜬 막대는 누를 때까지 남는다.
+- 해제하거나 다른 계정이 가져간 카메라의 남은 막대는 서버가 내리지 못한다(누르면 사라짐).
+- `wifi_rssi` 를 안 보내는 9/28 이전 펌웨어는 판정하지 않는다.
+
+---
+
 ## 2. 로그 확인
 
 ### 실시간 (pm2 logs 대체)
@@ -471,3 +562,4 @@ sudo journalctl -u caddy --since "1 day ago" | grep -i renew
 | 2026-05-29 | 최초 작성 |
 | 2026-11-04 | 1-2 R2 고아 클립 역등록 cron 추가 |
 | 2026-11-10 | 1-3 카메라 렌즈 초점 안내 발송(운영자 수동) 추가 |
+| 2026-11-14 | 1-4 카메라 네트워크 신호 약함 안내(브리지 자동) 추가 |
